@@ -1,0 +1,2343 @@
+From f1c80e0962c36b3e7e3d304ec7abec0c69f5523b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Fri, 14 Jan 2022 22:11:17 +0100
+Subject: [PATCH 1/9] test/utils: Add helper to set custom monitors config
+
+Make the existing implementation a wrapper to avoid changing monitor
+config tests.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/2237>
+
+Cherry-picked from 57d1d82ead6392a104a9e9d6c7f1f4f14ad54e48
+---
+ src/tests/monitor-test-utils.c | 18 +-----------------
+ src/tests/test-utils.c         | 23 +++++++++++++++++++++++
+ src/tests/test-utils.h         |  3 +++
+ 3 files changed, 27 insertions(+), 17 deletions(-)
+
+diff --git a/src/tests/monitor-test-utils.c b/src/tests/monitor-test-utils.c
+index 705201810abc..98958a5042ee 100644
+--- a/src/tests/monitor-test-utils.c
++++ b/src/tests/monitor-test-utils.c
+@@ -39,23 +39,7 @@ test_get_gpu (void)
+ void
+ set_custom_monitor_config (const char *filename)
+ {
+-  MetaBackend *backend = meta_get_backend ();
+-  MetaMonitorManager *monitor_manager =
+-    meta_backend_get_monitor_manager (backend);
+-  MetaMonitorConfigManager *config_manager = monitor_manager->config_manager;
+-  MetaMonitorConfigStore *config_store;
+-  GError *error = NULL;
+-  const char *path;
+-
+-  g_assert_nonnull (config_manager);
+-
+-  config_store = meta_monitor_config_manager_get_store (config_manager);
+-
+-  path = g_test_get_filename (G_TEST_DIST, "tests", "monitor-configs",
+-                              filename, NULL);
+-  if (!meta_monitor_config_store_set_custom (config_store, path, NULL,
+-                                             &error))
+-    g_error ("Failed to set custom config: %s", error->message);
++  meta_set_custom_monitor_config (meta_get_backend (), filename);
+ }
+ 
+ char *
+diff --git a/src/tests/test-utils.c b/src/tests/test-utils.c
+index ca332a0b918e..bf326ef27105 100644
+--- a/src/tests/test-utils.c
++++ b/src/tests/test-utils.c
+@@ -24,6 +24,7 @@
+ #include <gio/gio.h>
+ #include <string.h>
+ 
++#include "backends/meta-monitor-config-store.h"
+ #include "core/display-private.h"
+ #include "core/window-private.h"
+ #include "wayland/meta-wayland.h"
+@@ -575,3 +576,25 @@ test_wait_for_x11_display (void)
+ 
+   g_assert_nonnull (display->x11_display);
+ }
++
++void
++meta_set_custom_monitor_config (MetaBackend *backend,
++                                const char  *filename)
++{
++  MetaMonitorManager *monitor_manager =
++    meta_backend_get_monitor_manager (backend);
++  MetaMonitorConfigManager *config_manager = monitor_manager->config_manager;
++  MetaMonitorConfigStore *config_store;
++  GError *error = NULL;
++  const char *path;
++
++  g_assert_nonnull (config_manager);
++
++  config_store = meta_monitor_config_manager_get_store (config_manager);
++
++  path = g_test_get_filename (G_TEST_DIST, "tests", "monitor-configs",
++                              filename, NULL);
++  if (!meta_monitor_config_store_set_custom (config_store, path, NULL,
++                                             &error))
++    g_error ("Failed to set custom config: %s", error->message);
++}
+diff --git a/src/tests/test-utils.h b/src/tests/test-utils.h
+index 1710b98e0e80..c8a0d16aebec 100644
+--- a/src/tests/test-utils.h
++++ b/src/tests/test-utils.h
+@@ -86,4 +86,7 @@ const char * test_get_plugin_name (void);
+ 
+ void test_wait_for_x11_display (void);
+ 
++void meta_set_custom_monitor_config (MetaBackend *backend,
++                                     const char  *filename);
++
+ #endif /* TEST_UTILS_H */
+-- 
+2.33.1
+
+
+From 9fdf146e7bf04b71dafd67388345b694e8bfac77 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Fri, 14 Jan 2022 22:12:36 +0100
+Subject: [PATCH 2/9] tests/utils: Add meta_wait_for_paint() helper
+
+This function queues a full stage redraw, then waits for every view to
+receive the "presented" signal before returning.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/2237>
+(cherry picked from commit d84f7971e476a1e2d727310d9a33ac4080137f58)
+---
+ src/tests/test-utils.c | 27 +++++++++++++++++++++++++++
+ src/tests/test-utils.h |  2 ++
+ 2 files changed, 29 insertions(+)
+
+diff --git a/src/tests/test-utils.c b/src/tests/test-utils.c
+index bf326ef27105..bee6aa102c0e 100644
+--- a/src/tests/test-utils.c
++++ b/src/tests/test-utils.c
+@@ -598,3 +598,30 @@ meta_set_custom_monitor_config (MetaBackend *backend,
+                                              &error))
+     g_error ("Failed to set custom config: %s", error->message);
+ }
++
++static void
++on_view_presented (ClutterStage      *stage,
++                   ClutterStageView  *view,
++                   ClutterFrameInfo  *frame_info,
++                   GList            **presented_views)
++{
++  *presented_views = g_list_remove (*presented_views, view);
++}
++
++void
++meta_wait_for_paint (MetaBackend *backend)
++{
++  ClutterActor *stage = meta_backend_get_stage (backend);
++  MetaRenderer *renderer = meta_backend_get_renderer (backend);
++  GList *views;
++  gulong handler_id;
++
++  clutter_actor_queue_redraw (stage);
++
++  views = g_list_copy (meta_renderer_get_views (renderer));
++  handler_id = g_signal_connect (stage, "presented",
++                                 G_CALLBACK (on_view_presented), &views);
++  while (views)
++    g_main_context_iteration (NULL, TRUE);
++  g_signal_handler_disconnect (stage, handler_id);
++}
+diff --git a/src/tests/test-utils.h b/src/tests/test-utils.h
+index c8a0d16aebec..4b6aa34e8998 100644
+--- a/src/tests/test-utils.h
++++ b/src/tests/test-utils.h
+@@ -89,4 +89,6 @@ void test_wait_for_x11_display (void);
+ void meta_set_custom_monitor_config (MetaBackend *backend,
+                                      const char  *filename);
+ 
++void meta_wait_for_paint (MetaBackend *backend);
++
+ #endif /* TEST_UTILS_H */
+-- 
+2.33.1
+
+
+From 570c234f6e4cab567cd329d45347565100d5494d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Thu, 30 Sep 2021 08:59:03 +0200
+Subject: [PATCH 3/9] monitor-config-store: Make parsing a bit more forgiving
+
+Allow unknown XML elements inside <monitors>. This makes extending in
+the future easier.
+
+(cherry picked from commit 3cd666c657fa716f06dee69df59356b53b6c5d72)
+---
+ src/backends/meta-monitor-config-store.c      | 54 +++++++++++++++---
+ .../monitor-configs/unknown-elements.xml      | 31 ++++++++++
+ src/tests/monitor-store-unit-tests.c          | 56 +++++++++++++++++++
+ 3 files changed, 133 insertions(+), 8 deletions(-)
+ create mode 100644 src/tests/monitor-configs/unknown-elements.xml
+
+diff --git a/src/backends/meta-monitor-config-store.c b/src/backends/meta-monitor-config-store.c
+index 4dd357a15164..3c69157eae40 100644
+--- a/src/backends/meta-monitor-config-store.c
++++ b/src/backends/meta-monitor-config-store.c
+@@ -136,6 +136,7 @@ G_DEFINE_QUARK (meta-monitor-config-store-error-quark,
+ typedef enum
+ {
+   STATE_INITIAL,
++  STATE_UNKNOWN,
+   STATE_MONITORS,
+   STATE_CONFIGURATION,
+   STATE_MIGRATED,
+@@ -180,12 +181,28 @@ typedef struct
+   MetaLogicalMonitorConfig *current_logical_monitor_config;
+   GList *current_disabled_monitor_specs;
+ 
++  ParserState unknown_state_root;
++  int unknown_level;
++
+   MetaMonitorsConfigFlag extra_config_flags;
+ } ConfigParser;
+ 
+ G_DEFINE_TYPE (MetaMonitorConfigStore, meta_monitor_config_store,
+                G_TYPE_OBJECT)
+ 
++static void
++enter_unknown_element (ConfigParser *parser,
++                       const char   *element_name,
++                       const char   *root_element_name,
++                       ParserState   root_state)
++{
++  parser->state = STATE_UNKNOWN;
++  parser->unknown_level = 1;
++  parser->unknown_state_root = root_state;
++  g_warning ("Unknown element <%s> under <%s>, ignoring",
++             element_name, root_element_name);
++}
++
+ static void
+ handle_start_element (GMarkupParseContext  *context,
+                       const char           *element_name,
+@@ -242,8 +259,8 @@ handle_start_element (GMarkupParseContext  *context,
+       {
+         if (!g_str_equal (element_name, "configuration"))
+           {
+-            g_set_error (error, G_MARKUP_ERROR, G_MARKUP_ERROR_UNKNOWN_ELEMENT,
+-                         "Invalid toplevel element '%s'", element_name);
++            enter_unknown_element (parser, element_name,
++                                   "monitors", STATE_MONITORS);
+             return;
+           }
+ 
+@@ -253,6 +270,13 @@ handle_start_element (GMarkupParseContext  *context,
+         return;
+       }
+ 
++    case STATE_UNKNOWN:
++      {
++        parser->unknown_level++;
++
++        return;
++      }
++
+     case STATE_CONFIGURATION:
+       {
+         if (g_str_equal (element_name, "logicalmonitor"))
+@@ -274,9 +298,8 @@ handle_start_element (GMarkupParseContext  *context,
+           }
+         else
+           {
+-            g_set_error (error, G_MARKUP_ERROR, G_MARKUP_ERROR_UNKNOWN_ELEMENT,
+-                         "Invalid configuration element '%s'", element_name);
+-            return;
++            enter_unknown_element (parser, element_name,
++                                   "configuration", STATE_CONFIGURATION);
+           }
+ 
+         return;
+@@ -323,9 +346,8 @@ handle_start_element (GMarkupParseContext  *context,
+           }
+         else
+           {
+-            g_set_error (error, G_MARKUP_ERROR, G_MARKUP_ERROR_UNKNOWN_ELEMENT,
+-                         "Invalid monitor logicalmonitor element '%s'", element_name);
+-            return;
++            enter_unknown_element (parser, element_name,
++                                   "logicalmonitor", STATE_LOGICAL_MONITOR);
+           }
+ 
+         return;
+@@ -793,6 +815,18 @@ handle_end_element (GMarkupParseContext  *context,
+         return;
+       }
+ 
++    case STATE_UNKNOWN:
++      {
++        parser->unknown_level--;
++        if (parser->unknown_level == 0)
++          {
++            g_assert (parser->unknown_state_root >= 0);
++            parser->state = parser->unknown_state_root;
++            parser->unknown_state_root = -1;
++          }
++        return;
++      }
++
+     case STATE_MONITORS:
+       {
+         g_assert (g_str_equal (element_name, "monitors"));
+@@ -912,6 +946,9 @@ handle_text (GMarkupParseContext *context,
+ 
+   switch (parser->state)
+     {
++    case STATE_UNKNOWN:
++      return;
++
+     case STATE_INITIAL:
+     case STATE_MONITORS:
+     case STATE_CONFIGURATION:
+@@ -1099,6 +1136,7 @@ read_config_file (MetaMonitorConfigStore  *config_store,
+     .state = STATE_INITIAL,
+     .config_store = config_store,
+     .extra_config_flags = extra_config_flags,
++    .unknown_state_root = -1,
+   };
+ 
+   parse_context = g_markup_parse_context_new (&config_parser,
+diff --git a/src/tests/monitor-configs/unknown-elements.xml b/src/tests/monitor-configs/unknown-elements.xml
+new file mode 100644
+index 000000000000..f81be95dd9df
+--- /dev/null
++++ b/src/tests/monitor-configs/unknown-elements.xml
+@@ -0,0 +1,31 @@
++<monitors version="2">
++  <unknownundermonitors>
++    <anotherlevel>text</anotherlevel>
++  </unknownundermonitors>
++  <configuration>
++    <unknownunderconfiguration>
++      <anotherlevel>text</anotherlevel>
++    </unknownunderconfiguration>
++    <logicalmonitor>
++      <unknownunderlogicalmonitor>
++	<anotherlevel>text</anotherlevel>
++      </unknownunderlogicalmonitor>
++      <x>0</x>
++      <y>0</y>
++      <primary>yes</primary>
++      <monitor>
++	<monitorspec>
++	  <connector>DP-1</connector>
++	  <vendor>MetaProduct&apos;s Inc.</vendor>
++	  <product>MetaMonitor</product>
++	  <serial>0x123456</serial>
++	</monitorspec>
++	<mode>
++	  <width>1920</width>
++	  <height>1080</height>
++	  <rate>60.000495910644531</rate>
++	</mode>
++      </monitor>
++    </logicalmonitor>
++  </configuration>
++</monitors>
+diff --git a/src/tests/monitor-store-unit-tests.c b/src/tests/monitor-store-unit-tests.c
+index b9d5622b7ae3..64618174f4b3 100644
+--- a/src/tests/monitor-store-unit-tests.c
++++ b/src/tests/monitor-store-unit-tests.c
+@@ -836,6 +836,60 @@ meta_test_monitor_store_interlaced (void)
+   check_monitor_store_configurations (&expect);
+ }
+ 
++static void
++meta_test_monitor_store_unknown_elements (void)
++{
++  MonitorStoreTestExpect expect = {
++    .configurations = {
++      {
++        .logical_monitors = {
++          {
++            .layout = {
++              .x = 0,
++              .y = 0,
++              .width = 1920,
++              .height = 1080
++            },
++            .scale = 1,
++            .is_primary = TRUE,
++            .is_presentation = FALSE,
++            .monitors = {
++              {
++                .connector = "DP-1",
++                .vendor = "MetaProduct's Inc.",
++                .product = "MetaMonitor",
++                .serial = "0x123456",
++                .mode = {
++                  .width = 1920,
++                  .height = 1080,
++                  .refresh_rate = 60.000495910644531
++                }
++              }
++            },
++            .n_monitors = 1,
++          }
++        },
++        .n_logical_monitors = 1
++      }
++    },
++    .n_configurations = 1
++  };
++
++  g_test_expect_message (G_LOG_DOMAIN, G_LOG_LEVEL_WARNING,
++                         "Unknown element <unknownundermonitors> "
++                         "under <monitors>, ignoring");
++  g_test_expect_message (G_LOG_DOMAIN, G_LOG_LEVEL_WARNING,
++                         "Unknown element <unknownunderconfiguration> "
++                         "under <configuration>, ignoring");
++  g_test_expect_message (G_LOG_DOMAIN, G_LOG_LEVEL_WARNING,
++                         "Unknown element <unknownunderlogicalmonitor> "
++                         "under <logicalmonitor>, ignoring");
++  set_custom_monitor_config ("unknown-elements.xml");
++  g_test_assert_expected_messages ();
++
++  check_monitor_store_configurations (&expect);
++}
++
+ void
+ init_monitor_store_tests (void)
+ {
+@@ -861,4 +915,6 @@ init_monitor_store_tests (void)
+                    meta_test_monitor_store_second_rotated);
+   g_test_add_func ("/backends/monitor-store/interlaced",
+                    meta_test_monitor_store_interlaced);
++  g_test_add_func ("/backends/monitor-store/unknown-elements",
++                   meta_test_monitor_store_unknown_elements);
+ }
+-- 
+2.33.1
+
+
+From 48a259017f0f59abb80fa6fe7c9d6b864f129267 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Fri, 24 Sep 2021 16:29:47 +0200
+Subject: [PATCH 4/9] monitor-config-store: Fix incorrect string comparison
+ with empty string
+
+strncmp() always return 0 if the passed length is 0. What this means is
+that whatever the first string check happens to be, if the parsed XML
+cdata was empty (e.g. if we got <element></element>), the first
+condition would evaluate to true, which is rather unexpected.
+
+Fix this by making sure the string length is correct first. Also move it
+into a helper so we don't need to repeat the same strlen() check every
+time.
+
+(cherry picked from commit f798e49502313dd3e7dd67143513a7a6a91b49f8)
+---
+ src/backends/meta-monitor-config-store.c | 25 +++++++++++++++++-------
+ 1 file changed, 18 insertions(+), 7 deletions(-)
+
+diff --git a/src/backends/meta-monitor-config-store.c b/src/backends/meta-monitor-config-store.c
+index 3c69157eae40..d2572fa06ab0 100644
+--- a/src/backends/meta-monitor-config-store.c
++++ b/src/backends/meta-monitor-config-store.c
+@@ -190,6 +190,17 @@ typedef struct
+ G_DEFINE_TYPE (MetaMonitorConfigStore, meta_monitor_config_store,
+                G_TYPE_OBJECT)
+ 
++static gboolean
++text_equals (const char *text,
++             int         len,
++             const char *expect)
++{
++  if (strlen (expect) != len)
++    return FALSE;
++
++  return strncmp (text, expect, len) == 0;
++}
++
+ static void
+ enter_unknown_element (ConfigParser *parser,
+                        const char   *element_name,
+@@ -904,12 +915,12 @@ read_bool (const char  *text,
+            gboolean    *out_value,
+            GError     **error)
+ {
+-  if (strncmp (text, "no", text_len) == 0)
++  if (text_equals (text, text_len, "no"))
+     {
+       *out_value = FALSE;
+       return TRUE;
+     }
+-  else if (strncmp (text, "yes", text_len) == 0)
++  else if (text_equals (text, text_len, "yes"))
+     {
+       *out_value = TRUE;
+       return TRUE;
+@@ -1039,13 +1050,13 @@ handle_text (GMarkupParseContext *context,
+ 
+     case STATE_TRANSFORM_ROTATION:
+       {
+-        if (strncmp (text, "normal", text_len) == 0)
++        if (text_equals (text, text_len, "normal"))
+           parser->current_transform = META_MONITOR_TRANSFORM_NORMAL;
+-        else if (strncmp (text, "left", text_len) == 0)
++        else if (text_equals (text, text_len, "left"))
+           parser->current_transform = META_MONITOR_TRANSFORM_90;
+-        else if (strncmp (text, "upside_down", text_len) == 0)
++        else if (text_equals (text, text_len, "upside_down"))
+           parser->current_transform = META_MONITOR_TRANSFORM_180;
+-        else if (strncmp (text, "right", text_len) == 0)
++        else if (text_equals (text, text_len, "right"))
+           parser->current_transform = META_MONITOR_TRANSFORM_270;
+         else
+           g_set_error (error, G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT,
+@@ -1088,7 +1099,7 @@ handle_text (GMarkupParseContext *context,
+ 
+     case STATE_MONITOR_MODE_FLAG:
+       {
+-        if (strncmp (text, "interlace", text_len) == 0)
++        if (text_equals (text, text_len, "interlace"))
+           {
+             parser->current_monitor_mode_spec->flags |=
+               META_CRTC_MODE_FLAG_INTERLACE;
+-- 
+2.33.1
+
+
+From a67835d2a9f41194d29089e8b4deb0d2af05203a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Mon, 17 Jan 2022 11:45:53 +0100
+Subject: [PATCH 5/9] monitor-config-store: Add way to define config store
+ loading policy
+
+This adds a way to define a way, at the system level, to define a policy
+of how monitor configuration files are loaded.
+
+The intended use case is to e.g. either prefer system level monitor
+configurations before user levels, or only allow system level
+configurations.
+
+Examples:
+
+Prefer system over user level configurations:
+
+    <monitors version="2">
+      <policy>
+        <stores>
+          <store>system</store>
+          <store>user</store>
+        </stores>
+      </policy>
+      <configuration>
+        ...
+      </configuration>
+    </monitors>
+
+Only allow system level configurations:
+
+    <monitors version="2">
+      <policy>
+        <stores>
+          <store>system</store>
+        </stores>
+      </policy>
+      <configuration>
+        ...
+      </configuration>
+    </monitors>
+
+(cherry picked from commit b747884c1eaf309bb2d9395a655c85c968bd1829)
+---
+ src/backends/meta-backend-types.h             |   2 +
+ src/backends/meta-monitor-config-manager.h    |   4 +-
+ src/backends/meta-monitor-config-store.c      | 421 ++++++++++++++----
+ src/backends/meta-monitor-config-store.h      |  21 +-
+ .../monitor-config-migration-unit-tests.c     |   1 +
+ src/tests/monitor-configs/policy.xml          |  27 ++
+ src/tests/monitor-store-unit-tests.c          |  33 ++
+ src/tests/monitor-test-utils.c                |  16 +-
+ src/tests/monitor-test-utils.h                |   2 +
+ src/tests/monitor-unit-tests.c                |   3 +
+ src/tests/test-utils.c                        |   8 +-
+ src/tests/test-utils.h                        |   6 +-
+ 12 files changed, 450 insertions(+), 94 deletions(-)
+ create mode 100644 src/tests/monitor-configs/policy.xml
+
+diff --git a/src/backends/meta-backend-types.h b/src/backends/meta-backend-types.h
+index eae62c02f244..5133ccb6131d 100644
+--- a/src/backends/meta-backend-types.h
++++ b/src/backends/meta-backend-types.h
+@@ -29,6 +29,8 @@ typedef struct _MetaMonitorConfigManager MetaMonitorConfigManager;
+ typedef struct _MetaMonitorConfigStore MetaMonitorConfigStore;
+ typedef struct _MetaMonitorsConfig MetaMonitorsConfig;
+ 
++typedef enum _MetaMonitorsConfigFlag MetaMonitorsConfigFlag;
++
+ typedef struct _MetaMonitor MetaMonitor;
+ typedef struct _MetaMonitorNormal MetaMonitorNormal;
+ typedef struct _MetaMonitorTiled MetaMonitorTiled;
+diff --git a/src/backends/meta-monitor-config-manager.h b/src/backends/meta-monitor-config-manager.h
+index 641ed1bc1afb..a35b3e2e1f95 100644
+--- a/src/backends/meta-monitor-config-manager.h
++++ b/src/backends/meta-monitor-config-manager.h
+@@ -51,12 +51,12 @@ typedef struct _MetaMonitorsConfigKey
+   GList *monitor_specs;
+ } MetaMonitorsConfigKey;
+ 
+-typedef enum _MetaMonitorsConfigFlag
++enum _MetaMonitorsConfigFlag
+ {
+   META_MONITORS_CONFIG_FLAG_NONE = 0,
+   META_MONITORS_CONFIG_FLAG_MIGRATED = (1 << 0),
+   META_MONITORS_CONFIG_FLAG_SYSTEM_CONFIG = (1 << 1),
+-} MetaMonitorsConfigFlag;
++};
+ 
+ struct _MetaMonitorsConfig
+ {
+diff --git a/src/backends/meta-monitor-config-store.c b/src/backends/meta-monitor-config-store.c
+index d2572fa06ab0..93a494c79b80 100644
+--- a/src/backends/meta-monitor-config-store.c
++++ b/src/backends/meta-monitor-config-store.c
+@@ -120,6 +120,9 @@ struct _MetaMonitorConfigStore
+   GFile *user_file;
+   GFile *custom_read_file;
+   GFile *custom_write_file;
++
++  gboolean has_stores_policy;
++  GList *stores_policy;
+ };
+ 
+ #define META_MONITOR_CONFIG_STORE_ERROR (meta_monitor_config_store_error_quark ())
+@@ -162,12 +165,18 @@ typedef enum
+   STATE_MONITOR_MODE_FLAG,
+   STATE_MONITOR_UNDERSCANNING,
+   STATE_DISABLED,
++  STATE_POLICY,
++  STATE_STORES,
++  STATE_STORE,
+ } ParserState;
+ 
+ typedef struct
+ {
+   ParserState state;
+   MetaMonitorConfigStore *config_store;
++  GFile *file;
++
++  GHashTable *pending_configs;
+ 
+   ParserState monitor_spec_parent_state;
+ 
+@@ -180,6 +189,10 @@ typedef struct
+   MetaMonitorConfig *current_monitor_config;
+   MetaLogicalMonitorConfig *current_logical_monitor_config;
+   GList *current_disabled_monitor_specs;
++  gboolean seen_policy;
++  gboolean seen_stores;
++  MetaConfigStore pending_store;
++  GList *stores;
+ 
+   ParserState unknown_state_root;
+   int unknown_level;
+@@ -268,16 +281,31 @@ handle_start_element (GMarkupParseContext  *context,
+ 
+     case STATE_MONITORS:
+       {
+-        if (!g_str_equal (element_name, "configuration"))
++        if (g_str_equal (element_name, "configuration"))
++          {
++            parser->state = STATE_CONFIGURATION;
++            parser->current_was_migrated = FALSE;
++          }
++        else if (g_str_equal (element_name, "policy"))
++          {
++            if (parser->seen_policy)
++              {
++                g_set_error (error,
++                             G_MARKUP_ERROR, G_MARKUP_ERROR_UNKNOWN_ELEMENT,
++                             "Multiple policy definitions");
++                return;
++              }
++
++            parser->seen_policy = TRUE;
++            parser->state = STATE_POLICY;
++          }
++        else
+           {
+             enter_unknown_element (parser, element_name,
+                                    "monitors", STATE_MONITORS);
+             return;
+           }
+ 
+-        parser->state = STATE_CONFIGURATION;
+-        parser->current_was_migrated = FALSE;
+-
+         return;
+       }
+ 
+@@ -523,6 +551,59 @@ handle_start_element (GMarkupParseContext  *context,
+ 
+         return;
+       }
++
++    case STATE_POLICY:
++      {
++        if (!(parser->extra_config_flags &
++              META_MONITORS_CONFIG_FLAG_SYSTEM_CONFIG))
++          {
++            g_set_error (error, G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT,
++                         "Policy can only be defined in system level configurations");
++            return;
++          }
++
++        if (g_str_equal (element_name, "stores"))
++          {
++            if (parser->seen_stores)
++              {
++                g_set_error (error, G_MARKUP_ERROR, G_MARKUP_ERROR_UNKNOWN_ELEMENT,
++                             "Multiple stores elements under policy");
++                return;
++              }
++
++            parser->seen_stores = TRUE;
++            parser->state = STATE_STORES;
++          }
++        else
++          {
++            enter_unknown_element (parser, element_name,
++                                   "policy", STATE_POLICY);
++          }
++
++        return;
++      }
++
++    case STATE_STORES:
++      {
++        if (g_str_equal (element_name, "store"))
++          {
++            parser->state = STATE_STORE;
++          }
++        else
++          {
++            enter_unknown_element (parser, element_name,
++                                   "stores", STATE_STORES);
++          }
++
++        return;
++      }
++
++    case STATE_STORE:
++      {
++        g_set_error (error, G_MARKUP_ERROR, G_MARKUP_ERROR_UNKNOWN_ELEMENT,
++                     "Invalid store sub element '%s'", element_name);
++        return;
++      }
+     }
+ }
+ 
+@@ -819,13 +900,65 @@ handle_end_element (GMarkupParseContext  *context,
+             return;
+           }
+ 
+-        g_hash_table_replace (parser->config_store->configs,
++        g_hash_table_replace (parser->pending_configs,
+                               config->key, config);
+ 
+         parser->state = STATE_MONITORS;
+         return;
+       }
+ 
++    case STATE_STORE:
++        g_assert (g_str_equal (element_name, "store"));
++
++        if (parser->pending_store == -1)
++          {
++            g_set_error (error, G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT,
++                         "Got an empty store");
++            return;
++          }
++
++        if (g_list_find (parser->stores,
++                         GINT_TO_POINTER (parser->pending_store)))
++          {
++            g_set_error (error, G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT,
++                         "Multiple identical stores in policy");
++            return;
++          }
++
++        parser->stores =
++          g_list_append (parser->stores,
++                         GINT_TO_POINTER (parser->pending_store));
++        parser->pending_store = -1;
++
++        parser->state = STATE_STORES;
++        return;
++
++    case STATE_STORES:
++        g_assert (g_str_equal (element_name, "stores"));
++
++        if (parser->config_store->has_stores_policy)
++          {
++            g_warning ("Ignoring stores policy from '%s', "
++                       "it has already been configured",
++                       g_file_peek_path (parser->file));
++            g_clear_pointer (&parser->stores, g_list_free);
++          }
++        else
++          {
++            parser->config_store->stores_policy =
++              g_steal_pointer (&parser->stores);
++            parser->config_store->has_stores_policy = TRUE;
++          }
++
++        parser->state = STATE_POLICY;
++        return;
++
++    case STATE_POLICY:
++        g_assert (g_str_equal (element_name, "policy"));
++
++        parser->state = STATE_MONITORS;
++        return;
++
+     case STATE_UNKNOWN:
+       {
+         parser->unknown_level--;
+@@ -970,6 +1103,8 @@ handle_text (GMarkupParseContext *context,
+     case STATE_MONITOR_MODE:
+     case STATE_TRANSFORM:
+     case STATE_DISABLED:
++    case STATE_POLICY:
++    case STATE_STORES:
+       {
+         if (!is_all_whitespace (text, text_len))
+           g_set_error (error, G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT,
+@@ -1120,6 +1255,36 @@ handle_text (GMarkupParseContext *context,
+                    error);
+         return;
+       }
++
++    case STATE_STORE:
++      {
++        MetaConfigStore store;
++
++        if (parser->pending_store != -1)
++          {
++            g_set_error (error, G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT,
++                         "Multiple store strings");
++            return;
++          }
++
++        if (text_equals (text, text_len, "system"))
++          {
++            store = META_CONFIG_STORE_SYSTEM;
++          }
++        else if (text_equals (text, text_len, "user"))
++          {
++            store = META_CONFIG_STORE_USER;
++          }
++        else
++          {
++            g_set_error (error, G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT,
++                         "Invalid store %.*s", (int) text_len, text);
++            return;
++          }
++
++        parser->pending_store = store;
++        return;
++      }
+     }
+ }
+ 
+@@ -1133,6 +1298,7 @@ static gboolean
+ read_config_file (MetaMonitorConfigStore  *config_store,
+                   GFile                   *file,
+                   MetaMonitorsConfigFlag   extra_config_flags,
++                  GHashTable             **out_configs,
+                   GError                 **error)
+ {
+   char *buffer;
+@@ -1145,9 +1311,15 @@ read_config_file (MetaMonitorConfigStore  *config_store,
+ 
+   parser = (ConfigParser) {
+     .state = STATE_INITIAL,
++    .file = file,
+     .config_store = config_store,
++    .pending_configs = g_hash_table_new_full (meta_monitors_config_key_hash,
++                                              meta_monitors_config_key_equal,
++                                              NULL,
++                                              g_object_unref),
+     .extra_config_flags = extra_config_flags,
+     .unknown_state_root = -1,
++    .pending_store = -1,
+   };
+ 
+   parse_context = g_markup_parse_context_new (&config_parser,
+@@ -1165,9 +1337,13 @@ read_config_file (MetaMonitorConfigStore  *config_store,
+                       meta_monitor_config_free);
+       g_clear_pointer (&parser.current_logical_monitor_config,
+                        meta_logical_monitor_config_free);
++      g_list_free (parser.stores);
++      g_hash_table_unref (parser.pending_configs);
+       return FALSE;
+     }
+ 
++  *out_configs = g_steal_pointer (&parser.pending_configs);
++
+   g_markup_parse_context_free (parse_context);
+   g_free (buffer);
+ 
+@@ -1526,23 +1702,34 @@ meta_monitor_config_store_remove (MetaMonitorConfigStore *config_store,
+ }
+ 
+ gboolean
+-meta_monitor_config_store_set_custom (MetaMonitorConfigStore *config_store,
+-                                      const char             *read_path,
+-                                      const char             *write_path,
+-                                      GError                **error)
++meta_monitor_config_store_set_custom (MetaMonitorConfigStore  *config_store,
++                                      const char              *read_path,
++                                      const char              *write_path,
++                                      MetaMonitorsConfigFlag   config_flags,
++                                      GError                 **error)
+ {
++  GHashTable *new_configs = NULL;
++
+   g_clear_object (&config_store->custom_read_file);
+   g_clear_object (&config_store->custom_write_file);
+-  g_hash_table_remove_all (config_store->configs);
+ 
+   config_store->custom_read_file = g_file_new_for_path (read_path);
+   if (write_path)
+     config_store->custom_write_file = g_file_new_for_path (write_path);
+ 
+-  return read_config_file (config_store,
+-                           config_store->custom_read_file,
+-                           META_MONITORS_CONFIG_FLAG_NONE,
+-                           error);
++  g_clear_pointer (&config_store->stores_policy, g_list_free);
++  config_store->has_stores_policy = FALSE;
++
++  if (!read_config_file (config_store,
++                         config_store->custom_read_file,
++                         config_flags,
++                         &new_configs,
++                         error))
++    return FALSE;
++
++  g_clear_pointer (&config_store->configs, g_hash_table_unref);
++  config_store->configs = g_steal_pointer (&new_configs);
++  return TRUE;
+ }
+ 
+ int
+@@ -1551,6 +1738,12 @@ meta_monitor_config_store_get_config_count (MetaMonitorConfigStore *config_store
+   return (int) g_hash_table_size (config_store->configs);
+ }
+ 
++GList *
++meta_monitor_config_store_get_stores_policy (MetaMonitorConfigStore *config_store)
++{
++  return config_store->stores_policy;
++}
++
+ MetaMonitorManager *
+ meta_monitor_config_store_get_monitor_manager (MetaMonitorConfigStore *config_store)
+ {
+@@ -1569,75 +1762,8 @@ static void
+ meta_monitor_config_store_constructed (GObject *object)
+ {
+   MetaMonitorConfigStore *config_store = META_MONITOR_CONFIG_STORE (object);
+-  const char * const *system_dirs;
+-  char *user_file_path;
+-  GError *error = NULL;
+-
+-  for (system_dirs = g_get_system_config_dirs ();
+-       system_dirs && *system_dirs;
+-       system_dirs++)
+-    {
+-      g_autofree char *system_file_path = NULL;
+-
+-      system_file_path = g_build_filename (*system_dirs, "monitors.xml", NULL);
+-      if (g_file_test (system_file_path, G_FILE_TEST_EXISTS))
+-        {
+-          g_autoptr (GFile) system_file = NULL;
+-
+-          system_file = g_file_new_for_path (system_file_path);
+-          if (!read_config_file (config_store,
+-                                 system_file,
+-                                 META_MONITORS_CONFIG_FLAG_SYSTEM_CONFIG,
+-                                 &error))
+-            {
+-              if (g_error_matches (error,
+-                                   META_MONITOR_CONFIG_STORE_ERROR,
+-                                   META_MONITOR_CONFIG_STORE_ERROR_NEEDS_MIGRATION))
+-                g_warning ("System monitor configuration file (%s) is "
+-                           "incompatible; ask your administrator to migrate "
+-                           "the system monitor configuration.",
+-                           system_file_path);
+-              else
+-                g_warning ("Failed to read monitors config file '%s': %s",
+-                           system_file_path, error->message);
+-              g_clear_error (&error);
+-            }
+-        }
+-    }
+ 
+-  user_file_path = g_build_filename (g_get_user_config_dir (),
+-                                     "monitors.xml",
+-                                     NULL);
+-  config_store->user_file = g_file_new_for_path (user_file_path);
+-
+-  if (g_file_test (user_file_path, G_FILE_TEST_EXISTS))
+-    {
+-      if (!read_config_file (config_store,
+-                             config_store->user_file,
+-                             META_MONITORS_CONFIG_FLAG_NONE,
+-                             &error))
+-        {
+-          if (error->domain == META_MONITOR_CONFIG_STORE_ERROR &&
+-              error->code == META_MONITOR_CONFIG_STORE_ERROR_NEEDS_MIGRATION)
+-            {
+-              g_clear_error (&error);
+-              if (!meta_migrate_old_user_monitors_config (config_store, &error))
+-                {
+-                  g_warning ("Failed to migrate old monitors config file: %s",
+-                             error->message);
+-                  g_error_free (error);
+-                }
+-            }
+-          else
+-            {
+-              g_warning ("Failed to read monitors config file '%s': %s",
+-                         user_file_path, error->message);
+-              g_error_free (error);
+-            }
+-        }
+-    }
+-
+-  g_free (user_file_path);
++  meta_monitor_config_store_reset (config_store);
+ 
+   G_OBJECT_CLASS (meta_monitor_config_store_parent_class)->constructed (object);
+ }
+@@ -1660,6 +1786,7 @@ meta_monitor_config_store_dispose (GObject *object)
+   g_clear_object (&config_store->user_file);
+   g_clear_object (&config_store->custom_read_file);
+   g_clear_object (&config_store->custom_write_file);
++  g_clear_pointer (&config_store->stores_policy, g_list_free);
+ 
+   G_OBJECT_CLASS (meta_monitor_config_store_parent_class)->dispose (object);
+ }
+@@ -1730,3 +1857,133 @@ meta_monitor_config_store_class_init (MetaMonitorConfigStoreClass *klass)
+ 
+   g_object_class_install_properties (object_class, PROP_LAST, obj_props);
+ }
++
++static void
++replace_configs (MetaMonitorConfigStore *config_store,
++                 GHashTable             *configs)
++{
++  GHashTableIter iter;
++  MetaMonitorsConfigKey *key;
++  MetaMonitorsConfig *config;
++
++  g_hash_table_iter_init (&iter, configs);
++  while (g_hash_table_iter_next (&iter,
++                                 (gpointer *) &key,
++                                 (gpointer *) &config))
++    {
++      g_hash_table_iter_steal (&iter);
++      g_hash_table_replace (config_store->configs, key, config);
++    }
++}
++
++void
++meta_monitor_config_store_reset (MetaMonitorConfigStore *config_store)
++{
++  g_autoptr (GHashTable) system_configs = NULL;
++  g_autoptr (GHashTable) user_configs = NULL;
++  const char * const *system_dirs;
++  char *user_file_path;
++  GError *error = NULL;
++
++  g_clear_object (&config_store->user_file);
++  g_clear_object (&config_store->custom_read_file);
++  g_clear_object (&config_store->custom_write_file);
++  g_hash_table_remove_all (config_store->configs);
++
++  for (system_dirs = g_get_system_config_dirs ();
++       system_dirs && *system_dirs;
++       system_dirs++)
++    {
++      g_autofree char *system_file_path = NULL;
++
++      system_file_path = g_build_filename (*system_dirs, "monitors.xml", NULL);
++      if (g_file_test (system_file_path, G_FILE_TEST_EXISTS))
++        {
++          g_autoptr (GFile) system_file = NULL;
++
++          system_file = g_file_new_for_path (system_file_path);
++          if (!read_config_file (config_store,
++                                 system_file,
++                                 META_MONITORS_CONFIG_FLAG_SYSTEM_CONFIG,
++                                 &system_configs,
++                                 &error))
++            {
++              if (g_error_matches (error,
++                                   META_MONITOR_CONFIG_STORE_ERROR,
++                                   META_MONITOR_CONFIG_STORE_ERROR_NEEDS_MIGRATION))
++                g_warning ("System monitor configuration file (%s) is "
++                           "incompatible; ask your administrator to migrate "
++                           "the system monitor configuration.",
++                           system_file_path);
++              else
++                g_warning ("Failed to read monitors config file '%s': %s",
++                           system_file_path, error->message);
++              g_clear_error (&error);
++            }
++        }
++    }
++
++  user_file_path = g_build_filename (g_get_user_config_dir (),
++                                     "monitors.xml",
++                                     NULL);
++  config_store->user_file = g_file_new_for_path (user_file_path);
++
++  if (g_file_test (user_file_path, G_FILE_TEST_EXISTS))
++    {
++      if (!read_config_file (config_store,
++                             config_store->user_file,
++                             META_MONITORS_CONFIG_FLAG_NONE,
++                             &user_configs,
++                             &error))
++        {
++          if (error->domain == META_MONITOR_CONFIG_STORE_ERROR &&
++              error->code == META_MONITOR_CONFIG_STORE_ERROR_NEEDS_MIGRATION)
++            {
++              g_clear_error (&error);
++              if (!meta_migrate_old_user_monitors_config (config_store, &error))
++                {
++                  g_warning ("Failed to migrate old monitors config file: %s",
++                             error->message);
++                  g_error_free (error);
++                }
++            }
++          else
++            {
++              g_warning ("Failed to read monitors config file '%s': %s",
++                         user_file_path, error->message);
++              g_error_free (error);
++            }
++        }
++    }
++
++  if (config_store->has_stores_policy)
++    {
++      GList *l;
++
++      for (l = g_list_last (config_store->stores_policy); l; l = l->prev)
++        {
++          MetaConfigStore store = GPOINTER_TO_INT (l->data);
++
++          switch (store)
++            {
++            case META_CONFIG_STORE_SYSTEM:
++              if (system_configs)
++                replace_configs (config_store, system_configs);
++              break;
++            case META_CONFIG_STORE_USER:
++              if (user_configs)
++                replace_configs (config_store, user_configs);
++            }
++        }
++    }
++  else
++    {
++      if (system_configs)
++        replace_configs (config_store, system_configs);
++      if (user_configs)
++        replace_configs (config_store, user_configs);
++    }
++
++
++  g_free (user_file_path);
++}
+diff --git a/src/backends/meta-monitor-config-store.h b/src/backends/meta-monitor-config-store.h
+index 92c24ecaa8b6..cb6759dca00f 100644
+--- a/src/backends/meta-monitor-config-store.h
++++ b/src/backends/meta-monitor-config-store.h
+@@ -26,6 +26,12 @@
+ 
+ #include "backends/meta-monitor-config-manager.h"
+ 
++typedef enum _MetaConfigStore
++{
++  META_CONFIG_STORE_SYSTEM,
++  META_CONFIG_STORE_USER,
++} MetaConfigStore;
++
+ #define META_TYPE_MONITOR_CONFIG_STORE (meta_monitor_config_store_get_type ())
+ G_DECLARE_FINAL_TYPE (MetaMonitorConfigStore, meta_monitor_config_store,
+                       META, MONITOR_CONFIG_STORE, GObject)
+@@ -46,10 +52,14 @@ void meta_monitor_config_store_remove (MetaMonitorConfigStore *config_store,
+                                        MetaMonitorsConfig     *config);
+ 
+ META_EXPORT_TEST
+-gboolean meta_monitor_config_store_set_custom (MetaMonitorConfigStore *config_store,
+-                                               const char             *read_path,
+-                                               const char             *write_path,
+-                                               GError                **error);
++gboolean meta_monitor_config_store_set_custom (MetaMonitorConfigStore  *config_store,
++                                               const char              *read_path,
++                                               const char              *write_path,
++                                               MetaMonitorsConfigFlag   flags,
++                                               GError                 **error);
++
++META_EXPORT_TEST
++GList * meta_monitor_config_store_get_stores_policy (MetaMonitorConfigStore *config_store);
+ 
+ META_EXPORT_TEST
+ int meta_monitor_config_store_get_config_count (MetaMonitorConfigStore *config_store);
+@@ -57,4 +67,7 @@ int meta_monitor_config_store_get_config_count (MetaMonitorConfigStore *config_s
+ META_EXPORT_TEST
+ MetaMonitorManager * meta_monitor_config_store_get_monitor_manager (MetaMonitorConfigStore *config_store);
+ 
++META_EXPORT_TEST
++void meta_monitor_config_store_reset (MetaMonitorConfigStore *config_store);
++
+ #endif /* META_MONITOR_CONFIG_STORE_H */
+diff --git a/src/tests/monitor-config-migration-unit-tests.c b/src/tests/monitor-config-migration-unit-tests.c
+index bb2ac62ccdbc..df22ee3a8d39 100644
+--- a/src/tests/monitor-config-migration-unit-tests.c
++++ b/src/tests/monitor-config-migration-unit-tests.c
+@@ -55,6 +55,7 @@ test_migration (const char *old_config,
+                                     NULL);
+   if (!meta_monitor_config_store_set_custom (config_store, "/dev/null",
+                                              migrated_path,
++                                             META_MONITORS_CONFIG_FLAG_NONE,
+                                              &error))
+     g_error ("Failed to set custom config store: %s", error->message);
+ 
+diff --git a/src/tests/monitor-configs/policy.xml b/src/tests/monitor-configs/policy.xml
+new file mode 100644
+index 000000000000..760046513e6e
+--- /dev/null
++++ b/src/tests/monitor-configs/policy.xml
+@@ -0,0 +1,27 @@
++<monitors version="2">
++  <policy>
++    <stores>
++      <store>system</store>
++    </stores>
++  </policy>
++  <configuration>
++    <logicalmonitor>
++      <x>0</x>
++      <y>0</y>
++      <primary>yes</primary>
++      <monitor>
++	<monitorspec>
++	  <connector>DP-1</connector>
++	  <vendor>MetaProduct&apos;s Inc.</vendor>
++	  <product>MetaMonitor</product>
++	  <serial>0x123456</serial>
++	</monitorspec>
++	<mode>
++	  <width>1920</width>
++	  <height>1080</height>
++	  <rate>60</rate>
++	</mode>
++      </monitor>
++    </logicalmonitor>
++  </configuration>
++</monitors>
+diff --git a/src/tests/monitor-store-unit-tests.c b/src/tests/monitor-store-unit-tests.c
+index 64618174f4b3..f7efa894b479 100644
+--- a/src/tests/monitor-store-unit-tests.c
++++ b/src/tests/monitor-store-unit-tests.c
+@@ -890,6 +890,35 @@ meta_test_monitor_store_unknown_elements (void)
+   check_monitor_store_configurations (&expect);
+ }
+ 
++static void
++meta_test_monitor_store_policy_not_allowed (void)
++{
++  g_test_expect_message (G_LOG_DOMAIN, G_LOG_LEVEL_WARNING,
++                         "*Policy can only be defined in system level "
++                         "configurations*");
++  set_custom_monitor_config ("policy.xml");
++  g_test_assert_expected_messages ();
++}
++
++static void
++meta_test_monitor_store_policy (void)
++{
++  MetaBackend *backend = meta_get_backend ();
++  MetaMonitorManager *monitor_manager =
++    meta_backend_get_monitor_manager (backend);
++  MetaMonitorConfigManager *config_manager = monitor_manager->config_manager;
++  MetaMonitorConfigStore *config_store =
++    meta_monitor_config_manager_get_store (config_manager);
++  GList *stores_policy;
++
++  set_custom_monitor_system_config ("policy.xml");
++  stores_policy = meta_monitor_config_store_get_stores_policy (config_store);
++  g_assert_cmpuint (g_list_length (stores_policy), ==, 1);
++  g_assert_cmpint (GPOINTER_TO_INT (stores_policy->data),
++                   ==,
++                   META_CONFIG_STORE_SYSTEM);
++}
++
+ void
+ init_monitor_store_tests (void)
+ {
+@@ -917,4 +946,8 @@ init_monitor_store_tests (void)
+                    meta_test_monitor_store_interlaced);
+   g_test_add_func ("/backends/monitor-store/unknown-elements",
+                    meta_test_monitor_store_unknown_elements);
++  g_test_add_func ("/backends/monitor-store/policy-not-allowed",
++                   meta_test_monitor_store_policy_not_allowed);
++  g_test_add_func ("/backends/monitor-store/policy",
++                   meta_test_monitor_store_policy);
+ }
+diff --git a/src/tests/monitor-test-utils.c b/src/tests/monitor-test-utils.c
+index 98958a5042ee..38401e54c847 100644
+--- a/src/tests/monitor-test-utils.c
++++ b/src/tests/monitor-test-utils.c
+@@ -36,10 +36,24 @@ test_get_gpu (void)
+   return META_GPU (meta_backend_get_gpus (meta_get_backend ())->data);
+ }
+ 
++static void
++set_custom_monitor_config_common (const char             *filename,
++                                  MetaMonitorsConfigFlag  configs_flags)
++{
++  meta_set_custom_monitor_config (meta_get_backend (), filename, configs_flags);
++}
++
+ void
+ set_custom_monitor_config (const char *filename)
+ {
+-  meta_set_custom_monitor_config (meta_get_backend (), filename);
++  set_custom_monitor_config_common (filename, META_MONITORS_CONFIG_FLAG_NONE);
++}
++
++void
++set_custom_monitor_system_config (const char *filename)
++{
++  set_custom_monitor_config_common (filename,
++                                    META_MONITORS_CONFIG_FLAG_SYSTEM_CONFIG);
+ }
+ 
+ char *
+diff --git a/src/tests/monitor-test-utils.h b/src/tests/monitor-test-utils.h
+index 3ebf1ff796ac..e5d16c438c2f 100644
+--- a/src/tests/monitor-test-utils.h
++++ b/src/tests/monitor-test-utils.h
+@@ -196,6 +196,8 @@ MetaGpu * test_get_gpu (void);
+ 
+ void set_custom_monitor_config (const char *filename);
+ 
++void set_custom_monitor_system_config (const char *filename);
++
+ char * read_file (const char *file_path);
+ 
+ void check_monitor_configuration (MonitorTestCaseExpect *expect);
+diff --git a/src/tests/monitor-unit-tests.c b/src/tests/monitor-unit-tests.c
+index f05bdb2773a8..ce332b7d4dcd 100644
+--- a/src/tests/monitor-unit-tests.c
++++ b/src/tests/monitor-unit-tests.c
+@@ -5277,6 +5277,7 @@ meta_test_monitor_migrated_rotated (void)
+   if (!meta_monitor_config_store_set_custom (config_store,
+                                              "/dev/null",
+                                              migrated_path,
++                                             META_MONITORS_CONFIG_FLAG_NONE,
+                                              &error))
+     g_error ("Failed to set custom config store files: %s", error->message);
+ 
+@@ -5418,6 +5419,7 @@ meta_test_monitor_migrated_wiggle_discard (void)
+   if (!meta_monitor_config_store_set_custom (config_store,
+                                              "/dev/null",
+                                              migrated_path,
++                                             META_MONITORS_CONFIG_FLAG_NONE,
+                                              &error))
+     g_error ("Failed to set custom config store files: %s", error->message);
+ 
+@@ -5684,6 +5686,7 @@ meta_test_monitor_migrated_wiggle (void)
+   if (!meta_monitor_config_store_set_custom (config_store,
+                                              "/dev/null",
+                                              migrated_path,
++                                             META_MONITORS_CONFIG_FLAG_NONE,
+                                              &error))
+     g_error ("Failed to set custom config store files: %s", error->message);
+ 
+diff --git a/src/tests/test-utils.c b/src/tests/test-utils.c
+index bee6aa102c0e..49cef3b4c37f 100644
+--- a/src/tests/test-utils.c
++++ b/src/tests/test-utils.c
+@@ -578,8 +578,9 @@ test_wait_for_x11_display (void)
+ }
+ 
+ void
+-meta_set_custom_monitor_config (MetaBackend *backend,
+-                                const char  *filename)
++meta_set_custom_monitor_config (MetaBackend            *backend,
++                                const char             *filename,
++                                MetaMonitorsConfigFlag  configs_flags)
+ {
+   MetaMonitorManager *monitor_manager =
+     meta_backend_get_monitor_manager (backend);
+@@ -595,8 +596,9 @@ meta_set_custom_monitor_config (MetaBackend *backend,
+   path = g_test_get_filename (G_TEST_DIST, "tests", "monitor-configs",
+                               filename, NULL);
+   if (!meta_monitor_config_store_set_custom (config_store, path, NULL,
++                                             configs_flags,
+                                              &error))
+-    g_error ("Failed to set custom config: %s", error->message);
++    g_warning ("Failed to set custom config: %s", error->message);
+ }
+ 
+ static void
+diff --git a/src/tests/test-utils.h b/src/tests/test-utils.h
+index 4b6aa34e8998..3b20e27f66e1 100644
+--- a/src/tests/test-utils.h
++++ b/src/tests/test-utils.h
+@@ -24,6 +24,7 @@
+ #include <X11/Xlib.h>
+ #include <X11/extensions/sync.h>
+ 
++#include "backends/meta-backend-types.h"
+ #include "meta/window.h"
+ 
+ #define TEST_RUNNER_ERROR test_runner_error_quark ()
+@@ -86,8 +87,9 @@ const char * test_get_plugin_name (void);
+ 
+ void test_wait_for_x11_display (void);
+ 
+-void meta_set_custom_monitor_config (MetaBackend *backend,
+-                                     const char  *filename);
++void meta_set_custom_monitor_config (MetaBackend            *backend,
++                                     const char             *filename,
++                                     MetaMonitorsConfigFlag  configs_flags);
+ 
+ void meta_wait_for_paint (MetaBackend *backend);
+ 
+-- 
+2.33.1
+
+
+From f79a90d0e366eee7669013448becf7dfcb96a6cb Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Fri, 24 Sep 2021 19:07:32 +0200
+Subject: [PATCH 6/9] tests: Add more monitor config policy parsing tests
+
+(cherry picked from commit 48a3ff845fabf0f23568d3c798e047e9b303bffd)
+---
+ .../monitor-configs/policy-duplicate.xml      |  8 ++++
+ src/tests/monitor-configs/policy-empty.xml    |  7 +++
+ src/tests/monitor-configs/policy-invalid.xml  |  8 ++++
+ src/tests/monitor-configs/policy-multiple.xml | 12 +++++
+ src/tests/monitor-store-unit-tests.c          | 44 +++++++++++++++++++
+ 5 files changed, 79 insertions(+)
+ create mode 100644 src/tests/monitor-configs/policy-duplicate.xml
+ create mode 100644 src/tests/monitor-configs/policy-empty.xml
+ create mode 100644 src/tests/monitor-configs/policy-invalid.xml
+ create mode 100644 src/tests/monitor-configs/policy-multiple.xml
+
+diff --git a/src/tests/monitor-configs/policy-duplicate.xml b/src/tests/monitor-configs/policy-duplicate.xml
+new file mode 100644
+index 000000000000..d93cc81a4906
+--- /dev/null
++++ b/src/tests/monitor-configs/policy-duplicate.xml
+@@ -0,0 +1,8 @@
++<monitors version="2">
++  <policy>
++    <stores>
++      <store>user</store>
++      <store>user</store>
++    </stores>
++  </policy>
++</monitors>
+diff --git a/src/tests/monitor-configs/policy-empty.xml b/src/tests/monitor-configs/policy-empty.xml
+new file mode 100644
+index 000000000000..f56026b66846
+--- /dev/null
++++ b/src/tests/monitor-configs/policy-empty.xml
+@@ -0,0 +1,7 @@
++<monitors version="2">
++  <policy>
++    <stores>
++      <store></store>
++    </stores>
++  </policy>
++</monitors>
+diff --git a/src/tests/monitor-configs/policy-invalid.xml b/src/tests/monitor-configs/policy-invalid.xml
+new file mode 100644
+index 000000000000..fc4552fbefc7
+--- /dev/null
++++ b/src/tests/monitor-configs/policy-invalid.xml
+@@ -0,0 +1,8 @@
++<monitors version="2">
++  <policy>
++    <stores>
++      <store>user</store>
++      <store>not-a-store</store>
++    </stores>
++  </policy>
++</monitors>
+diff --git a/src/tests/monitor-configs/policy-multiple.xml b/src/tests/monitor-configs/policy-multiple.xml
+new file mode 100644
+index 000000000000..ffeb79aafe8a
+--- /dev/null
++++ b/src/tests/monitor-configs/policy-multiple.xml
+@@ -0,0 +1,12 @@
++<monitors version="2">
++  <policy>
++    <stores>
++      <store>user</store>
++      <store>system</store>
++    </stores>
++    <stores>
++      <store>system</store>
++      <store>user</store>
++    </stores>
++  </policy>
++</monitors>
+diff --git a/src/tests/monitor-store-unit-tests.c b/src/tests/monitor-store-unit-tests.c
+index f7efa894b479..37b0675d0bf9 100644
+--- a/src/tests/monitor-store-unit-tests.c
++++ b/src/tests/monitor-store-unit-tests.c
+@@ -919,6 +919,42 @@ meta_test_monitor_store_policy (void)
+                    META_CONFIG_STORE_SYSTEM);
+ }
+ 
++static void
++meta_test_monitor_store_policy_empty (void)
++{
++  g_test_expect_message (G_LOG_DOMAIN, G_LOG_LEVEL_WARNING,
++                         "*Invalid store*");
++  set_custom_monitor_system_config ("policy-empty.xml");
++  g_test_assert_expected_messages ();
++}
++
++static void
++meta_test_monitor_store_policy_duplicate (void)
++{
++  g_test_expect_message (G_LOG_DOMAIN, G_LOG_LEVEL_WARNING,
++                         "*Multiple identical stores*");
++  set_custom_monitor_system_config ("policy-duplicate.xml");
++  g_test_assert_expected_messages ();
++}
++
++static void
++meta_test_monitor_store_policy_invalid (void)
++{
++  g_test_expect_message (G_LOG_DOMAIN, G_LOG_LEVEL_WARNING,
++                         "*Invalid store*");
++  set_custom_monitor_system_config ("policy-invalid.xml");
++  g_test_assert_expected_messages ();
++}
++
++static void
++meta_test_monitor_store_policy_multiple (void)
++{
++  g_test_expect_message (G_LOG_DOMAIN, G_LOG_LEVEL_WARNING,
++                         "*Multiple stores elements under policy*");
++  set_custom_monitor_system_config ("policy-multiple.xml");
++  g_test_assert_expected_messages ();
++}
++
+ void
+ init_monitor_store_tests (void)
+ {
+@@ -950,4 +986,12 @@ init_monitor_store_tests (void)
+                    meta_test_monitor_store_policy_not_allowed);
+   g_test_add_func ("/backends/monitor-store/policy",
+                    meta_test_monitor_store_policy);
++  g_test_add_func ("/backends/monitor-store/policy-empty",
++                   meta_test_monitor_store_policy_empty);
++  g_test_add_func ("/backends/monitor-store/policy-duplicate",
++                   meta_test_monitor_store_policy_duplicate);
++  g_test_add_func ("/backends/monitor-store/policy-invalid",
++                   meta_test_monitor_store_policy_invalid);
++  g_test_add_func ("/backends/monitor-store/policy-multiple",
++                   meta_test_monitor_store_policy_multiple);
+ }
+-- 
+2.33.1
+
+
+From b884aa26afbfc6a90d9777fd077e885373200e45 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Thu, 30 Sep 2021 17:32:31 +0200
+Subject: [PATCH 7/9] monitor-config-store: Add test for monitor configuration
+ policy
+
+The test aims to verify that setting the following policy
+
+    <policy>
+      <stores>
+        <store>system</store>
+      </stores>
+    </policy>
+
+only applies monitor configurations from the system level.
+
+(cherry picked from commit 9969a8aa25623dbff51e120d85ab202026571bb1)
+---
+ src/tests/monitor-configs/system/monitors.xml |  27 ++++
+ src/tests/monitor-configs/user/monitors.xml   |  22 +++
+ src/tests/monitor-store-unit-tests.c          |  17 +++
+ src/tests/monitor-unit-tests.c                | 132 ++++++++++++++++++
+ 4 files changed, 198 insertions(+)
+ create mode 100644 src/tests/monitor-configs/system/monitors.xml
+ create mode 100644 src/tests/monitor-configs/user/monitors.xml
+
+diff --git a/src/tests/monitor-configs/system/monitors.xml b/src/tests/monitor-configs/system/monitors.xml
+new file mode 100644
+index 000000000000..4d2eafec1327
+--- /dev/null
++++ b/src/tests/monitor-configs/system/monitors.xml
+@@ -0,0 +1,27 @@
++<monitors version="2">
++  <policy>
++    <stores>
++      <store>system</store>
++    </stores>
++  </policy>
++  <configuration>
++    <logicalmonitor>
++      <x>0</x>
++      <y>0</y>
++      <primary>yes</primary>
++      <monitor>
++	<monitorspec>
++	  <connector>DP-1</connector>
++	  <vendor>MetaProduct&apos;s Inc.</vendor>
++	  <product>MetaMonitor</product>
++	  <serial>0x123456</serial>
++	</monitorspec>
++	<mode>
++	  <width>640</width>
++	  <height>480</height>
++	  <rate>60</rate>
++	</mode>
++      </monitor>
++    </logicalmonitor>
++  </configuration>
++</monitors>
+diff --git a/src/tests/monitor-configs/user/monitors.xml b/src/tests/monitor-configs/user/monitors.xml
+new file mode 100644
+index 000000000000..f125972e01e7
+--- /dev/null
++++ b/src/tests/monitor-configs/user/monitors.xml
+@@ -0,0 +1,22 @@
++<monitors version="2">
++  <configuration>
++    <logicalmonitor>
++      <x>0</x>
++      <y>0</y>
++      <primary>yes</primary>
++      <monitor>
++	<monitorspec>
++	  <connector>DP-1</connector>
++	  <vendor>MetaProduct&apos;s Inc.</vendor>
++	  <product>MetaMonitor</product>
++	  <serial>0x123456</serial>
++	</monitorspec>
++	<mode>
++	  <width>800</width>
++	  <height>600</height>
++	  <rate>60</rate>
++	</mode>
++      </monitor>
++    </logicalmonitor>
++  </configuration>
++</monitors>
+diff --git a/src/tests/monitor-store-unit-tests.c b/src/tests/monitor-store-unit-tests.c
+index 37b0675d0bf9..3ea3d94dbe35 100644
+--- a/src/tests/monitor-store-unit-tests.c
++++ b/src/tests/monitor-store-unit-tests.c
+@@ -958,6 +958,23 @@ meta_test_monitor_store_policy_multiple (void)
+ void
+ init_monitor_store_tests (void)
+ {
++  char *path;
++
++  path = g_test_build_filename (G_TEST_DIST,
++                                "tests",
++                                "monitor-configs",
++                                "system",
++                                NULL);
++  g_setenv ("XDG_CONFIG_DIRS", path, TRUE);
++  g_free (path);
++  path = g_test_build_filename (G_TEST_DIST,
++                                "tests",
++                                "monitor-configs",
++                                "user",
++                                NULL);
++  g_setenv ("XDG_CONFIG_HOME", path, TRUE);
++  g_free (path);
++
+   g_test_add_func ("/backends/monitor-store/single",
+                    meta_test_monitor_store_single);
+   g_test_add_func ("/backends/monitor-store/vertical",
+diff --git a/src/tests/monitor-unit-tests.c b/src/tests/monitor-unit-tests.c
+index ce332b7d4dcd..91d88d0325d9 100644
+--- a/src/tests/monitor-unit-tests.c
++++ b/src/tests/monitor-unit-tests.c
+@@ -5722,6 +5722,135 @@ meta_test_monitor_migrated_wiggle (void)
+     g_error ("Failed to remove test data output file: %s", error->message);
+ }
+ 
++static void
++meta_test_monitor_policy_system_only (void)
++{
++  MetaMonitorTestSetup *test_setup;
++  MonitorTestCase test_case = {
++    .setup = {
++      .modes = {
++        {
++          .width = 1024,
++          .height = 768,
++          .refresh_rate = 60.0
++        },
++        {
++          .width = 800,
++          .height = 600,
++          .refresh_rate = 60.0
++        },
++        {
++          .width = 640,
++          .height = 480,
++          .refresh_rate = 60.0
++        }
++      },
++      .n_modes = 3,
++      .outputs = {
++         {
++          .crtc = 0,
++          .modes = { 0, 1, 2 },
++          .n_modes = 3,
++          .preferred_mode = 0,
++          .possible_crtcs = { 0 },
++          .n_possible_crtcs = 1,
++          .width_mm = 222,
++          .height_mm = 125
++        },
++      },
++      .n_outputs = 1,
++      .crtcs = {
++        {
++          .current_mode = 0
++        }
++      },
++      .n_crtcs = 1
++    },
++
++    .expect = {
++      .monitors = {
++        {
++          .outputs = { 0 },
++          .n_outputs = 1,
++          .modes = {
++            {
++              .width = 1024,
++              .height = 768,
++              .refresh_rate = 60.0,
++              .crtc_modes = {
++                {
++                  .output = 0,
++                  .crtc_mode = 0
++                }
++              }
++            },
++            {
++              .width = 800,
++              .height = 600,
++              .refresh_rate = 60.0,
++              .crtc_modes = {
++                {
++                  .output = 0,
++                  .crtc_mode = 1
++                }
++              }
++            },
++            {
++              .width = 640,
++              .height = 480,
++              .refresh_rate = 60.0,
++              .crtc_modes = {
++                {
++                  .output = 0,
++                  .crtc_mode = 2
++                }
++              }
++            }
++          },
++          .n_modes = 3,
++          .current_mode = 2,
++          .width_mm = 222,
++          .height_mm = 125
++        },
++      },
++      .n_monitors = 1,
++      .logical_monitors = {
++        {
++          .monitors = { 0 },
++          .n_monitors = 1,
++          .layout = { .x = 0, .y = 0, .width = 640, .height = 480 },
++          .scale = 1
++        },
++      },
++      .n_logical_monitors = 1,
++      .primary_logical_monitor = 0,
++      .n_outputs = 1,
++      .crtcs = {
++        {
++          .current_mode = 2,
++          .x = 0,
++        }
++      },
++      .n_crtcs = 1,
++      .screen_width = 640,
++      .screen_height = 480,
++    }
++  };
++  MetaBackend *backend = meta_get_backend ();
++  MetaMonitorManager *monitor_manager =
++    meta_backend_get_monitor_manager (backend);
++  MetaMonitorConfigManager *config_manager = monitor_manager->config_manager;
++  MetaMonitorConfigStore *config_store =
++    meta_monitor_config_manager_get_store (config_manager);
++
++  test_setup = create_monitor_test_setup (&test_case.setup,
++                                          MONITOR_TEST_FLAG_NONE);
++
++  meta_monitor_config_store_reset (config_store);
++  emulate_hotplug (test_setup);
++  check_monitor_configuration (&test_case.expect);
++}
++
+ static void
+ test_case_setup (void       **fixture,
+                  const void   *data)
+@@ -5848,6 +5977,9 @@ init_monitor_tests (void)
+ 
+   add_monitor_test ("/backends/monitor/wm/tiling",
+                     meta_test_monitor_wm_tiling);
++
++  add_monitor_test ("/backends/monitor/policy/system-only",
++                    meta_test_monitor_policy_system_only);
+ }
+ 
+ void
+-- 
+2.33.1
+
+
+From cc88250c8a4e201c643ec7ada344323104549eb2 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Thu, 30 Sep 2021 21:06:38 +0200
+Subject: [PATCH 8/9] monitor-config-store: Allow changing D-Bus configuration
+ policy
+
+Adding a <dbus/> element containing a boolean (yes/no) determines
+whether org.gnome.Mutter.DisplayConfig ApplyMonitorsConfig will be
+callable. The state is also introspectable via the
+ApplyMonitorsConfigAllowed property on the same interface.
+
+For example
+
+    <monitors version="2">
+      <policy>
+        <dbus>no</dbus>
+      </policy>
+    </monitors>
+
+(cherry picked from commit f2c7ae821b7af7e732e588e7548238dd814e5f84)
+---
+ src/backends/meta-monitor-config-store.c      | 68 +++++++++++++++++++
+ src/backends/meta-monitor-config-store.h      |  8 +++
+ src/backends/meta-monitor-manager.c           | 24 +++++++
+ src/org.gnome.Mutter.DisplayConfig.xml        |  7 ++
+ .../monitor-configs/policy-dbus-invalid.xml   |  6 ++
+ src/tests/monitor-configs/policy-dbus.xml     |  5 ++
+ src/tests/monitor-store-unit-tests.c          | 49 +++++++++++++
+ 7 files changed, 167 insertions(+)
+ create mode 100644 src/tests/monitor-configs/policy-dbus-invalid.xml
+ create mode 100644 src/tests/monitor-configs/policy-dbus.xml
+
+diff --git a/src/backends/meta-monitor-config-store.c b/src/backends/meta-monitor-config-store.c
+index 93a494c79b80..5d48ec2ea5cf 100644
+--- a/src/backends/meta-monitor-config-store.c
++++ b/src/backends/meta-monitor-config-store.c
+@@ -123,6 +123,9 @@ struct _MetaMonitorConfigStore
+ 
+   gboolean has_stores_policy;
+   GList *stores_policy;
++
++  gboolean has_dbus_policy;
++  MetaMonitorConfigPolicy policy;
+ };
+ 
+ #define META_MONITOR_CONFIG_STORE_ERROR (meta_monitor_config_store_error_quark ())
+@@ -168,6 +171,7 @@ typedef enum
+   STATE_POLICY,
+   STATE_STORES,
+   STATE_STORE,
++  STATE_DBUS,
+ } ParserState;
+ 
+ typedef struct
+@@ -191,9 +195,13 @@ typedef struct
+   GList *current_disabled_monitor_specs;
+   gboolean seen_policy;
+   gboolean seen_stores;
++  gboolean seen_dbus;
+   MetaConfigStore pending_store;
+   GList *stores;
+ 
++  gboolean enable_dbus_set;
++  gboolean enable_dbus;
++
+   ParserState unknown_state_root;
+   int unknown_level;
+ 
+@@ -574,6 +582,19 @@ handle_start_element (GMarkupParseContext  *context,
+             parser->seen_stores = TRUE;
+             parser->state = STATE_STORES;
+           }
++        else if (g_str_equal (element_name, "dbus"))
++          {
++            if (parser->seen_dbus)
++              {
++                g_set_error (error,
++                             G_MARKUP_ERROR, G_MARKUP_ERROR_UNKNOWN_ELEMENT,
++                             "Multiple dbus elements under policy");
++                return;
++              }
++
++            parser->seen_dbus = TRUE;
++            parser->state = STATE_DBUS;
++          }
+         else
+           {
+             enter_unknown_element (parser, element_name,
+@@ -604,6 +625,13 @@ handle_start_element (GMarkupParseContext  *context,
+                      "Invalid store sub element '%s'", element_name);
+         return;
+       }
++
++    case STATE_DBUS:
++      {
++        g_set_error (error, G_MARKUP_ERROR, G_MARKUP_ERROR_UNKNOWN_ELEMENT,
++                     "Invalid dbus sub element '%s'", element_name);
++        return;
++      }
+     }
+ }
+ 
+@@ -953,6 +981,23 @@ handle_end_element (GMarkupParseContext  *context,
+         parser->state = STATE_POLICY;
+         return;
+ 
++    case STATE_DBUS:
++        if (!parser->config_store->has_dbus_policy)
++          {
++            parser->config_store->has_dbus_policy = TRUE;
++            parser->config_store->policy.enable_dbus = parser->enable_dbus;
++            parser->enable_dbus_set = FALSE;
++          }
++        else
++          {
++            g_warning ("Policy for monitor configuration via D-Bus "
++                       "has already been set, ignoring policy from '%s'",
++                       g_file_get_path (parser->file));
++          }
++        parser->state = STATE_POLICY;
++
++        return;
++
+     case STATE_POLICY:
+         g_assert (g_str_equal (element_name, "policy"));
+ 
+@@ -1285,6 +1330,15 @@ handle_text (GMarkupParseContext *context,
+         parser->pending_store = store;
+         return;
+       }
++
++    case STATE_DBUS:
++      {
++        parser->enable_dbus_set = TRUE;
++        read_bool (text, text_len,
++                   &parser->enable_dbus,
++                   error);
++        return;
++      }
+     }
+ }
+ 
+@@ -1643,6 +1697,11 @@ meta_monitor_config_store_save (MetaMonitorConfigStore *config_store)
+       return;
+     }
+ 
++  if (config_store->has_stores_policy &&
++      !g_list_find (config_store->stores_policy,
++                    GINT_TO_POINTER (META_CONFIG_STORE_USER)))
++    return;
++
+   config_store->save_cancellable = g_cancellable_new ();
+ 
+   buffer = generate_config_xml (config_store);
+@@ -1719,6 +1778,8 @@ meta_monitor_config_store_set_custom (MetaMonitorConfigStore  *config_store,
+ 
+   g_clear_pointer (&config_store->stores_policy, g_list_free);
+   config_store->has_stores_policy = FALSE;
++  config_store->policy.enable_dbus = TRUE;
++  config_store->has_dbus_policy = FALSE;
+ 
+   if (!read_config_file (config_store,
+                          config_store->custom_read_file,
+@@ -1834,6 +1895,7 @@ meta_monitor_config_store_init (MetaMonitorConfigStore *config_store)
+                                                  meta_monitors_config_key_equal,
+                                                  NULL,
+                                                  g_object_unref);
++  config_store->policy.enable_dbus = TRUE;
+ }
+ 
+ static void
+@@ -1987,3 +2049,9 @@ meta_monitor_config_store_reset (MetaMonitorConfigStore *config_store)
+ 
+   g_free (user_file_path);
+ }
++
++const MetaMonitorConfigPolicy *
++meta_monitor_config_store_get_policy (MetaMonitorConfigStore *config_store)
++{
++  return &config_store->policy;
++}
+diff --git a/src/backends/meta-monitor-config-store.h b/src/backends/meta-monitor-config-store.h
+index cb6759dca00f..a255e370baaf 100644
+--- a/src/backends/meta-monitor-config-store.h
++++ b/src/backends/meta-monitor-config-store.h
+@@ -32,6 +32,11 @@ typedef enum _MetaConfigStore
+   META_CONFIG_STORE_USER,
+ } MetaConfigStore;
+ 
++typedef struct _MetaMonitorConfigPolicy
++{
++  gboolean enable_dbus;
++} MetaMonitorConfigPolicy;
++
+ #define META_TYPE_MONITOR_CONFIG_STORE (meta_monitor_config_store_get_type ())
+ G_DECLARE_FINAL_TYPE (MetaMonitorConfigStore, meta_monitor_config_store,
+                       META, MONITOR_CONFIG_STORE, GObject)
+@@ -70,4 +75,7 @@ MetaMonitorManager * meta_monitor_config_store_get_monitor_manager (MetaMonitorC
+ META_EXPORT_TEST
+ void meta_monitor_config_store_reset (MetaMonitorConfigStore *config_store);
+ 
++META_EXPORT_TEST
++const MetaMonitorConfigPolicy * meta_monitor_config_store_get_policy (MetaMonitorConfigStore *config_store);
++
+ #endif /* META_MONITOR_CONFIG_STORE_H */
+diff --git a/src/backends/meta-monitor-manager.c b/src/backends/meta-monitor-manager.c
+index 9e57db94cddd..75146950c38a 100644
+--- a/src/backends/meta-monitor-manager.c
++++ b/src/backends/meta-monitor-manager.c
+@@ -51,6 +51,7 @@
+ #include "backends/meta-logical-monitor.h"
+ #include "backends/meta-monitor.h"
+ #include "backends/meta-monitor-config-manager.h"
++#include "backends/meta-monitor-config-store.h"
+ #include "backends/meta-orientation-manager.h"
+ #include "backends/meta-output.h"
+ #include "backends/meta-virtual-monitor.h"
+@@ -954,9 +955,18 @@ update_panel_orientation_managed (MetaMonitorManager *manager)
+ void
+ meta_monitor_manager_setup (MetaMonitorManager *manager)
+ {
++  MetaMonitorConfigStore *config_store;
++  const MetaMonitorConfigPolicy *policy;
++
+   manager->in_init = TRUE;
+ 
+   manager->config_manager = meta_monitor_config_manager_new (manager);
++  config_store =
++    meta_monitor_config_manager_get_store (manager->config_manager);
++  policy = meta_monitor_config_store_get_policy (config_store);
++  meta_dbus_display_config_set_apply_monitors_config_allowed (manager->display_config,
++                                                              policy->enable_dbus);
++
+ 
+   meta_monitor_manager_read_current_state (manager);
+ 
+@@ -2192,6 +2202,8 @@ meta_monitor_manager_handle_apply_monitors_config (MetaDBusDisplayConfig *skelet
+                                                    GVariant              *properties_variant,
+                                                    MetaMonitorManager    *manager)
+ {
++  MetaMonitorConfigStore *config_store;
++  const MetaMonitorConfigPolicy *policy;
+   MetaMonitorManagerCapability capabilities;
+   GVariant *layout_mode_variant = NULL;
+   MetaLogicalMonitorLayoutMode layout_mode;
+@@ -2208,6 +2220,18 @@ meta_monitor_manager_handle_apply_monitors_config (MetaDBusDisplayConfig *skelet
+       return TRUE;
+     }
+ 
++  config_store =
++    meta_monitor_config_manager_get_store (manager->config_manager);
++  policy = meta_monitor_config_store_get_policy (config_store);
++
++  if (!policy->enable_dbus)
++    {
++      g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR,
++                                             G_DBUS_ERROR_ACCESS_DENIED,
++                                             "Monitor configuration via D-Bus is disabled");
++      return TRUE;
++    }
++
+   capabilities = meta_monitor_manager_get_capabilities (manager);
+ 
+   if (properties_variant)
+diff --git a/src/org.gnome.Mutter.DisplayConfig.xml b/src/org.gnome.Mutter.DisplayConfig.xml
+index 7522652dc05a..c6859c2c09c9 100644
+--- a/src/org.gnome.Mutter.DisplayConfig.xml
++++ b/src/org.gnome.Mutter.DisplayConfig.xml
+@@ -290,6 +290,13 @@
+     -->
+     <property name="PanelOrientationManaged" type="b" access="read" />
+ 
++    <!--
++        ApplyMonitorsConfigAllowed:
++
++        Whether calling the ApplyMonitorsConfig method is allowed.
++    -->
++    <property name="ApplyMonitorsConfigAllowed" type="b" access="read" />
++
+     <!--
+         MonitorsChanged:
+ 
+diff --git a/src/tests/monitor-configs/policy-dbus-invalid.xml b/src/tests/monitor-configs/policy-dbus-invalid.xml
+new file mode 100644
+index 000000000000..67fa6045ff26
+--- /dev/null
++++ b/src/tests/monitor-configs/policy-dbus-invalid.xml
+@@ -0,0 +1,6 @@
++<monitors version="2">
++  <policy>
++    <dbus>no</dbus>
++    <dbus>yes</dbus>
++  </policy>
++</monitors>
+diff --git a/src/tests/monitor-configs/policy-dbus.xml b/src/tests/monitor-configs/policy-dbus.xml
+new file mode 100644
+index 000000000000..c407e1f02194
+--- /dev/null
++++ b/src/tests/monitor-configs/policy-dbus.xml
+@@ -0,0 +1,5 @@
++<monitors version="2">
++  <policy>
++    <dbus>no</dbus>
++  </policy>
++</monitors>
+diff --git a/src/tests/monitor-store-unit-tests.c b/src/tests/monitor-store-unit-tests.c
+index 3ea3d94dbe35..073e09f696f3 100644
+--- a/src/tests/monitor-store-unit-tests.c
++++ b/src/tests/monitor-store-unit-tests.c
+@@ -955,6 +955,51 @@ meta_test_monitor_store_policy_multiple (void)
+   g_test_assert_expected_messages ();
+ }
+ 
++static void
++meta_test_monitor_store_policy_dbus (void)
++{
++  MetaBackend *backend = meta_get_backend ();
++  MetaMonitorManager *monitor_manager =
++    meta_backend_get_monitor_manager (backend);
++  MetaMonitorConfigManager *config_manager =
++    meta_monitor_manager_get_config_manager (monitor_manager);
++  MetaMonitorConfigStore *config_store =
++    meta_monitor_config_manager_get_store (config_manager);
++  const MetaMonitorConfigPolicy *policy;
++
++  policy = meta_monitor_config_store_get_policy (config_store);
++  g_assert_nonnull (policy);
++  g_assert_cmpint (policy->enable_dbus, ==, TRUE);
++
++  set_custom_monitor_system_config ("policy-dbus.xml");
++
++  policy = meta_monitor_config_store_get_policy (config_store);
++  g_assert_nonnull (policy);
++  g_assert_cmpint (policy->enable_dbus, ==, FALSE);
++}
++
++static void
++meta_test_monitor_store_policy_dbus_invalid (void)
++{
++  MetaBackend *backend = meta_get_backend ();
++  MetaMonitorManager *monitor_manager =
++    meta_backend_get_monitor_manager (backend);
++  MetaMonitorConfigManager *config_manager =
++    meta_monitor_manager_get_config_manager (monitor_manager);
++  MetaMonitorConfigStore *config_store =
++    meta_monitor_config_manager_get_store (config_manager);
++  const MetaMonitorConfigPolicy *policy;
++
++  g_test_expect_message (G_LOG_DOMAIN, G_LOG_LEVEL_WARNING,
++                         "*Multiple dbus elements under policy*");
++  set_custom_monitor_system_config ("policy-dbus-invalid.xml");
++  g_test_assert_expected_messages ();
++
++  policy = meta_monitor_config_store_get_policy (config_store);
++  g_assert_nonnull (policy);
++  g_assert_cmpint (policy->enable_dbus, ==, FALSE);
++}
++
+ void
+ init_monitor_store_tests (void)
+ {
+@@ -1011,4 +1056,8 @@ init_monitor_store_tests (void)
+                    meta_test_monitor_store_policy_invalid);
+   g_test_add_func ("/backends/monitor-store/policy-multiple",
+                    meta_test_monitor_store_policy_multiple);
++  g_test_add_func ("/backends/monitor-store/dbus",
++                   meta_test_monitor_store_policy_dbus);
++  g_test_add_func ("/backends/monitor-store/dbus-invalid",
++                   meta_test_monitor_store_policy_dbus_invalid);
+ }
+-- 
+2.33.1
+
+
+From c10026a0f21f3b2260771a6c2e2218d0a3eb4d2f Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Fri, 1 Oct 2021 09:52:15 +0200
+Subject: [PATCH 9/9] doc: Add monitor configuration documentation
+
+This describes how the `monitors.xml` file work, and how to override the
+newly introduced configurable policy.
+
+(cherry picked from commit 3bbb53db3da07c0e944903ee8dede722cd082d34)
+---
+ doc/monitor-configuration.md | 105 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 105 insertions(+)
+ create mode 100644 doc/monitor-configuration.md
+
+diff --git a/doc/monitor-configuration.md b/doc/monitor-configuration.md
+new file mode 100644
+index 000000000000..46c1078379cb
+--- /dev/null
++++ b/doc/monitor-configuration.md
+@@ -0,0 +1,105 @@
++Monitor configuration
++=====================
++
++File locations
++--------------
++
++Monitor configurations are stored as XML files called `monitors.xml` on the file
++system. There are two types of locations for the XML file: the system level and
++the user level.
++
++The directories for system level configuration is defined in accordance to the
++$XDG_CONFIG_DIRS environment variable defined in the XDG Base Directory
++Specification. The default is `/etc/xdg/monitors.xml`.
++
++The directory for the user level configuration is defined in accordance to the
++$XDG_CONFIG_HOME environment variable defined in the XDG Base Directory
++Specification. The default is `~/.config/monitors.xml`
++
++File contents
++-------------
++
++A configuration file consists of an XML document with the root element
++`<monitors version="2">`. In this document multiple configurations are stored as
++individual `<configuration/>` elements containing all the details of the monitor
++setup. The `version` attribute must be set to `"2"`.
++
++Each configuration corresponds to a specific hardware setup, where a given set
++of monitors are connected to the computer. There can only be one configuration
++per hardware setup.
++
++Writing configuration
++---------------------
++
++Monitor configurations are managed by Mutter via the Display panel in Settings,
++which uses a D-Bus API to communicate with Mutter. Each time a new configuration
++is applied and accepted, the user level configuration file is replaced with
++updated content.
++
++Previously defined monitor configurations for hardware state other than the
++current are left intact.
++
++Configuration policy
++--------------------
++
++The monitor configuration policy determines how Mutter configures monitors. This
++can mean for example in what order configuration files should be preferred, or
++whether configuration via Settings (i.e. D-Bus) should be allowed.
++
++The default policy is to prioritize configurations defined in the user level
++configuration file, and to allow configuring via D-Bus.
++
++Changing the policy is possible by manually adding a `<policy/>` element inside
++the `<monitors version="2"/>` element in the `monitors.xml` file. Note that
++there may only be one `<policy/>` element in each configuration file.
++
++### Changing configuration file priority policy
++
++To change the order of configuration file priority, or to disable configuration
++files completely, add a `<stores/>` element inside the `<policy/>` element
++described above.
++
++In this element, the file policy is defined by a `<stores/>` element, which
++lists stores with the order according to prioritization. Each store is specified
++using a `<store/>` element with either `system` or `user` as the content.
++
++#### Example of only reading monitor configuration from the system level file:
++
++```xml
++<monitors version="2">
++  <policy>
++    <stores>
++      <store>system</store>
++    </stores>
++  </policy>
++</monitors>
++```
++
++#### Example of reversing the priority of monitor configuration:
++
++```xml
++<monitors version="2">
++  <policy>
++    <stores>
++      <store>user</store>
++      <store>system</store>
++    </stores>
++  </policy>
++</monitors>
++```
++
++### Changing D-Bus configuration policy
++
++D-Bus configureability can be configured using a `<dbus/>` element in the
++`<policy/>` element. It's content should either be `yes` or `no` depending on
++whether monitor configuration via D-Bus should be enabled or disable.
++
++#### Example of how to disable monitor configuration via D-Bus:
++
++```xml
++<monitors version="2">
++  <policy>
++    <dbus>no</dbus>
++  </policy>
++</monitors>
++```
+-- 
+2.33.1
+

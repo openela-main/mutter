@@ -1,0 +1,94 @@
+From 425710866438a62843b96272a6cbc6c22174f10c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Mon, 11 Oct 2021 10:39:43 +0200
+Subject: [PATCH 2/5] renderer/native: Try the gbm renderer before the
+ EGLDevice renderer
+
+This switches the order of what renderer mode is tried first, so that
+the gbm renderer mode is preferred on an NVIDIA driver where it is
+supported.
+
+We fall back to still try the EGLDevice renderer mode if the created gbm
+renderer is not hardware accelerated.
+
+The last fallback is still to use the gbm renderer, even if it is not
+hardware accelerated, as this is needed when hardware acceleration isn't
+available at all. The original reason for the old order was due to the
+fact that a gbm renderer without hardware acceleration would succeed
+even on NVIDIA driver that didn't support gbm.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/2051>
+(cherry picked from commit 8fc1325e8e713dfa05a12c47e6e981e50d3cda61)
+---
+ src/backends/native/meta-renderer-native.c | 44 +++++++++++-----------
+ 1 file changed, 23 insertions(+), 21 deletions(-)
+
+diff --git a/src/backends/native/meta-renderer-native.c b/src/backends/native/meta-renderer-native.c
+index f92f648e5..c851619a1 100644
+--- a/src/backends/native/meta-renderer-native.c
++++ b/src/backends/native/meta-renderer-native.c
+@@ -1754,38 +1754,40 @@ meta_renderer_native_create_renderer_gpu_data (MetaRendererNative  *renderer_nat
+                                                MetaGpuKms          *gpu_kms,
+                                                GError             **error)
+ {
+-  MetaRendererNativeGpuData *renderer_gpu_data;
++  MetaRendererNativeGpuData *gbm_renderer_gpu_data;
+   GError *gbm_error = NULL;
+ #ifdef HAVE_EGL_DEVICE
++  MetaRendererNativeGpuData *egl_stream_renderer_gpu_data;
+   GError *egl_device_error = NULL;
+ #endif
+ 
+   if (!gpu_kms)
+     return create_renderer_gpu_data_surfaceless (renderer_native, error);
+ 
+-#ifdef HAVE_EGL_DEVICE
+-  /* Try to initialize the EGLDevice backend first. Whenever we use a
+-   * non-NVIDIA GPU, the EGLDevice enumeration function won't find a match, and
+-   * we'll fall back to GBM (which will always succeed as it has a software
+-   * rendering fallback)
+-   */
+-  renderer_gpu_data = create_renderer_gpu_data_egl_device (renderer_native,
+-                                                           gpu_kms,
+-                                                           &egl_device_error);
+-  if (renderer_gpu_data)
+-    return renderer_gpu_data;
+-#endif
+-
+-  renderer_gpu_data = create_renderer_gpu_data_gbm (renderer_native,
+-                                                    gpu_kms,
+-                                                    &gbm_error);
+-  if (renderer_gpu_data)
++  gbm_renderer_gpu_data = create_renderer_gpu_data_gbm (renderer_native,
++                                                        gpu_kms,
++                                                        &gbm_error);
++  if (gbm_renderer_gpu_data)
+     {
++      if (gbm_renderer_gpu_data->secondary.is_hardware_rendering)
++        return gbm_renderer_gpu_data;
++    }
++
+ #ifdef HAVE_EGL_DEVICE
+-      g_error_free (egl_device_error);
+-#endif
+-      return renderer_gpu_data;
++  egl_stream_renderer_gpu_data =
++    create_renderer_gpu_data_egl_device (renderer_native,
++                                         gpu_kms,
++                                         &egl_device_error);
++  if (egl_stream_renderer_gpu_data)
++    {
++      g_clear_pointer (&gbm_renderer_gpu_data,
++                       meta_renderer_native_gpu_data_free);
++      return egl_stream_renderer_gpu_data;
+     }
++#endif
++
++  if (gbm_renderer_gpu_data)
++    return gbm_renderer_gpu_data;
+ 
+   g_set_error (error, G_IO_ERROR,
+                G_IO_ERROR_FAILED,
+-- 
+2.35.1
+

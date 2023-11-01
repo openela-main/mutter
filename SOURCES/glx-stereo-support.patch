@@ -1,0 +1,1242 @@
+From 768818c8d071f066a2ab68f83381829838b5bf29 Mon Sep 17 00:00:00 2001
+From: "Owen W. Taylor" <otaylor@fishsoup.net>
+Date: Thu, 8 May 2014 18:44:15 -0400
+Subject: [PATCH 1/2] Add support for quad-buffer stereo
+
+Track the stereo status of windows using the new EXT_stereo_tree
+GLX extension.
+
+When stereo is enabled or disabled, a restart is triggered via
+meta_restart() after a timeout, setting a _META_ENABLE_STEREO
+property on the root window to indicate whether we should
+turn on a stereo stage for clutter. The property avoids a loop,
+since we need to enable stereo *before* initializing Clutter and GL,
+but we need GL to figure out whether we have stereo windows.
+
+Stereo windows are drawn to the stage using new functionality
+in Cogl to setup a stereo context, select which buffer to draw
+to, and draw either the left or right buffer of a stereo
+texture_from_pixmap.
+---
+ clutter/clutter/clutter-paint-nodes.c        | 103 +++++++++++
+ clutter/clutter/clutter-paint-nodes.h        |  13 ++
+ src/compositor/compositor.c                  |   8 +
+ src/compositor/meta-compositor-x11.c         | 127 +++++++++++++
+ src/compositor/meta-compositor-x11.h         |   6 +
+ src/compositor/meta-shaped-texture-private.h |   5 +-
+ src/compositor/meta-shaped-texture.c         | 176 +++++++++++++++----
+ src/compositor/meta-surface-actor-wayland.c  |   2 +-
+ src/compositor/meta-surface-actor-x11.c      |  55 +++++-
+ src/compositor/meta-surface-actor-x11.h      |   5 +
+ src/compositor/meta-window-actor-private.h   |   5 +
+ src/compositor/meta-window-actor.c           |  22 +++
+ src/core/main.c                              |   4 +
+ src/core/stereo.c                            | 154 ++++++++++++++++
+ src/core/stereo.h                            |  28 +++
+ src/meson.build                              |   2 +
+ src/wayland/meta-wayland-actor-surface.c     |   4 +-
+ 17 files changed, 667 insertions(+), 52 deletions(-)
+ create mode 100644 src/core/stereo.c
+ create mode 100644 src/core/stereo.h
+
+diff --git a/clutter/clutter/clutter-paint-nodes.c b/clutter/clutter/clutter-paint-nodes.c
+index f1f7fce318..29a673e9c7 100644
+--- a/clutter/clutter/clutter-paint-nodes.c
++++ b/clutter/clutter/clutter-paint-nodes.c
+@@ -1970,3 +1970,106 @@ clutter_blur_node_new (unsigned int width,
+ out:
+   return (ClutterPaintNode *) blur_node;
+ }
++
++/*
++ * ClutterStereoNode
++ */
++
++struct _ClutterStereoNode
++{
++  ClutterPaintNode parent_instance;
++
++  CoglStereoMode stereo_mode;
++};
++
++struct _ClutterStereoNodeClass
++{
++  ClutterPaintNodeClass parent_class;
++};
++
++G_DEFINE_TYPE (ClutterStereoNode, clutter_stereo_node, CLUTTER_TYPE_PAINT_NODE)
++
++static gboolean
++clutter_stereo_node_pre_draw (ClutterPaintNode    *node,
++                              ClutterPaintContext *paint_context)
++{
++  ClutterStereoNode *stereo_node = CLUTTER_STEREO_NODE (node);
++  CoglFramebuffer *fb =
++   clutter_paint_context_get_framebuffer (paint_context);
++
++  g_warn_if_fail (cogl_framebuffer_get_is_stereo (fb));
++
++  cogl_framebuffer_set_stereo_mode (fb, stereo_node->stereo_mode);
++
++  return TRUE;
++}
++
++static void
++clutter_stereo_node_post_draw (ClutterPaintNode    *node,
++                               ClutterPaintContext *paint_context)
++{
++  CoglFramebuffer *fb =
++   clutter_paint_context_get_framebuffer (paint_context);
++
++  cogl_framebuffer_set_stereo_mode (fb, COGL_STEREO_BOTH);
++}
++
++static const char *
++stereo_mode_to_string (CoglStereoMode stereo_mode)
++{
++  switch (stereo_mode)
++    {
++    case COGL_STEREO_BOTH:
++      return "both";
++    case COGL_STEREO_LEFT:
++      return "left";
++    case COGL_STEREO_RIGHT:
++      return "right";
++    }
++
++  g_assert_not_reached ();
++}
++
++static JsonNode *
++clutter_stereo_node_serialize (ClutterPaintNode *node)
++{
++  ClutterStereoNode *stereo_node = CLUTTER_STEREO_NODE (node);
++  g_autoptr (JsonBuilder) builder = NULL;
++  const char *stereo_mode_str;
++
++  builder = json_builder_new ();
++  json_builder_begin_object (builder);
++  json_builder_set_member_name (builder, "stereo-mode");
++  stereo_mode_str = stereo_mode_to_string (stereo_node->stereo_mode);
++  json_builder_add_string_value (builder, stereo_mode_str);
++  json_builder_end_object (builder);
++
++  return json_builder_get_root (builder);
++}
++
++static void
++clutter_stereo_node_class_init (ClutterStereoNodeClass *klass)
++{
++  ClutterPaintNodeClass *node_class;
++
++  node_class = CLUTTER_PAINT_NODE_CLASS (klass);
++  node_class->pre_draw = clutter_stereo_node_pre_draw;
++  node_class->post_draw = clutter_stereo_node_post_draw;
++  node_class->serialize = clutter_stereo_node_serialize;
++}
++
++static void
++clutter_stereo_node_init (ClutterStereoNode *stereo_node)
++{
++}
++
++ClutterPaintNode *
++clutter_stereo_node_new (CoglStereoMode stereo_mode)
++{
++  ClutterStereoNode *stereo_node;
++
++  stereo_node = _clutter_paint_node_create (CLUTTER_TYPE_STEREO_NODE);
++  stereo_node->stereo_mode = stereo_mode;
++
++  return CLUTTER_PAINT_NODE (stereo_node);
++}
+diff --git a/clutter/clutter/clutter-paint-nodes.h b/clutter/clutter/clutter-paint-nodes.h
+index 7f0d12857a..77d1ab05b6 100644
+--- a/clutter/clutter/clutter-paint-nodes.h
++++ b/clutter/clutter/clutter-paint-nodes.h
+@@ -284,6 +284,19 @@ ClutterPaintNode * clutter_blur_node_new (unsigned int width,
+                                           unsigned int height,
+                                           float        sigma);
+ 
++#define CLUTTER_TYPE_STEREO_NODE                (clutter_stereo_node_get_type ())
++#define CLUTTER_STEREO_NODE(obj)                (G_TYPE_CHECK_INSTANCE_CAST ((obj), CLUTTER_TYPE_STEREO_NODE, ClutterStereoNode))
++#define CLUTTER_IS_STEREO_NODE(obj)             (G_TYPE_CHECK_INSTANCE_TYPE ((obj), CLUTTER_TYPE_STEREO_NODE))
++
++typedef struct _ClutterStereoNode               ClutterStereoNode;
++typedef struct _ClutterStereoNodeClass          ClutterStereoNodeClass;
++
++CLUTTER_EXPORT
++GType clutter_stereo_node_get_type (void) G_GNUC_CONST;
++
++CLUTTER_EXPORT
++ClutterPaintNode * clutter_stereo_node_new (CoglStereoMode stereo_mode);
++
+ G_END_DECLS
+ 
+ #endif /* __CLUTTER_PAINT_NODES_H__ */
+diff --git a/src/compositor/compositor.c b/src/compositor/compositor.c
+index 1770550d4c..a4bd1252ae 100644
+--- a/src/compositor/compositor.c
++++ b/src/compositor/compositor.c
+@@ -66,6 +66,7 @@
+ #include "compositor/meta-window-actor-private.h"
+ #include "compositor/meta-window-group-private.h"
+ #include "core/frame.h"
++#include "core/stereo.h"
+ #include "core/util-private.h"
+ #include "core/window-private.h"
+ #include "meta/compositor-mutter.h"
+@@ -910,6 +911,7 @@ meta_compositor_sync_stack (MetaCompositor  *compositor,
+     meta_compositor_get_instance_private (compositor);
+   MetaWindowActor *top_window_actor;
+   GList *old_stack;
++  int stereo_window_count = 0;
+ 
+   /* This is painful because hidden windows that we are in the process
+    * of animating out of existence. They'll be at the bottom of the
+@@ -986,12 +988,18 @@ meta_compositor_sync_stack (MetaCompositor  *compositor,
+        */
+       priv->windows = g_list_prepend (priv->windows, actor);
+ 
++      if (meta_window_actor_is_stereo (actor))
++        stereo_window_count++;
++
+       stack = g_list_remove (stack, window);
+       old_stack = g_list_remove (old_stack, actor);
+     }
+ 
+   sync_actor_stacking (compositor);
+ 
++  if (!meta_is_wayland_compositor ())
++    meta_stereo_set_have_stereo_windows (stereo_window_count > 0);
++
+   top_window_actor = get_top_visible_window_actor (compositor);
+ 
+   if (priv->top_window_actor == top_window_actor)
+diff --git a/src/compositor/meta-compositor-x11.c b/src/compositor/meta-compositor-x11.c
+index 1d0ba4c8d8..afbe3f57e2 100644
+--- a/src/compositor/meta-compositor-x11.c
++++ b/src/compositor/meta-compositor-x11.c
+@@ -31,6 +31,8 @@
+ #include "compositor/meta-sync-ring.h"
+ #include "compositor/meta-window-actor-x11.h"
+ #include "core/display-private.h"
++#include "core/stack-tracker.h"
++#include "core/stereo.h"
+ #include "x11/meta-x11-display-private.h"
+ 
+ struct _MetaCompositorX11
+@@ -50,8 +52,24 @@ struct _MetaCompositorX11
+   gboolean xserver_uses_monotonic_clock;
+   int64_t xserver_time_query_time_us;
+   int64_t xserver_time_offset_us;
++
++  int glx_opcode;
++  gboolean stereo_tree_ext;
++  gboolean have_stereo_windows;
+ };
+ 
++typedef struct
++{
++  int type;
++  unsigned long serial;
++  Bool send_event;
++  Display *display;
++  int extension;
++  int evtype;
++  Drawable window;
++  Bool stereo_tree;
++} StereoNotifyEvent;
++
+ G_DEFINE_TYPE (MetaCompositorX11, meta_compositor_x11, META_TYPE_COMPOSITOR)
+ 
+ static void
+@@ -95,6 +113,27 @@ meta_compositor_x11_process_xevent (MetaCompositorX11 *compositor_x11,
+       if (window)
+         process_damage (compositor_x11, (XDamageNotifyEvent *) xevent, window);
+     }
++  else if (xevent->type == GenericEvent &&
++           xevent->xcookie.extension == compositor_x11->glx_opcode)
++    {
++      if (xevent->xcookie.evtype == GLX_STEREO_NOTIFY_EXT)
++        {
++          StereoNotifyEvent *stereo_event =
++            (StereoNotifyEvent *) (xevent->xcookie.data);
++
++          window = meta_x11_display_lookup_x_window (x11_display,
++                                                     stereo_event->window);
++          if (window)
++            {
++              MetaWindowActor *window_actor = meta_window_actor_from_window (window);
++              MetaDisplay *display = meta_window_get_display (window);
++
++              meta_window_actor_stereo_notify (window_actor,
++                                               stereo_event->stereo_tree);
++              meta_stack_tracker_queue_sync_stack (display->stack_tracker);
++            }
++        }
++    }
+ 
+   if (compositor_x11->have_x11_sync_object)
+     meta_sync_ring_handle_event (xevent);
+@@ -107,6 +146,85 @@ meta_compositor_x11_process_xevent (MetaCompositorX11 *compositor_x11,
+     meta_x11_handle_event (xevent);
+ }
+ 
++#define GLX_STEREO_TREE_EXT        0x20F5
++#define GLX_STEREO_NOTIFY_MASK_EXT 0x00000001
++#define GLX_STEREO_NOTIFY_EXT      0x00000000
++
++static gboolean
++display_has_stereo_tree_ext (MetaX11Display *x11_display)
++{
++  Display     *xdisplay = x11_display->xdisplay;
++  const char  *extensions_string;
++
++  static const char * (*query_extensions_string) (Display *display,
++                                                  int      screen);
++
++  if (query_extensions_string == NULL)
++    query_extensions_string =
++      (const char * (*) (Display *, int))
++      cogl_get_proc_address ("glXQueryExtensionsString");
++
++  extensions_string = query_extensions_string (xdisplay,
++                                               meta_x11_display_get_screen_number (x11_display));
++
++  return extensions_string && strstr (extensions_string, "EXT_stereo_tree") != 0;
++}
++
++#include <GL/gl.h>
++
++gboolean
++meta_compositor_x11_window_is_stereo (MetaCompositorX11 *compositor_x11,
++                                      Window             xwindow)
++{
++  MetaCompositor *compositor = META_COMPOSITOR (compositor_x11);
++  MetaDisplay *display = meta_compositor_get_display (compositor);
++  Display *xdisplay = meta_x11_display_get_xdisplay (display->x11_display);
++
++  static int (*query_drawable) (Display      *dpy,
++                                Drawable      draw,
++                                int           attribute,
++                                unsigned int *value);
++
++  if (compositor_x11->stereo_tree_ext)
++    {
++      unsigned int stereo_tree = 0;
++
++      if (query_drawable == NULL)
++        query_drawable =
++          (int (*) (Display *, Drawable, int, unsigned int *))
++          cogl_get_proc_address ("glXQueryDrawable");
++
++      query_drawable (xdisplay, xwindow, GLX_STEREO_TREE_EXT, &stereo_tree);
++
++      return stereo_tree != 0;
++    }
++  else
++    return FALSE;
++}
++
++void
++meta_compositor_x11_select_stereo_notify (MetaCompositorX11 *compositor_x11,
++                                          Window             xwindow)
++{
++  MetaCompositor *compositor = META_COMPOSITOR (compositor_x11);
++  MetaDisplay *display = meta_compositor_get_display (compositor);
++  Display *xdisplay = meta_x11_display_get_xdisplay (display->x11_display);
++
++  static void (*select_event) (Display      *dpy,
++                               Drawable      draw,
++                               unsigned long event_mask);
++
++  if (compositor_x11->stereo_tree_ext)
++    {
++      if (select_event == NULL)
++        select_event =
++          (void (*) (Display *, Drawable, unsigned long))
++          cogl_get_proc_address ("glXSelectEvent");
++
++      select_event (xdisplay, xwindow, GLX_STEREO_NOTIFY_MASK_EXT);
++    }
++}
++
+ static void
+ determine_server_clock_source (MetaCompositorX11 *compositor_x11)
+ {
+@@ -142,6 +260,7 @@ meta_compositor_x11_manage (MetaCompositor  *compositor,
+   MetaX11Display *x11_display = display->x11_display;
+   Display *xdisplay = meta_x11_display_get_xdisplay (x11_display);
+   int composite_version;
++  int glx_major_opcode, glx_first_event, glx_first_error;
+   MetaBackend *backend = meta_get_backend ();
+   Window xwindow;
+ 
+@@ -166,10 +285,18 @@ meta_compositor_x11_manage (MetaCompositor  *compositor,
+       return FALSE;
+     }
+ 
++  if (XQueryExtension (xdisplay,
++                       "GLX",
++                       &glx_major_opcode, &glx_first_event, &glx_first_error))
++    compositor_x11->glx_opcode = glx_major_opcode;
++
+   determine_server_clock_source (compositor_x11);
+ 
+   meta_x11_display_set_cm_selection (display->x11_display);
+ 
++  compositor_x11->stereo_tree_ext =
++    display_has_stereo_tree_ext (display->x11_display);
++
+   compositor_x11->output = display->x11_display->composite_overlay_window;
+ 
+   xwindow = meta_backend_x11_get_xwindow (META_BACKEND_X11 (backend));
+diff --git a/src/compositor/meta-compositor-x11.h b/src/compositor/meta-compositor-x11.h
+index 42554feb39..61f3cd5950 100644
+--- a/src/compositor/meta-compositor-x11.h
++++ b/src/compositor/meta-compositor-x11.h
+@@ -36,4 +36,10 @@ void meta_compositor_x11_process_xevent (MetaCompositorX11 *compositor_x11,
+ 
+ Window meta_compositor_x11_get_output_xwindow (MetaCompositorX11 *compositor_x11);
+ 
++gboolean meta_compositor_x11_window_is_stereo (MetaCompositorX11 *compositor_x11,
++                                               Window             xwindow);
++
++void meta_compositor_x11_select_stereo_notify (MetaCompositorX11 *compositor_x11,
++                                               Window             xwindow);
++
+ #endif /* META_COMPOSITOR_X11_H */
+diff --git a/src/compositor/meta-shaped-texture-private.h b/src/compositor/meta-shaped-texture-private.h
+index 2fe1b8ea48..fadad07d69 100644
+--- a/src/compositor/meta-shaped-texture-private.h
++++ b/src/compositor/meta-shaped-texture-private.h
+@@ -31,8 +31,9 @@
+ #include "meta/meta-shaped-texture.h"
+ 
+ MetaShapedTexture *meta_shaped_texture_new (void);
+-void meta_shaped_texture_set_texture (MetaShapedTexture *stex,
+-                                      CoglTexture       *texture);
++void meta_shaped_texture_set_textures (MetaShapedTexture *stex,
++                                       CoglTexture       *texture,
++                                       CoglTexture       *texture_right);
+ void meta_shaped_texture_set_is_y_inverted (MetaShapedTexture *stex,
+                                             gboolean           is_y_inverted);
+ void meta_shaped_texture_set_snippet (MetaShapedTexture *stex,
+diff --git a/src/compositor/meta-shaped-texture.c b/src/compositor/meta-shaped-texture.c
+index 6a8af828f0..43170a195d 100644
+--- a/src/compositor/meta-shaped-texture.c
++++ b/src/compositor/meta-shaped-texture.c
+@@ -83,8 +83,10 @@ struct _MetaShapedTexture
+   GObject parent;
+ 
+   MetaTextureTower *paint_tower;
++  MetaTextureTower *paint_tower_right;
+ 
+   CoglTexture *texture;
++  CoglTexture *texture_right;
+   CoglTexture *mask_texture;
+   CoglSnippet *snippet;
+ 
+@@ -151,6 +153,7 @@ static void
+ meta_shaped_texture_init (MetaShapedTexture *stex)
+ {
+   stex->paint_tower = meta_texture_tower_new ();
++  stex->paint_tower_right = NULL;
+ 
+   stex->buffer_scale = 1;
+   stex->texture = NULL;
+@@ -251,11 +254,11 @@ meta_shaped_texture_dispose (GObject *object)
+ 
+   g_clear_handle_id (&stex->remipmap_timeout_id, g_source_remove);
+ 
+-  if (stex->paint_tower)
+-    meta_texture_tower_free (stex->paint_tower);
+-  stex->paint_tower = NULL;
++  g_clear_pointer (&stex->paint_tower, meta_texture_tower_free);
++  g_clear_pointer (&stex->paint_tower_right, meta_texture_tower_free);
+ 
+   g_clear_pointer (&stex->texture, cogl_object_unref);
++  g_clear_pointer (&stex->texture_right, cogl_object_unref);
+ 
+   meta_shaped_texture_set_mask_texture (stex, NULL);
+   meta_shaped_texture_reset_pipelines (stex);
+@@ -521,14 +524,19 @@ paint_clipped_rectangle_node (MetaShapedTexture     *stex,
+ }
+ 
+ static void
+-set_cogl_texture (MetaShapedTexture *stex,
+-                  CoglTexture       *cogl_tex)
++set_cogl_textures (MetaShapedTexture *stex,
++                   CoglTexture       *cogl_tex,
++                   CoglTexture       *cogl_tex_right)
+ {
+   int width, height;
+ 
+   cogl_clear_object (&stex->texture);
++  cogl_clear_object (&stex->texture_right);
+ 
+-  if (cogl_tex != NULL)
++  stex->texture = cogl_tex;
++  stex->texture_right = cogl_tex_right;
++
++  if (cogl_tex)
+     {
+       stex->texture = cogl_object_ref (cogl_tex);
+       width = cogl_texture_get_width (COGL_TEXTURE (cogl_tex));
+@@ -540,6 +548,9 @@ set_cogl_texture (MetaShapedTexture *stex,
+       height = 0;
+     }
+ 
++  if (cogl_tex_right)
++    cogl_object_ref (cogl_tex_right);
++
+   if (stex->tex_width != width ||
+       stex->tex_height != height)
+     {
+@@ -553,8 +564,23 @@ set_cogl_texture (MetaShapedTexture *stex,
+    * previous buffer. We only queue a redraw in response to surface
+    * damage. */
+ 
++  if (cogl_tex_right)
++    {
++      if (!stex->paint_tower_right)
++        stex->paint_tower_right = meta_texture_tower_new ();
++    }
++  else
++    {
++      g_clear_pointer (&stex->paint_tower_right, meta_texture_tower_free);
++    }
++
+   if (stex->create_mipmaps)
+-    meta_texture_tower_set_base_texture (stex->paint_tower, cogl_tex);
++    {
++      meta_texture_tower_set_base_texture (stex->paint_tower, cogl_tex);
++
++      if (stex->paint_tower_right)
++        meta_texture_tower_set_base_texture (stex->paint_tower_right, cogl_tex_right);
++    }
+ }
+ 
+ static gboolean
+@@ -582,6 +608,19 @@ flip_ints (int *x,
+   *y = tmp;
+ }
+ 
++static CoglFramebuffer *
++get_target_framebuffer (ClutterPaintNode    *root_node,
++                        ClutterPaintContext *paint_context)
++{
++  CoglFramebuffer *framebuffer;
++
++  framebuffer = clutter_paint_node_get_framebuffer (root_node);
++  if (!framebuffer)
++    framebuffer = clutter_paint_context_get_framebuffer (paint_context);
++
++  return framebuffer;
++}
++
+ static void
+ do_paint_content (MetaShapedTexture   *stex,
+                   ClutterPaintNode    *root_node,
+@@ -622,9 +661,7 @@ do_paint_content (MetaShapedTexture   *stex,
+    * improves performance, especially with software rendering.
+    */
+ 
+-  framebuffer = clutter_paint_node_get_framebuffer (root_node);
+-  if (!framebuffer)
+-    framebuffer = clutter_paint_context_get_framebuffer (paint_context);
++  framebuffer = get_target_framebuffer (root_node, paint_context);
+ 
+   if (stex->has_viewport_src_rect)
+     {
+@@ -826,13 +863,27 @@ do_paint_content (MetaShapedTexture   *stex,
+ 
+ static CoglTexture *
+ select_texture_for_paint (MetaShapedTexture   *stex,
+-                          ClutterPaintContext *paint_context)
++                          ClutterPaintContext *paint_context,
++                          CoglStereoMode       stereo_mode)
+ {
+   CoglTexture *texture = NULL;
+   int64_t now;
++  gboolean use_right_texture = FALSE;
+ 
+-  if (!stex->texture)
+-    return NULL;
++  switch (stereo_mode)
++    {
++    case COGL_STEREO_LEFT:
++    case COGL_STEREO_BOTH:
++      if (!stex->texture)
++        return NULL;
++      use_right_texture = FALSE;
++      break;
++    case COGL_STEREO_RIGHT:
++      if (!stex->texture_right)
++        return NULL;
++      use_right_texture = TRUE;
++      break;
++    }
+ 
+   now = g_get_monotonic_time ();
+ 
+@@ -843,14 +894,24 @@ select_texture_for_paint (MetaShapedTexture   *stex,
+       if (age >= MIN_MIPMAP_AGE_USEC ||
+           stex->fast_updates < MIN_FAST_UPDATES_BEFORE_UNMIPMAP)
+         {
+-          texture = meta_texture_tower_get_paint_texture (stex->paint_tower,
++          MetaTextureTower *paint_tower;
++
++          if (use_right_texture)
++            paint_tower = stex->paint_tower_right;
++          else
++            paint_tower = stex->paint_tower;
++
++          texture = meta_texture_tower_get_paint_texture (paint_tower,
+                                                           paint_context);
+         }
+     }
+ 
+   if (!texture)
+     {
+-      texture = stex->texture;
++      if (use_right_texture)
++        texture = stex->texture_right;
++      else
++        texture = stex->texture;
+ 
+       if (stex->create_mipmaps)
+         {
+@@ -876,35 +937,57 @@ meta_shaped_texture_paint_content (ClutterContent      *content,
+ {
+   MetaShapedTexture *stex = META_SHAPED_TEXTURE (content);
+   ClutterActorBox alloc;
+-  CoglTexture *paint_tex = NULL;
+   uint8_t opacity;
++  CoglFramebuffer *framebuffer;
++  gboolean is_stereo;
+ 
+   if (stex->clip_region && cairo_region_is_empty (stex->clip_region))
+     return;
+ 
+-  /* The GL EXT_texture_from_pixmap extension does allow for it to be
+-   * used together with SGIS_generate_mipmap, however this is very
+-   * rarely supported. Also, even when it is supported there
+-   * are distinct performance implications from:
+-   *
+-   *  - Updating mipmaps that we don't need
+-   *  - Having to reallocate pixmaps on the server into larger buffers
+-   *
+-   * So, we just unconditionally use our mipmap emulation code. If we
+-   * wanted to use SGIS_generate_mipmap, we'd have to  query COGL to
+-   * see if it was supported (no API currently), and then if and only
+-   * if that was the case, set the clutter texture quality to HIGH.
+-   * Setting the texture quality to high without SGIS_generate_mipmap
+-   * support for TFP textures will result in fallbacks to XGetImage.
+-   */
+-  paint_tex = select_texture_for_paint (stex, paint_context);
+-  if (!paint_tex)
++  if (!stex->texture)
+     return;
+ 
+   opacity = clutter_actor_get_paint_opacity (actor);
+   clutter_actor_get_content_box (actor, &alloc);
+ 
+-  do_paint_content (stex, root_node, paint_context, paint_tex, &alloc, opacity);
++  framebuffer = get_target_framebuffer (root_node, paint_context);
++  is_stereo = (stex->texture_right &&
++               cogl_framebuffer_get_is_stereo (framebuffer));
++
++  if (is_stereo)
++    {
++      CoglTexture *texture_left;
++      CoglTexture *texture_right;
++      g_autoptr (ClutterPaintNode) left_node = NULL;
++      g_autoptr (ClutterPaintNode) right_node = NULL;
++
++      texture_left = select_texture_for_paint (stex, paint_context,
++                                               COGL_STEREO_LEFT);
++      texture_right = select_texture_for_paint (stex, paint_context,
++                                                COGL_STEREO_RIGHT);
++
++      left_node = clutter_stereo_node_new (COGL_STEREO_LEFT);
++      clutter_paint_node_set_static_name (left_node, "MetaShapedTexture (left)");
++      right_node = clutter_stereo_node_new (COGL_STEREO_RIGHT);
++      clutter_paint_node_set_static_name (right_node, "MetaShapedTexture (right)");
++
++      clutter_paint_node_add_child (root_node, left_node);
++      clutter_paint_node_add_child (root_node, right_node);
++
++      do_paint_content (stex, left_node, paint_context,
++                        texture_left, &alloc, opacity);
++      do_paint_content (stex, right_node, paint_context,
++                        texture_right, &alloc, opacity);
++    }
++  else
++    {
++      CoglTexture *texture;
++
++      texture = select_texture_for_paint (stex, paint_context,
++                                          COGL_STEREO_BOTH);
++      do_paint_content (stex, root_node, paint_context,
++                        texture, &alloc, opacity);
++    }
+ }
+ 
+ static gboolean
+@@ -946,6 +1029,12 @@ meta_shaped_texture_set_create_mipmaps (MetaShapedTexture *stex,
+       stex->create_mipmaps = create_mipmaps;
+       base_texture = create_mipmaps ? stex->texture : NULL;
+       meta_texture_tower_set_base_texture (stex->paint_tower, base_texture);
++
++      if (stex->paint_tower_right)
++        {
++          base_texture = create_mipmaps ? stex->texture_right : NULL;
++          meta_texture_tower_set_base_texture (stex->paint_tower_right, base_texture);
++        }
+     }
+ }
+ 
+@@ -1079,6 +1168,14 @@ meta_shaped_texture_update_area (MetaShapedTexture     *stex,
+                                   y,
+                                   width,
+                                   height);
++  if (stex->paint_tower_right)
++    {
++      meta_texture_tower_update_area (stex->paint_tower_right,
++                                      x,
++                                      y,
++                                      width,
++                                      height);
++    }
+ 
+   stex->prev_invalidation = stex->last_invalidation;
+   stex->last_invalidation = g_get_monotonic_time ();
+@@ -1098,20 +1195,21 @@ meta_shaped_texture_update_area (MetaShapedTexture     *stex,
+ }
+ 
+ /**
+- * meta_shaped_texture_set_texture:
++ * meta_shaped_texture_set_textures:
+  * @stex: The #MetaShapedTexture
+  * @pixmap: The #CoglTexture to display
+  */
+ void
+-meta_shaped_texture_set_texture (MetaShapedTexture *stex,
+-                                 CoglTexture       *texture)
++meta_shaped_texture_set_textures (MetaShapedTexture *stex,
++                                  CoglTexture       *texture,
++                                  CoglTexture       *texture_right)
+ {
+   g_return_if_fail (META_IS_SHAPED_TEXTURE (stex));
+ 
+-  if (stex->texture == texture)
++  if (stex->texture == texture && stex->texture_right == texture_right)
+     return;
+ 
+-  set_cogl_texture (stex, texture);
++  set_cogl_textures (stex, texture, texture_right);
+ }
+ 
+ /**
+diff --git a/src/compositor/meta-surface-actor-wayland.c b/src/compositor/meta-surface-actor-wayland.c
+index a182ad8513..1ddc83db2b 100644
+--- a/src/compositor/meta-surface-actor-wayland.c
++++ b/src/compositor/meta-surface-actor-wayland.c
+@@ -148,7 +148,7 @@ meta_surface_actor_wayland_dispose (GObject *object)
+ 
+   stex = meta_surface_actor_get_texture (META_SURFACE_ACTOR (self));
+   if (stex)
+-    meta_shaped_texture_set_texture (stex, NULL);
++    meta_shaped_texture_set_textures (stex, NULL, NULL);
+ 
+   if (self->surface)
+     {
+diff --git a/src/compositor/meta-surface-actor-x11.c b/src/compositor/meta-surface-actor-x11.c
+index 41ae2dffbc..c7c3d08c36 100644
+--- a/src/compositor/meta-surface-actor-x11.c
++++ b/src/compositor/meta-surface-actor-x11.c
+@@ -30,6 +30,7 @@
+ #include <X11/extensions/Xcomposite.h>
+ 
+ #include "cogl/winsys/cogl-texture-pixmap-x11.h"
++#include "compositor/meta-compositor-x11.h"
+ #include "compositor/meta-cullable.h"
+ #include "compositor/meta-shaped-texture-private.h"
+ #include "compositor/meta-window-actor-private.h"
+@@ -47,6 +48,7 @@ struct _MetaSurfaceActorX11
+   MetaDisplay *display;
+ 
+   CoglTexture *texture;
++  CoglTexture *texture_right;
+   Pixmap pixmap;
+   Damage damage;
+ 
+@@ -62,6 +64,8 @@ struct _MetaSurfaceActorX11
+   guint size_changed : 1;
+ 
+   guint unredirected   : 1;
++
++  guint stereo : 1;
+ };
+ 
+ G_DEFINE_TYPE (MetaSurfaceActorX11,
+@@ -101,7 +105,7 @@ detach_pixmap (MetaSurfaceActorX11 *self)
+    * you are supposed to be able to free a GLXPixmap after freeing the underlying
+    * pixmap, but it certainly doesn't work with current DRI/Mesa
+    */
+-  meta_shaped_texture_set_texture (stex, NULL);
++  meta_shaped_texture_set_textures (stex, NULL, NULL);
+   cogl_flush ();
+ 
+   meta_x11_error_trap_push (display->x11_display);
+@@ -110,6 +114,7 @@ detach_pixmap (MetaSurfaceActorX11 *self)
+   meta_x11_error_trap_pop (display->x11_display);
+ 
+   g_clear_pointer (&self->texture, cogl_object_unref);
++  g_clear_pointer (&self->texture_right, cogl_object_unref);
+ }
+ 
+ static void
+@@ -119,23 +124,37 @@ set_pixmap (MetaSurfaceActorX11 *self,
+   CoglContext *ctx = clutter_backend_get_cogl_context (clutter_get_default_backend ());
+   MetaShapedTexture *stex = meta_surface_actor_get_texture (META_SURFACE_ACTOR (self));
+   GError *error = NULL;
+-  CoglTexture *texture;
++  CoglTexturePixmapX11 *texture;
++  CoglTexturePixmapX11 *texture_right;
+ 
+   g_assert (self->pixmap == None);
+   self->pixmap = pixmap;
+ 
+-  texture = COGL_TEXTURE (cogl_texture_pixmap_x11_new (ctx, self->pixmap, FALSE, &error));
++  if (self->stereo)
++    texture = cogl_texture_pixmap_x11_new_left (ctx, pixmap, FALSE, &error);
++  else
++    texture = cogl_texture_pixmap_x11_new (ctx, pixmap, FALSE, &error);
++
++  if (self->stereo)
++    texture_right = cogl_texture_pixmap_x11_new_right (texture);
++  else
++    texture_right = NULL;
+ 
+   if (error != NULL)
+     {
+       g_warning ("Failed to allocate stex texture: %s", error->message);
+       g_error_free (error);
+     }
+-  else if (G_UNLIKELY (!cogl_texture_pixmap_x11_is_using_tfp_extension (COGL_TEXTURE_PIXMAP_X11 (texture))))
++  else if (G_UNLIKELY (!cogl_texture_pixmap_x11_is_using_tfp_extension (texture)))
+     g_warning ("NOTE: Not using GLX TFP!");
+ 
+-  self->texture = texture;
+-  meta_shaped_texture_set_texture (stex, texture);
++  self->texture = COGL_TEXTURE (texture);
++  if (self->stereo)
++    self->texture_right = COGL_TEXTURE (texture_right);
++
++  meta_shaped_texture_set_textures (stex,
++                                    COGL_TEXTURE (texture),
++                                    COGL_TEXTURE (texture_right));;
+ }
+ 
+ static void
+@@ -372,8 +391,8 @@ reset_texture (MetaSurfaceActorX11 *self)
+   /* Setting the texture to NULL will cause all the FBO's cached by the
+    * shaped texture's MetaTextureTower to be discarded and recreated.
+    */
+-  meta_shaped_texture_set_texture (stex, NULL);
+-  meta_shaped_texture_set_texture (stex, self->texture);
++  meta_shaped_texture_set_textures (stex, NULL, NULL);
++  meta_shaped_texture_set_textures (stex, self->texture, self->texture_right);
+ }
+ 
+ MetaSurfaceActor *
+@@ -381,12 +400,18 @@ meta_surface_actor_x11_new (MetaWindow *window)
+ {
+   MetaSurfaceActorX11 *self = g_object_new (META_TYPE_SURFACE_ACTOR_X11, NULL);
+   MetaDisplay *display = meta_window_get_display (window);
++  MetaCompositorX11 *compositor_x11 = META_COMPOSITOR_X11 (display->compositor);
++  Window xwindow;
+ 
+   g_assert (!meta_is_wayland_compositor ());
+ 
+   self->window = window;
+   self->display = display;
+ 
++  xwindow = meta_window_x11_get_toplevel_xwindow (window);
++  self->stereo = meta_compositor_x11_window_is_stereo (compositor_x11, xwindow);
++  meta_compositor_x11_select_stereo_notify (compositor_x11, xwindow);
++
+   g_signal_connect_object (self->display, "gl-video-memory-purged",
+                            G_CALLBACK (reset_texture), self, G_CONNECT_SWAPPED);
+ 
+@@ -420,3 +445,17 @@ meta_surface_actor_x11_set_size (MetaSurfaceActorX11 *self,
+   self->last_height = height;
+   meta_shaped_texture_set_fallback_size (stex, width, height);
+ }
++
++void
++meta_surface_actor_x11_stereo_notify (MetaSurfaceActorX11 *self,
++                                      gboolean             stereo_tree)
++{
++  self->stereo = stereo_tree != FALSE;
++  detach_pixmap (self);
++}
++
++gboolean
++meta_surface_actor_x11_is_stereo (MetaSurfaceActorX11 *self)
++{
++  return self->stereo;
++}
+diff --git a/src/compositor/meta-surface-actor-x11.h b/src/compositor/meta-surface-actor-x11.h
+index 0a8517236a..369f631ae0 100644
+--- a/src/compositor/meta-surface-actor-x11.h
++++ b/src/compositor/meta-surface-actor-x11.h
+@@ -57,6 +57,11 @@ gboolean meta_surface_actor_x11_is_visible (MetaSurfaceActorX11 *self);
+ 
+ void meta_surface_actor_x11_handle_updates (MetaSurfaceActorX11 *self);
+ 
++void meta_surface_actor_x11_stereo_notify (MetaSurfaceActorX11 *self,
++                                           gboolean             stereo_tree);
++
++gboolean meta_surface_actor_x11_is_stereo (MetaSurfaceActorX11 *self);
++
+ G_END_DECLS
+ 
+ #endif /* __META_SURFACE_ACTOR_X11_H__ */
+diff --git a/src/compositor/meta-window-actor-private.h b/src/compositor/meta-window-actor-private.h
+index 64741e4167..d498879902 100644
+--- a/src/compositor/meta-window-actor-private.h
++++ b/src/compositor/meta-window-actor-private.h
+@@ -99,4 +99,9 @@ void meta_window_actor_update_regions (MetaWindowActor *self);
+ 
+ gboolean meta_window_actor_can_freeze_commits (MetaWindowActor *self);
+ 
++void meta_window_actor_stereo_notify (MetaWindowActor *actor,
++                                      gboolean         stereo_tree);
++
++gboolean meta_window_actor_is_stereo (MetaWindowActor *actor);
++
+ #endif /* META_WINDOW_ACTOR_PRIVATE_H */
+diff --git a/src/compositor/meta-window-actor.c b/src/compositor/meta-window-actor.c
+index d4fc9a43a0..56c85e1788 100644
+--- a/src/compositor/meta-window-actor.c
++++ b/src/compositor/meta-window-actor.c
+@@ -1557,3 +1557,25 @@ out:
+   clutter_actor_uninhibit_culling (actor);
+   return surface;
+ }
++
++void
++meta_window_actor_stereo_notify (MetaWindowActor *self,
++                                 gboolean         stereo_tree)
++{
++  MetaWindowActorPrivate *priv = meta_window_actor_get_instance_private (self);
++
++  if (META_IS_SURFACE_ACTOR_X11 (priv->surface))
++    meta_surface_actor_x11_stereo_notify (META_SURFACE_ACTOR_X11 (priv->surface),
++                                          stereo_tree);
++}
++
++gboolean
++meta_window_actor_is_stereo (MetaWindowActor *self)
++{
++  MetaWindowActorPrivate *priv = meta_window_actor_get_instance_private (self);
++
++  if (META_IS_SURFACE_ACTOR_X11 (priv->surface))
++    return meta_surface_actor_x11_is_stereo (META_SURFACE_ACTOR_X11 (priv->surface));
++  else
++    return FALSE;
++}
+diff --git a/src/core/main.c b/src/core/main.c
+index 6dabcfe73e..a07dda9ecc 100644
+--- a/src/core/main.c
++++ b/src/core/main.c
+@@ -88,6 +88,7 @@
+ #include "meta/meta-backend.h"
+ #include "meta/meta-x11-errors.h"
+ #include "meta/prefs.h"
++#include "stereo.h"
+ #include "ui/ui.h"
+ #include "x11/session.h"
+ 
+@@ -848,6 +849,9 @@ meta_init (void)
+   if (!meta_is_wayland_compositor ())
+     meta_select_display (opt_display_name);
+ 
++  if (!meta_is_wayland_compositor ())
++    meta_stereo_init ();
++
+   meta_init_backend (backend_gtype, n_properties, prop_names, prop_values);
+ 
+   for (i = 0; i < n_properties; i++)
+diff --git a/src/core/stereo.c b/src/core/stereo.c
+new file mode 100644
+index 0000000000..817056527f
+--- /dev/null
++++ b/src/core/stereo.c
+@@ -0,0 +1,154 @@
++/* -*- mode: C; c-file-style: "gnu"; indent-tabs-mode: nil; -*- */
++
++/*
++ * Copyright (C) 2014 Red Hat, Inc.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of the
++ * License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <http://www.gnu.org/licenses/>.
++ */
++
++/*
++ * SECTION:stereo
++ * @short_description: Keep track of whether we are a stereo compositor
++ *
++ * With GLX, we need to use a different GL context for stereo and
++ * non-stereo support. Support for multiple GL contexts is unfinished
++ * in Cogl and entirely lacking in Clutter, so it's by far easier
++ * to just restart Mutter when we detect a stereo window.
++ *
++ * A property _MUTTER_ENABLE_STEREO is maintained on the root window
++ * to know whether we should initialize clutter for stereo or not.
++ * When the presence or absence of stereo windows mismatches the
++ * stereo-enabled state for a sufficiently long period of time,
++ * we restart Mutter.
++ */
++
++#include <config.h>
++
++#include <clutter/x11/clutter-x11.h>
++#include <gio/gunixinputstream.h>
++#include <X11/Xatom.h>
++
++#include "display-private.h"
++#include <meta/main.h>
++#include <meta/meta-x11-display.h>
++#include <meta/util.h>
++#include "stereo.h"
++#include "ui/ui.h"
++#include "util-private.h"
++
++static guint stereo_switch_id = 0;
++static gboolean stereo_enabled = FALSE;
++/* -1 so the first time meta_stereo_set_have_stereo_windows() is called
++ * we avoid the short-circuit and set up a timeout to restart
++ * if necessary */
++static gboolean stereo_have_windows = (gboolean)-1;
++static gboolean stereo_restart = FALSE;
++
++#define STEREO_ENABLE_WAIT 1000
++#define STEREO_DISABLE_WAIT 5000
++
++void
++meta_stereo_init (void)
++{
++  Display *xdisplay;
++  Window root;
++  Atom atom_enable_stereo;
++  Atom type;
++  int format;
++  unsigned long n_items, bytes_after;
++  guchar *data;
++
++  xdisplay = XOpenDisplay (NULL);
++  if (xdisplay == NULL)
++    meta_fatal ("Unable to open X display %s\n", XDisplayName (NULL));
++
++  root = DefaultRootWindow (xdisplay);
++  atom_enable_stereo = XInternAtom (xdisplay, "_MUTTER_ENABLE_STEREO", False);
++
++  XGetWindowProperty (xdisplay, root, atom_enable_stereo,
++                      0, 1, False, XA_INTEGER,
++                      &type, &format, &n_items, &bytes_after, &data);
++  if (type == XA_INTEGER)
++    {
++      if (format == 32 && n_items == 1 && bytes_after == 0)
++        {
++          stereo_enabled = *(long *)data;
++        }
++      else
++        {
++          meta_warning ("Bad value for _MUTTER_ENABLE_STEREO property\n");
++        }
++
++      XFree (data);
++    }
++  else if (type != None)
++    {
++      meta_warning ("Bad type for _MUTTER_ENABLE_STEREO property\n");
++    }
++
++  meta_verbose ("On startup, _MUTTER_ENABLE_STEREO=%s",
++                stereo_enabled ? "yes" : "no");
++  clutter_x11_set_use_stereo_stage (stereo_enabled);
++  XCloseDisplay (xdisplay);
++}
++
++static gboolean
++meta_stereo_switch (gpointer data)
++{
++  stereo_switch_id = 0;
++  stereo_restart = TRUE;
++
++  meta_restart (stereo_have_windows ?
++                _("Enabling stereo...") :
++                _("Disabling stereo..."));
++
++  return FALSE;
++}
++
++void
++meta_stereo_set_have_stereo_windows (gboolean have_windows)
++{
++  have_windows = have_windows != FALSE;
++
++  if (!stereo_restart && have_windows != stereo_have_windows)
++    {
++      MetaDisplay *display = meta_get_display ();
++      Display *xdisplay = meta_x11_display_get_xdisplay (display->x11_display);
++      Window root = DefaultRootWindow (xdisplay);
++      Atom atom_enable_stereo = XInternAtom (xdisplay, "_MUTTER_ENABLE_STEREO", False);
++      long value;
++
++      stereo_have_windows = have_windows;
++
++      if (stereo_have_windows)
++        meta_verbose ("Detected stereo windows\n");
++      else
++        meta_verbose ("No stereo windows detected\n");
++
++      value = stereo_have_windows;
++      XChangeProperty (xdisplay, root,
++                       atom_enable_stereo, XA_INTEGER, 32,
++                       PropModeReplace, (guchar *)&value, 1);
++
++      if (stereo_switch_id != 0)
++        {
++          g_source_remove (stereo_switch_id);
++          stereo_switch_id = 0;
++        }
++
++      if (stereo_have_windows != stereo_enabled)
++        stereo_switch_id = g_timeout_add (stereo_have_windows ? STEREO_ENABLE_WAIT : STEREO_DISABLE_WAIT,
++                                          meta_stereo_switch, NULL);
++    }
++}
+diff --git a/src/core/stereo.h b/src/core/stereo.h
+new file mode 100644
+index 0000000000..ccd1d702a1
+--- /dev/null
++++ b/src/core/stereo.h
+@@ -0,0 +1,28 @@
++/* -*- mode: C; c-file-style: "gnu"; indent-tabs-mode: nil; -*- */
++
++/*
++ * Copyright (C) 2014 Red Hat, Inc.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of the
++ * License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <http://www.gnu.org/licenses/>.
++ */
++
++#ifndef META_STEREO_H
++#define META_STEREO_H
++
++void     meta_stereo_init                    (void);
++void     meta_stereo_set_have_stereo_windows (gboolean have_windows);
++gboolean meta_stereo_is_restart              (void);
++void     meta_stereo_finish_restart          (void);
++
++#endif
+diff --git a/src/meson.build b/src/meson.build
+index 284bdf5220..c56438fbbe 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -394,6 +394,8 @@ mutter_sources = [
+   'core/stack.h',
+   'core/stack-tracker.c',
+   'core/stack-tracker.h',
++  'core/stereo.c',
++  'core/stereo.h',
+   'core/startup-notification.c',
+   'core/startup-notification-private.h',
+   'core/util.c',
+diff --git a/src/wayland/meta-wayland-actor-surface.c b/src/wayland/meta-wayland-actor-surface.c
+index 797795f861..d8d1f3ce16 100644
+--- a/src/wayland/meta-wayland-actor-surface.c
++++ b/src/wayland/meta-wayland-actor-surface.c
+@@ -193,7 +193,7 @@ meta_wayland_actor_surface_real_sync_actor_state (MetaWaylandActorSurface *actor
+       snippet = meta_wayland_buffer_create_snippet (buffer);
+       is_y_inverted = meta_wayland_buffer_is_y_inverted (buffer);
+ 
+-      meta_shaped_texture_set_texture (stex, surface->texture);
++      meta_shaped_texture_set_textures (stex, surface->texture, NULL);
+       meta_shaped_texture_set_snippet (stex, snippet);
+       meta_shaped_texture_set_is_y_inverted (stex, is_y_inverted);
+       meta_shaped_texture_set_buffer_scale (stex, surface->scale);
+@@ -201,7 +201,7 @@ meta_wayland_actor_surface_real_sync_actor_state (MetaWaylandActorSurface *actor
+     }
+   else
+     {
+-      meta_shaped_texture_set_texture (stex, NULL);
++      meta_shaped_texture_set_textures (stex, NULL, NULL);
+     }
+ 
+   surface_rect = (cairo_rectangle_int_t) {
+-- 
+2.31.1
+
+
+From 36517cd245584c5bcd3b730efaf6c3d2e7c9472d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Wed, 2 Jun 2021 16:55:45 +0200
+Subject: [PATCH 2/2] compositor: Only check for stereo when using GLX
+
+If EGL Xlib is used, we'll get bogus return value and crash.
+---
+ src/compositor/meta-compositor-x11.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/src/compositor/meta-compositor-x11.c b/src/compositor/meta-compositor-x11.c
+index afbe3f57e2..4345f38b6f 100644
+--- a/src/compositor/meta-compositor-x11.c
++++ b/src/compositor/meta-compositor-x11.c
+@@ -153,9 +153,17 @@ meta_compositor_x11_process_xevent (MetaCompositorX11 *compositor_x11,
+ static gboolean
+ display_has_stereo_tree_ext (MetaX11Display *x11_display)
+ {
++  MetaBackend *backend = meta_get_backend ();
++  ClutterBackend *clutter_backend = meta_backend_get_clutter_backend (backend);
++  CoglContext *cogl_context =
++    clutter_backend_get_cogl_context (clutter_backend);
++  CoglRenderer *cogl_renderer = cogl_context_get_renderer (cogl_context);
+   Display     *xdisplay = x11_display->xdisplay;
+   const char  *extensions_string;
+ 
++  if (cogl_renderer_get_winsys_id (cogl_renderer) != COGL_WINSYS_ID_GLX)
++    return FALSE;
++
+   static const char * (*query_extensions_string) (Display *display,
+                                                   int      screen);
+ 
+-- 
+2.31.1
+

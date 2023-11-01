@@ -1,0 +1,47 @@
+From cd8b90a7a7185c3f177469d1a37654a9e8539cd1 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Thu, 29 Sep 2022 14:23:55 +0200
+Subject: [PATCH 2/2] output/kms: Don't attemp to add common modes on
+ connectors without modes
+
+We have no way to sanely add safe modes if there are no modes we can
+compare with, thus don't try.
+
+Fixes the following crash:
+
+ #0 are_all_modes_equally_sized at ../src/backends/native/meta-output-kms.c:284
+ #1 maybe_add_fallback_modes at ../src/backends/native/meta-output-kms.c:310
+ #2 init_output_modes at ../src/backends/native/meta-output-kms.c:347
+ #3 meta_output_kms_new at ../src/backends/native/meta-output-kms.c:414
+ #4 init_outputs at ../src/backends/native/meta-gpu-kms.c:332
+ #5 meta_gpu_kms_read_current at ../src/backends/native/meta-gpu-kms.c:368
+ #6 meta_gpu_kms_new at ../src/backends/native/meta-gpu-kms.c:403
+ #7 create_gpu_from_udev_device at ../src/backends/native/meta-backend-native.c:461
+ #8 init_gpus at ../src/backends/native/meta-backend-native.c:551
+ #9 meta_backend_native_initable_init at ../src/backends/native/meta-backend-native.c:632
+
+Fixes: 877cc3eb7d44e2886395151f763ec09bea350444
+Related: https://bugzilla.redhat.com/show_bug.cgi?id=2127801
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/2646>
+(cherry picked from commit 2c8adb19660cb2cd53381372833e088962437d3b)
+---
+ src/backends/native/meta-output-kms.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/src/backends/native/meta-output-kms.c b/src/backends/native/meta-output-kms.c
+index 9adc20bfd9..058ab7c053 100644
+--- a/src/backends/native/meta-output-kms.c
++++ b/src/backends/native/meta-output-kms.c
+@@ -250,6 +250,9 @@ maybe_add_fallback_modes (const MetaKmsConnectorState *connector_state,
+                           MetaGpuKms                  *gpu_kms,
+                           MetaKmsConnector            *kms_connector)
+ {
++  if (!connector_state->modes)
++    return;
++
+   if (!connector_state->has_scaling)
+     return;
+ 
+-- 
+2.37.1
+

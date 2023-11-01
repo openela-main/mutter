@@ -1,0 +1,38 @@
+From 28030178d7682ce5be03cb7273365ab628065871 Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Mon, 27 Sep 2021 20:37:30 +0200
+Subject: [PATCH] clutter: Make ClutterClickAction independent of click count
+
+This will trigger for every button press/release that is obtained,
+regardless of the click count.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/2024>
+---
+ clutter/clutter/clutter-click-action.c | 4 ----
+ 1 file changed, 4 deletions(-)
+
+diff --git a/clutter/clutter/clutter-click-action.c b/clutter/clutter/clutter-click-action.c
+index 45d87e809..266b6da92 100644
+--- a/clutter/clutter/clutter-click-action.c
++++ b/clutter/clutter/clutter-click-action.c
+@@ -306,9 +306,6 @@ on_event (ClutterActor       *actor,
+     case CLUTTER_TOUCH_BEGIN:
+       has_button = FALSE;
+     case CLUTTER_BUTTON_PRESS:
+-      if (has_button && clutter_event_get_click_count (event) != 1)
+-        return CLUTTER_EVENT_PROPAGATE;
+-
+       if (priv->is_held)
+         return CLUTTER_EVENT_STOP;
+ 
+@@ -386,7 +383,6 @@ on_captured_event (ClutterActor       *stage,
+         return CLUTTER_EVENT_STOP;
+ 
+       if ((has_button && clutter_event_get_button (event) != priv->press_button) ||
+-          (has_button && clutter_event_get_click_count (event) != 1) ||
+           clutter_event_get_device (event) != priv->press_device ||
+           clutter_event_get_event_sequence (event) != priv->press_sequence)
+         return CLUTTER_EVENT_PROPAGATE;
+-- 
+2.35.1
+

@@ -1,0 +1,100 @@
+From 07f63ad466b66cc02b49a326789686bce9325201 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Thu, 14 Oct 2021 18:36:43 +0200
+Subject: [PATCH 3/5] wayland: Only init EGLStream controller if we didn't end
+ up with gbm
+
+When we use gbm together with the NVIDIA driver, we want the EGL/Vulkan
+clients to do the same, instead of using the EGLStream paths. To achieve
+that, make sure to only initialize the EGLStream controller when we
+didn't end up using gbm as the renderer backend.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/2052>
+(cherry picked from commit ac907119ae0f415c099976635c3b1dff4d2d7201)
+(cherry picked from commit e3931f7b8cbd44072137c5dc9de9041486daeade)
+---
+ src/backends/native/meta-renderer-native.c | 11 +++++++++
+ src/backends/native/meta-renderer-native.h |  2 ++
+ src/wayland/meta-wayland.c                 | 26 ++++++++++++++++++++--
+ 3 files changed, 37 insertions(+), 2 deletions(-)
+
+diff --git a/src/backends/native/meta-renderer-native.c b/src/backends/native/meta-renderer-native.c
+index c851619a1..e7460fbf1 100644
+--- a/src/backends/native/meta-renderer-native.c
++++ b/src/backends/native/meta-renderer-native.c
+@@ -201,6 +201,17 @@ meta_renderer_native_has_pending_mode_set (MetaRendererNative *renderer_native)
+   return renderer_native->pending_mode_set;
+ }
+ 
++MetaRendererNativeMode
++meta_renderer_native_get_mode (MetaRendererNative *renderer_native)
++{
++  MetaGpuKms *primary_gpu = renderer_native->primary_gpu_kms;
++  MetaRendererNativeGpuData *primary_gpu_data;
++
++  primary_gpu_data = meta_renderer_native_get_gpu_data (renderer_native,
++                                                        primary_gpu);
++  return primary_gpu_data->mode;
++}
++
+ static void
+ meta_renderer_native_disconnect (CoglRenderer *cogl_renderer)
+ {
+diff --git a/src/backends/native/meta-renderer-native.h b/src/backends/native/meta-renderer-native.h
+index 9475e1857..8c06c2473 100644
+--- a/src/backends/native/meta-renderer-native.h
++++ b/src/backends/native/meta-renderer-native.h
+@@ -66,4 +66,6 @@ void meta_renderer_native_reset_modes (MetaRendererNative *renderer_native);
+ 
+ gboolean meta_renderer_native_use_modifiers (MetaRendererNative *renderer_native);
+ 
++MetaRendererNativeMode meta_renderer_native_get_mode (MetaRendererNative *renderer_native);
++
+ #endif /* META_RENDERER_NATIVE_H */
+diff --git a/src/wayland/meta-wayland.c b/src/wayland/meta-wayland.c
+index 8f16aa429..a3f098410 100644
+--- a/src/wayland/meta-wayland.c
++++ b/src/wayland/meta-wayland.c
+@@ -50,6 +50,10 @@
+ #include "wayland/meta-xwayland-private.h"
+ #include "wayland/meta-xwayland.h"
+ 
++#ifdef HAVE_NATIVE_BACKEND
++#include "backends/native/meta-renderer-native.h"
++#endif
++
+ static char *_display_name_override;
+ 
+ G_DEFINE_TYPE (MetaWaylandCompositor, meta_wayland_compositor, G_TYPE_OBJECT)
+@@ -521,8 +525,26 @@ meta_wayland_compositor_setup (MetaWaylandCompositor *compositor)
+                                   compositor);
+ 
+ #ifdef HAVE_WAYLAND_EGLSTREAM
+-  meta_wayland_eglstream_controller_init (compositor);
+-#endif
++    {
++      gboolean should_enable_eglstream_controller = TRUE;
++#if defined(HAVE_EGL_DEVICE) && defined(HAVE_NATIVE_BACKEND)
++      MetaBackend *backend = meta_get_backend ();
++      MetaRenderer *renderer = meta_backend_get_renderer (backend);
++
++      if (META_IS_RENDERER_NATIVE (renderer))
++        {
++          MetaRendererNative *renderer_native = META_RENDERER_NATIVE (renderer);
++
++          if (meta_renderer_native_get_mode (renderer_native) ==
++              META_RENDERER_NATIVE_MODE_GBM)
++            should_enable_eglstream_controller = FALSE;
++        }
++#endif /* defined(HAVE_EGL_DEVICE) && defined(HAVE_NATIVE_BACKEND) */
++
++      if (should_enable_eglstream_controller)
++        meta_wayland_eglstream_controller_init (compositor);
++    }
++#endif /* HAVE_WAYLAND_EGLSTREAM */
+ 
+   if (meta_get_x11_display_policy () != META_DISPLAY_POLICY_DISABLED)
+     {
+-- 
+2.35.1
+

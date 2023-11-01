@@ -1,0 +1,144 @@
+From 651f5e0c6a33d9ac32c2a16735a026153a2ddf38 Mon Sep 17 00:00:00 2001
+From: Olivier Fourdan <ofourdan@redhat.com>
+Date: Tue, 14 Jun 2022 16:31:43 +0200
+Subject: [PATCH] backends: Move MetaKeyboardA11yFlags to a public header
+
+The MetaKeyboardA11yFlags are used by gnome-shell to show a dialog
+whenever a keyboard accessibility feature is switched using the
+keyboard.
+
+Unfortunately, commit c3acaeb25 renamed the Clutter flag to Meta and
+moved them to a private header. As a result, gnome-shell do not show any
+dialog anymore when a keyboard accessibility feature is activated.
+
+Move the MetaKeyboardA11yFlags definition to a public header so that
+gnome-shell can use it.
+
+Closes: https://gitlab.gnome.org/GNOME/mutter/-/issues/2306
+Fixes: c3acaeb25 - backends: Move keyboard a11y into backends
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/2463>
+---
+ src/backends/meta-input-settings-private.h | 19 +------
+ src/meta/meson.build                       |  1 +
+ src/meta/meta-enums.h                      | 62 ++++++++++++++++++++++
+ 3 files changed, 64 insertions(+), 18 deletions(-)
+ create mode 100644 src/meta/meta-enums.h
+
+diff --git a/src/backends/meta-input-settings-private.h b/src/backends/meta-input-settings-private.h
+index 42ee0e0e6..5ef54ee84 100644
+--- a/src/backends/meta-input-settings-private.h
++++ b/src/backends/meta-input-settings-private.h
+@@ -31,29 +31,12 @@
+ #include "backends/meta-backend-types.h"
+ #include "clutter/clutter.h"
+ #include "meta/display.h"
++#include "meta/meta-enums.h"
+ 
+ #define META_TYPE_INPUT_SETTINGS (meta_input_settings_get_type ())
+ G_DECLARE_DERIVABLE_TYPE (MetaInputSettings, meta_input_settings,
+                           META, INPUT_SETTINGS, GObject)
+ 
+-typedef enum
+-{
+-  META_A11Y_KEYBOARD_ENABLED = 1 << 0,
+-  META_A11Y_TIMEOUT_ENABLED = 1 << 1,
+-  META_A11Y_MOUSE_KEYS_ENABLED = 1 << 2,
+-  META_A11Y_SLOW_KEYS_ENABLED = 1 << 3,
+-  META_A11Y_SLOW_KEYS_BEEP_PRESS = 1 << 4,
+-  META_A11Y_SLOW_KEYS_BEEP_ACCEPT = 1 << 5,
+-  META_A11Y_SLOW_KEYS_BEEP_REJECT = 1 << 6,
+-  META_A11Y_BOUNCE_KEYS_ENABLED = 1 << 7,
+-  META_A11Y_BOUNCE_KEYS_BEEP_REJECT = 1 << 8,
+-  META_A11Y_TOGGLE_KEYS_ENABLED = 1 << 9,
+-  META_A11Y_STICKY_KEYS_ENABLED = 1 << 10,
+-  META_A11Y_STICKY_KEYS_TWO_KEY_OFF = 1 << 11,
+-  META_A11Y_STICKY_KEYS_BEEP = 1 << 12,
+-  META_A11Y_FEATURE_STATE_CHANGE_BEEP = 1 << 13,
+-} MetaKeyboardA11yFlags;
+-
+ /**
+  * MetaKbdA11ySettings:
+  *
+diff --git a/src/meta/meson.build b/src/meta/meson.build
+index a096ee4dd..4a67abb25 100644
+--- a/src/meta/meson.build
++++ b/src/meta/meson.build
+@@ -17,6 +17,7 @@ mutter_public_headers = [
+   'meta-close-dialog.h',
+   'meta-cursor-tracker.h',
+   'meta-dnd.h',
++  'meta-enums.h',
+   'meta-idle-monitor.h',
+   'meta-inhibit-shortcuts-dialog.h',
+   'meta-launch-context.h',
+diff --git a/src/meta/meta-enums.h b/src/meta/meta-enums.h
+new file mode 100644
+index 000000000..e59ebaf72
+--- /dev/null
++++ b/src/meta/meta-enums.h
+@@ -0,0 +1,62 @@
++/*
++ * Copyright (C) 2016-2021 Red Hat Inc.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of the
++ * License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA
++ * 02111-1307, USA.
++ *
++ */
++
++#ifndef META_ENUMS_H
++#define META_ENUMS_H
++
++/**
++ * MetaKeyboardA11yFlags:
++ * @META_A11Y_KEYBOARD_ENABLED:
++ * @META_A11Y_TIMEOUT_ENABLED:
++ * @META_A11Y_MOUSE_KEYS_ENABLED:
++ * @META_A11Y_SLOW_KEYS_ENABLED:
++ * @META_A11Y_SLOW_KEYS_BEEP_PRESS:
++ * @META_A11Y_SLOW_KEYS_BEEP_ACCEPT:
++ * @META_A11Y_SLOW_KEYS_BEEP_REJECT:
++ * @META_A11Y_BOUNCE_KEYS_ENABLED:
++ * @META_A11Y_BOUNCE_KEYS_BEEP_REJECT:
++ * @META_A11Y_TOGGLE_KEYS_ENABLED:
++ * @META_A11Y_STICKY_KEYS_ENABLED:
++ * @META_A11Y_STICKY_KEYS_TWO_KEY_OFF:
++ * @META_A11Y_STICKY_KEYS_BEEP:
++ * @META_A11Y_FEATURE_STATE_CHANGE_BEEP:
++ *
++ * Keyboard accessibility features.
++ *
++ */
++typedef enum
++{
++  META_A11Y_KEYBOARD_ENABLED = 1 << 0,
++  META_A11Y_TIMEOUT_ENABLED = 1 << 1,
++  META_A11Y_MOUSE_KEYS_ENABLED = 1 << 2,
++  META_A11Y_SLOW_KEYS_ENABLED = 1 << 3,
++  META_A11Y_SLOW_KEYS_BEEP_PRESS = 1 << 4,
++  META_A11Y_SLOW_KEYS_BEEP_ACCEPT = 1 << 5,
++  META_A11Y_SLOW_KEYS_BEEP_REJECT = 1 << 6,
++  META_A11Y_BOUNCE_KEYS_ENABLED = 1 << 7,
++  META_A11Y_BOUNCE_KEYS_BEEP_REJECT = 1 << 8,
++  META_A11Y_TOGGLE_KEYS_ENABLED = 1 << 9,
++  META_A11Y_STICKY_KEYS_ENABLED = 1 << 10,
++  META_A11Y_STICKY_KEYS_TWO_KEY_OFF = 1 << 11,
++  META_A11Y_STICKY_KEYS_BEEP = 1 << 12,
++  META_A11Y_FEATURE_STATE_CHANGE_BEEP = 1 << 13,
++} MetaKeyboardA11yFlags;
++
++#endif /* META_ENUMS_H */
+-- 
+2.36.1
+

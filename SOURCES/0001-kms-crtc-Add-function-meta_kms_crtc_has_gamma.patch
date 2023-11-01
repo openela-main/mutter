@@ -1,0 +1,46 @@
+From de3188fcc6863b8a6e3d2443a00cf3b00f6f26ff Mon Sep 17 00:00:00 2001
+From: Daniel van Vugt <daniel.van.vugt@canonical.com>
+Date: Tue, 12 Apr 2022 18:34:58 +0800
+Subject: [PATCH 1/2] kms/crtc: Add function meta_kms_crtc_has_gamma
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/2360>
+---
+ src/backends/native/meta-kms-crtc.c | 7 +++++++
+ src/backends/native/meta-kms-crtc.h | 3 +++
+ 2 files changed, 10 insertions(+)
+
+diff --git a/src/backends/native/meta-kms-crtc.c b/src/backends/native/meta-kms-crtc.c
+index 51d040b44..24f5a2d74 100644
+--- a/src/backends/native/meta-kms-crtc.c
++++ b/src/backends/native/meta-kms-crtc.c
+@@ -92,6 +92,13 @@ meta_kms_crtc_is_active (MetaKmsCrtc *crtc)
+   return crtc->current_state.is_active;
+ }
+ 
++
++gboolean
++meta_kms_crtc_has_gamma (MetaKmsCrtc *crtc)
++{
++  return !!meta_kms_crtc_get_prop_id (crtc, META_KMS_CRTC_PROP_GAMMA_LUT);
++}
++
+ static void
+ read_gamma_state (MetaKmsCrtc       *crtc,
+                   MetaKmsImplDevice *impl_device,
+diff --git a/src/backends/native/meta-kms-crtc.h b/src/backends/native/meta-kms-crtc.h
+index 406ca3ac1..cbaeaa280 100644
+--- a/src/backends/native/meta-kms-crtc.h
++++ b/src/backends/native/meta-kms-crtc.h
+@@ -66,6 +66,9 @@ uint32_t meta_kms_crtc_get_id (MetaKmsCrtc *crtc);
+ 
+ int meta_kms_crtc_get_idx (MetaKmsCrtc *crtc);
+ 
++
++gboolean meta_kms_crtc_has_gamma (MetaKmsCrtc *crtc);
++
+ gboolean meta_kms_crtc_is_active (MetaKmsCrtc *crtc);
+ 
+ void meta_kms_crtc_gamma_free (MetaKmsCrtcGamma *gamma);
+-- 
+2.35.1
+
