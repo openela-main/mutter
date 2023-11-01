@@ -1,0 +1,28 @@
+From a192b9abd77aa14ae794850e41d210472f86b9b0 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Thu, 25 Jun 2020 10:09:48 +0200
+Subject: [PATCH 2/2] gpu-kms: Reset CRTC, mode and output list if no resources
+
+On device removal, the next resource retrieval will fail; handle this by
+just clearing the CRTC, mode and outputs.
+---
+ src/backends/native/meta-gpu-kms.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/src/backends/native/meta-gpu-kms.c b/src/backends/native/meta-gpu-kms.c
+index 93e509def5..dc93abb7b1 100644
+--- a/src/backends/native/meta-gpu-kms.c
++++ b/src/backends/native/meta-gpu-kms.c
+@@ -871,6 +871,9 @@ meta_gpu_kms_read_current (MetaGpu  *gpu,
+                      local_error->message);
+           gpu_kms->resources_init_failed_before = TRUE;
+         }
++      meta_gpu_take_outputs (gpu, NULL);
++      meta_gpu_take_modes (gpu, NULL);
++      meta_gpu_take_crtcs (gpu, NULL);
+       return TRUE;
+     }
+ 
+-- 
+2.26.2
+

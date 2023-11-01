@@ -1,0 +1,80 @@
+From eeff82f534f81b086d10d53124362d9e316e2cf9 Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Thu, 12 Dec 2019 18:05:08 +0100
+Subject: [PATCH] backends: Always enable tap-to-click/drag on opaque Wacom
+ tablets
+
+Touch-wise, those are essentially giant touchpads, but have no buttons
+associated to the "touchpad" device (There may be pad buttons, but
+those are not mouse buttons).
+
+Without tap-to-click/drag, touch in those devices is somewhat useless
+out of the box. Have them always enable these features, despite the
+setting.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/968
+---
+ src/backends/meta-input-settings.c | 33 ++++++++++++++++++++++++++++--
+ 1 file changed, 31 insertions(+), 2 deletions(-)
+
+diff --git a/src/backends/meta-input-settings.c b/src/backends/meta-input-settings.c
+index 2e6672d9c..28dc387ef 100644
+--- a/src/backends/meta-input-settings.c
++++ b/src/backends/meta-input-settings.c
+@@ -517,6 +517,33 @@ update_touchpad_disable_while_typing (MetaInputSettings  *input_settings,
+     }
+ }
+ 
++static gboolean
++device_is_tablet_touchpad (MetaInputSettings  *input_settings,
++                           ClutterInputDevice *device)
++{
++#ifdef HAVE_LIBWACOM
++  WacomIntegrationFlags flags = 0;
++  WacomDevice *wacom_device;
++
++  if (clutter_input_device_get_device_type (device) != CLUTTER_TOUCHPAD_DEVICE)
++    return FALSE;
++
++  wacom_device =
++    meta_input_settings_get_tablet_wacom_device (input_settings,
++                                                 device);
++  if (wacom_device)
++    {
++      flags = libwacom_get_integration_flags (wacom_device);
++
++      if ((flags & (WACOM_DEVICE_INTEGRATED_SYSTEM |
++                    WACOM_DEVICE_INTEGRATED_DISPLAY)) == 0)
++        return TRUE;
++    }
++#endif
++
++  return FALSE;
++}
++
+ static void
+ update_touchpad_tap_enabled (MetaInputSettings  *input_settings,
+                              ClutterInputDevice *device)
+@@ -531,7 +558,8 @@ update_touchpad_tap_enabled (MetaInputSettings  *input_settings,
+ 
+   priv = meta_input_settings_get_instance_private (input_settings);
+   input_settings_class = META_INPUT_SETTINGS_GET_CLASS (input_settings);
+-  enabled = g_settings_get_boolean (priv->touchpad_settings, "tap-to-click");
++  enabled = device_is_tablet_touchpad (input_settings, device) ||
++    g_settings_get_boolean (priv->touchpad_settings, "tap-to-click");
+ 
+   if (device)
+     {
+@@ -561,7 +589,8 @@ update_touchpad_tap_and_drag_enabled (MetaInputSettings  *input_settings,
+ 
+   priv = meta_input_settings_get_instance_private (input_settings);
+   input_settings_class = META_INPUT_SETTINGS_GET_CLASS (input_settings);
+-  enabled = g_settings_get_boolean (priv->touchpad_settings, "tap-and-drag");
++  enabled = device_is_tablet_touchpad (input_settings, device) ||
++    g_settings_get_boolean (priv->touchpad_settings, "tap-and-drag");
+ 
+   if (device)
+     {
+-- 
+2.23.0
+

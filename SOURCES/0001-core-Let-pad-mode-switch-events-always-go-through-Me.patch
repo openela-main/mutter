@@ -1,0 +1,64 @@
+From 5cab6bac4d4fb06e60d3198dc654a5d70fa6240e Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Mon, 16 Dec 2019 13:53:26 +0100
+Subject: [PATCH] core: Let pad mode switch events always go through
+ MetaInputSettings
+
+We used to inhibit all pad actions while the OSD is shown, but one we
+would actually want to handle are mode switches while the OSD is open.
+So it has an opportunity to catch up to the mode switch.
+
+This lets MetaInputSettings reflect the mode switch (eg. when querying
+action labels), so the OSD has an opportunity to update the current
+actions.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/975
+---
+ src/core/events.c | 30 ++++++++++++++++++++++++------
+ 1 file changed, 24 insertions(+), 6 deletions(-)
+
+diff --git a/src/core/events.c b/src/core/events.c
+index d383778629..44f28d0b97 100644
+--- a/src/core/events.c
++++ b/src/core/events.c
+@@ -256,13 +256,31 @@ meta_display_handle_event (MetaDisplay        *display,
+     }
+ #endif
+ 
+-  if (!display->current_pad_osd &&
+-      (event->type == CLUTTER_PAD_BUTTON_PRESS ||
+-       event->type == CLUTTER_PAD_BUTTON_RELEASE ||
+-       event->type == CLUTTER_PAD_RING ||
+-       event->type == CLUTTER_PAD_STRIP))
++  if (event->type == CLUTTER_PAD_BUTTON_PRESS ||
++      event->type == CLUTTER_PAD_BUTTON_RELEASE ||
++      event->type == CLUTTER_PAD_RING ||
++      event->type == CLUTTER_PAD_STRIP)
+     {
+-      if (meta_input_settings_handle_pad_event (meta_backend_get_input_settings (backend),
++      gboolean handle_pad_event = TRUE;
++      gboolean is_mode_switch = FALSE;
++
++      if (event->type == CLUTTER_PAD_BUTTON_PRESS ||
++          event->type == CLUTTER_PAD_BUTTON_RELEASE)
++        {
++          ClutterInputDevice *pad;
++          uint32_t button;
++
++          pad = clutter_event_get_source_device (event);
++          button = clutter_event_get_button (event);
++
++          is_mode_switch =
++            clutter_input_device_get_mode_switch_button_group (pad, button) >= 0;
++        }
++
++      handle_pad_event = !display->current_pad_osd || is_mode_switch;
++
++      if (handle_pad_event &&
++          meta_input_settings_handle_pad_event (meta_backend_get_input_settings (backend),
+                                                 event))
+         {
+           bypass_wayland = bypass_clutter = TRUE;
+-- 
+2.24.0
+

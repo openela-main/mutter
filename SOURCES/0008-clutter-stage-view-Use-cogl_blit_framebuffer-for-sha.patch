@@ -1,0 +1,42 @@
+From bbeb161e8ab31bbef3c7d378e9a8d4ecc786c25d Mon Sep 17 00:00:00 2001
+From: Olivier Fourdan <ofourdan@redhat.com>
+Date: Thu, 26 Sep 2019 10:20:36 +0200
+Subject: [PATCH 08/12] clutter/stage-view: Use cogl_blit_framebuffer() for
+ shadow FB
+
+If there is no transformation, use `cogl_blit_framebuffer()` as a
+shortcut in `clutter_stage_view_blit_offscreen()`, that dramatically
+improves performance when using a shadow framebuffer.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/809
+(cherry picked from commit 3400c555a032832a689c208486891352a6cb92de)
+---
+ clutter/clutter/clutter-stage-view.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/clutter/clutter/clutter-stage-view.c b/clutter/clutter/clutter-stage-view.c
+index cd6cd35cb..00cbfd1ce 100644
+--- a/clutter/clutter/clutter-stage-view.c
++++ b/clutter/clutter/clutter-stage-view.c
+@@ -126,6 +126,18 @@ clutter_stage_view_blit_offscreen (ClutterStageView            *view,
+     clutter_stage_view_get_instance_private (view);
+   CoglMatrix matrix;
+ 
++  clutter_stage_view_get_offscreen_transformation_matrix (view, &matrix);
++  if (cogl_matrix_is_identity (&matrix))
++    {
++      if (cogl_blit_framebuffer (priv->offscreen,
++                                 priv->framebuffer,
++                                 rect->x, rect->y,
++                                 rect->x, rect->y,
++                                 rect->width, rect->height,
++                                 NULL))
++        return;
++    }
++
+   clutter_stage_view_ensure_offscreen_blit_pipeline (view);
+   cogl_framebuffer_push_matrix (priv->framebuffer);
+ 
+-- 
+2.21.0
+

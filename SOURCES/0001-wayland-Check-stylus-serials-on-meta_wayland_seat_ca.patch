@@ -1,0 +1,109 @@
+From f2b3dd318f1165849b45a86251724939b100ef7d Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Mon, 28 Oct 2019 18:07:31 +0100
+Subject: [PATCH] wayland: Check stylus serials on
+ meta_wayland_seat_can_popup()
+
+This allows xdg_popup.grab() to work with styli. Without this check
+we would bail out and emit xdg_popup.popup_done, leaving stylus users
+unable to interact with popup menus, comboboxes, etc...
+
+Closes: https://gitlab.gnome.org/GNOME/mutter/issues/886
+---
+ src/wayland/meta-wayland-seat.c        | 10 +++++++++-
+ src/wayland/meta-wayland-tablet-seat.c | 17 +++++++++++++++++
+ src/wayland/meta-wayland-tablet-seat.h |  2 ++
+ src/wayland/meta-wayland-tablet-tool.c |  7 +++++++
+ src/wayland/meta-wayland-tablet-tool.h |  2 ++
+ 5 files changed, 37 insertions(+), 1 deletion(-)
+
+diff --git a/src/wayland/meta-wayland-seat.c b/src/wayland/meta-wayland-seat.c
+index 91fe376ff..cf41d6eb8 100644
+--- a/src/wayland/meta-wayland-seat.c
++++ b/src/wayland/meta-wayland-seat.c
+@@ -504,9 +504,17 @@ gboolean
+ meta_wayland_seat_can_popup (MetaWaylandSeat *seat,
+                              uint32_t         serial)
+ {
++  MetaWaylandCompositor *compositor;
++  MetaWaylandTabletSeat *tablet_seat;
++
++  compositor = meta_wayland_compositor_get_default ();
++  tablet_seat =
++    meta_wayland_tablet_manager_ensure_seat (compositor->tablet_manager, seat);
++
+   return (meta_wayland_pointer_can_popup (seat->pointer, serial) ||
+           meta_wayland_keyboard_can_popup (seat->keyboard, serial) ||
+-          meta_wayland_touch_can_popup (seat->touch, serial));
++          meta_wayland_touch_can_popup (seat->touch, serial) ||
++          meta_wayland_tablet_seat_can_popup (tablet_seat, serial));
+ }
+ 
+ gboolean
+diff --git a/src/wayland/meta-wayland-tablet-seat.c b/src/wayland/meta-wayland-tablet-seat.c
+index b4bc4aa58..b1964714a 100644
+--- a/src/wayland/meta-wayland-tablet-seat.c
++++ b/src/wayland/meta-wayland-tablet-seat.c
+@@ -552,3 +552,20 @@ meta_wayland_tablet_seat_set_pad_focus (MetaWaylandTabletSeat *tablet_seat,
+   while (g_hash_table_iter_next (&iter, NULL, (gpointer *) &pad))
+     meta_wayland_tablet_pad_set_focus (pad, surface);
+ }
++
++gboolean
++meta_wayland_tablet_seat_can_popup (MetaWaylandTabletSeat *tablet_seat,
++                                    uint32_t               serial)
++{
++  MetaWaylandTabletTool *tool;
++  GHashTableIter iter;
++
++  g_hash_table_iter_init (&iter, tablet_seat->tools);
++  while (g_hash_table_iter_next (&iter, NULL, (gpointer *) &tool))
++    {
++      if (meta_wayland_tablet_tool_can_popup (tool, serial))
++        return TRUE;
++    }
++
++  return FALSE;
++}
+diff --git a/src/wayland/meta-wayland-tablet-seat.h b/src/wayland/meta-wayland-tablet-seat.h
+index c083dec5f..e3be5f264 100644
+--- a/src/wayland/meta-wayland-tablet-seat.h
++++ b/src/wayland/meta-wayland-tablet-seat.h
+@@ -75,5 +75,7 @@ MetaWaylandTablet     *meta_wayland_tablet_seat_lookup_paired_tablet (MetaWaylan
+                                                                       MetaWaylandTabletPad  *pad);
+ GList                 *meta_wayland_tablet_seat_lookup_paired_pads   (MetaWaylandTabletSeat *tablet_seat,
+                                                                       MetaWaylandTablet     *tablet);
++gboolean               meta_wayland_tablet_seat_can_popup            (MetaWaylandTabletSeat *tablet_seat,
++                                                                      uint32_t               serial);
+ 
+ #endif /* META_WAYLAND_TABLET_SEAT_H */
+diff --git a/src/wayland/meta-wayland-tablet-tool.c b/src/wayland/meta-wayland-tablet-tool.c
+index c02831d73..065c834bb 100644
+--- a/src/wayland/meta-wayland-tablet-tool.c
++++ b/src/wayland/meta-wayland-tablet-tool.c
+@@ -1018,3 +1018,10 @@ meta_wayland_tablet_tool_can_grab_surface (MetaWaylandTabletTool *tool,
+   return ((tool->down_serial == serial || tool->button_serial == serial) &&
+           tablet_tool_can_grab_surface (tool, surface));
+ }
++
++gboolean
++meta_wayland_tablet_tool_can_popup (MetaWaylandTabletTool *tool,
++                                    uint32_t               serial)
++{
++  return tool->down_serial == serial || tool->button_serial == serial;
++}
+diff --git a/src/wayland/meta-wayland-tablet-tool.h b/src/wayland/meta-wayland-tablet-tool.h
+index 71bc86643..315e26bde 100644
+--- a/src/wayland/meta-wayland-tablet-tool.h
++++ b/src/wayland/meta-wayland-tablet-tool.h
+@@ -85,5 +85,7 @@ void     meta_wayland_tablet_tool_set_cursor_position (MetaWaylandTabletTool  *t
+ gboolean meta_wayland_tablet_tool_can_grab_surface (MetaWaylandTabletTool *tool,
+                                                     MetaWaylandSurface    *surface,
+                                                     uint32_t               serial);
++gboolean meta_wayland_tablet_tool_can_popup        (MetaWaylandTabletTool *tool,
++                                                    uint32_t               serial);
+ 
+ #endif /* META_WAYLAND_TABLET_TOOL_H */
+-- 
+2.23.0
+

@@ -1,0 +1,55 @@
+From 62387eb649b7b33d923d5382f85c9210a3bedbe8 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Florian=20M=C3=BCllner?= <fmuellner@gnome.org>
+Date: Thu, 30 May 2019 16:32:35 +0200
+Subject: [PATCH] enum-types: Use @basename@ in header comment
+
+@filename@ may contain arch-specific bits that introduce unnecessary
+multi-lib issues.
+---
+ clutter/clutter/clutter-enum-types.h.in  | 2 +-
+ cogl/cogl-path/cogl-path-enum-types.h.in | 2 +-
+ src/meta/meta-enum-types.h.in            | 2 +-
+ 3 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/clutter/clutter/clutter-enum-types.h.in b/clutter/clutter/clutter-enum-types.h.in
+index 2e5b6707e..17f9ee644 100644
+--- a/clutter/clutter/clutter-enum-types.h.in
++++ b/clutter/clutter/clutter-enum-types.h.in
+@@ -13,7 +13,7 @@ G_BEGIN_DECLS
+ /*** END file-header ***/
+ 
+ /*** BEGIN file-production ***/
+-/* enumerations from "@filename@" */
++/* enumerations from "@basename@" */
+ /*** END file-production ***/
+ 
+ /*** BEGIN value-header ***/
+diff --git a/cogl/cogl-path/cogl-path-enum-types.h.in b/cogl/cogl-path/cogl-path-enum-types.h.in
+index 071686acd..2b377ed18 100644
+--- a/cogl/cogl-path/cogl-path-enum-types.h.in
++++ b/cogl/cogl-path/cogl-path-enum-types.h.in
+@@ -9,7 +9,7 @@ G_BEGIN_DECLS
+ /*** END file-header ***/
+ 
+ /*** BEGIN file-production ***/
+-/* enumerations from "@filename@" */
++/* enumerations from "@basename@" */
+ /*** END file-production ***/
+ 
+ /*** BEGIN file-tail ***/
+diff --git a/src/meta/meta-enum-types.h.in b/src/meta/meta-enum-types.h.in
+index 6e3b67b26..bee0196de 100644
+--- a/src/meta/meta-enum-types.h.in
++++ b/src/meta/meta-enum-types.h.in
+@@ -10,7 +10,7 @@ G_BEGIN_DECLS
+ /*** END file-header ***/
+ 
+ /*** BEGIN file-production ***/
+-/* enumerations from "@filename@" */
++/* enumerations from "@basename@" */
+ /*** END file-production ***/
+ 
+ /*** BEGIN file-tail ***/
+-- 
+2.21.0
+

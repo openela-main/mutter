@@ -1,0 +1,55 @@
+From 38d88d4e4286c3ada041561426873e44fdba3c40 Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Fri, 17 Jan 2020 14:45:00 +0100
+Subject: [PATCH] Create explicit WacomDevices for tablet "touchpad" devices
+
+---
+ src/backends/meta-input-settings.c | 15 +++++++++++----
+ 1 file changed, 11 insertions(+), 4 deletions(-)
+
+diff --git a/src/backends/meta-input-settings.c b/src/backends/meta-input-settings.c
+index 28dc387ef9..820a3b201e 100644
+--- a/src/backends/meta-input-settings.c
++++ b/src/backends/meta-input-settings.c
+@@ -521,27 +521,34 @@ static gboolean
+ device_is_tablet_touchpad (MetaInputSettings  *input_settings,
+                            ClutterInputDevice *device)
+ {
++  gboolean is_tablet = FALSE;
+ #ifdef HAVE_LIBWACOM
++  MetaInputSettingsPrivate *priv;
+   WacomIntegrationFlags flags = 0;
+   WacomDevice *wacom_device;
+ 
++  priv = meta_input_settings_get_instance_private (input_settings);
++
+   if (clutter_input_device_get_device_type (device) != CLUTTER_TOUCHPAD_DEVICE)
+     return FALSE;
+ 
+   wacom_device =
+-    meta_input_settings_get_tablet_wacom_device (input_settings,
+-                                                 device);
++    libwacom_new_from_path (priv->wacom_db,
++                            clutter_input_device_get_device_node (device),
++                            WFALLBACK_NONE, NULL);
+   if (wacom_device)
+     {
+       flags = libwacom_get_integration_flags (wacom_device);
+ 
+       if ((flags & (WACOM_DEVICE_INTEGRATED_SYSTEM |
+                     WACOM_DEVICE_INTEGRATED_DISPLAY)) == 0)
+-        return TRUE;
++        is_tablet = TRUE;
++
++      libwacom_destroy (wacom_device);
+     }
+ #endif
+ 
+-  return FALSE;
++  return is_tablet;
+ }
+ 
+ static void
+-- 
+2.25.0.rc2
+

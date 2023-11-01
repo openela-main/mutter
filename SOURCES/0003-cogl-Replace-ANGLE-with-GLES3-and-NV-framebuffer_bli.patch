@@ -1,0 +1,77 @@
+From 04d921c2c1da571c8c61a4ca12a380bc3b9623fe Mon Sep 17 00:00:00 2001
+From: Pekka Paalanen <pekka.paalanen@collabora.com>
+Date: Mon, 6 May 2019 13:40:31 +0300
+Subject: [PATCH 03/12] cogl: Replace ANGLE with GLES3 and NV framebuffer_blit
+
+ANGLE extensions are only provided by Google's Almost Native Graphics Layer
+Engine (ANGLE) implementation. Therefore they do not seem too useful for
+Mutter.
+
+The reason to drop GL_ANGLE_framebuffer_blit support is that it has more
+limitations compared to the glBlitFramebuffer in GL_EXT_framebuffer_blit,
+GL_NV_framebuffer_bit, OpenGL 3.0 and OpenGL ES 3.0. Most importantly, the
+ANGLE version cannot flip the image while copying, which limits
+_cogl_blit_framebuffer to only off-screen <-> off-screen copies. Follow-up work
+will need off-screen <-> on-screen copies.
+
+Instead of adding yet more capability flags to Cogl, dropping ANGLE support
+seems appropriate.
+
+The NV extension is added to the list of glBlitFramebuffer providers because it
+provides the same support as ANGLE and more.
+
+Likewise OpenGL ES 3.0 is added to the list of glBlitFramebuffer providers
+because e.g. Mesa GLES implementation usually provides it and that makes it
+widely available, again surpassing the ANGLE supported features.
+
+Follow-up patches will lift some of the Cogl assumptions of what
+glBlitFramebuffer cannot do.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/615
+
+(cherry picked from commit 3e68c9e8faa78298039fa3583898f18550740812)
+---
+ cogl/cogl/cogl-framebuffer-private.h         | 3 +--
+ cogl/cogl/gl-prototypes/cogl-all-functions.h | 5 +++--
+ 2 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/cogl/cogl/cogl-framebuffer-private.h b/cogl/cogl/cogl-framebuffer-private.h
+index de886b64f..3aab852c4 100644
+--- a/cogl/cogl/cogl-framebuffer-private.h
++++ b/cogl/cogl/cogl-framebuffer-private.h
+@@ -387,8 +387,7 @@ _cogl_push_framebuffers (CoglFramebuffer *draw_buffer,
+  * Note that this function differs a lot from the glBlitFramebuffer
+  * function provided by the GL_EXT_framebuffer_blit extension. Notably
+  * it doesn't support having different sizes for the source and
+- * destination rectangle. This isn't supported by the corresponding
+- * GL_ANGLE_framebuffer_blit extension on GLES2.0 and it doesn't seem
++ * destination rectangle. This doesn't seem
+  * like a particularly useful feature. If the application wanted to
+  * scale the results it may make more sense to draw a primitive
+  * instead.
+diff --git a/cogl/cogl/gl-prototypes/cogl-all-functions.h b/cogl/cogl/gl-prototypes/cogl-all-functions.h
+index 924ee349d..0af126059 100644
+--- a/cogl/cogl/gl-prototypes/cogl-all-functions.h
++++ b/cogl/cogl/gl-prototypes/cogl-all-functions.h
+@@ -4,6 +4,7 @@
+  * A Low Level GPU Graphics and Utilities API
+  *
+  * Copyright (C) 2009, 2011 Intel Corporation.
++ * Copyright (C) 2019 DisplayLink (UK) Ltd.
+  *
+  * Permission is hereby granted, free of charge, to any person
+  * obtaining a copy of this software and associated documentation
+@@ -132,8 +133,8 @@ COGL_EXT_END ()
+ 
+ 
+ COGL_EXT_BEGIN (offscreen_blit, 3, 0,
+-                0, /* not in either GLES */
+-                "EXT\0ANGLE\0",
++                COGL_EXT_IN_GLES3,
++                "EXT\0NV\0",
+                 "framebuffer_blit\0")
+ COGL_EXT_FUNCTION (void, glBlitFramebuffer,
+                    (GLint                 srcX0,
+-- 
+2.21.0
+

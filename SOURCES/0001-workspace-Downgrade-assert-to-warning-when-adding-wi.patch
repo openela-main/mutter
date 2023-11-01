@@ -1,0 +1,33 @@
+From d33a244603d1dd63e2e25255af98f489c65645f6 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Mon, 29 Aug 2022 16:01:48 +0200
+Subject: [PATCH] workspace: Downgrade assert to warning when adding window
+
+An extension can by accident cause us to end up in a state where we try
+to add the same window to a workspace twice. When this happens we
+shouldn't crash, but instead complain loudly.
+
+Closes: https://gitlab.gnome.org/GNOME/mutter/-/issues/992
+Related: https://gitlab.gnome.org/GNOME/gnome-shell-extensions/-/merge_requests/157
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/1692>
+---
+ src/core/workspace.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/core/workspace.c b/src/core/workspace.c
+index 58fcfa78c5..ed16a83098 100644
+--- a/src/core/workspace.c
++++ b/src/core/workspace.c
+@@ -370,7 +370,8 @@ void
+ meta_workspace_add_window (MetaWorkspace *workspace,
+                            MetaWindow    *window)
+ {
+-  g_assert (g_list_find (workspace->mru_list, window) == NULL);
++  g_return_if_fail (g_list_find (workspace->mru_list, window) == NULL);
++
+   workspace->mru_list = g_list_prepend (workspace->mru_list, window);
+ 
+   workspace->windows = g_list_prepend (workspace->windows, window);
+-- 
+2.37.1
+

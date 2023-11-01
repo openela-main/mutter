@@ -1,0 +1,46 @@
+From 7bcc274dbc6cb75814cce3e5c2e7f45cf25b0538 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Tue, 9 Feb 2021 17:59:08 +0100
+Subject: [PATCH 1/2] clutter/stage-view: Hide double buffered shadowfb behind
+ envvar
+
+It still results in worse performance than a single FBO based shadowfb,
+so don't use it. It will need a new EGL extension for zero copy CPU
+memory based FBO to be feasable.
+---
+ clutter/clutter/clutter-stage-view.c | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/clutter/clutter/clutter-stage-view.c b/clutter/clutter/clutter-stage-view.c
+index 5e5966d06..ec18db7b8 100644
+--- a/clutter/clutter/clutter-stage-view.c
++++ b/clutter/clutter/clutter-stage-view.c
+@@ -282,6 +282,14 @@ init_dma_buf_shadowfbs (ClutterStageView  *view,
+   CoglRenderer *cogl_renderer = cogl_context_get_renderer (cogl_context);
+   CoglFramebuffer *initial_shadowfb;
+ 
++  if (g_strcmp0 (g_getenv ("MUTTER_DEBUG_ENABLE_DOUBLE_BUFFER_SHADOWFB"),
++                 "1") != 0)
++    {
++      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
++                   "Double buffered shadowfb not enabled");
++      return FALSE;
++    }
++
+   if (!cogl_clutter_winsys_has_feature (COGL_WINSYS_FEATURE_BUFFER_AGE))
+     {
+       g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+@@ -390,8 +398,8 @@ init_shadowfb (ClutterStageView *view)
+       return;
+     }
+ 
+-  g_warning ("Failed to initialize double buffered shadow fb for %s: %s",
+-             priv->name, error->message);
++  g_debug ("Failed to initialize double buffered shadow fb for %s: %s",
++           priv->name, error->message);
+   g_clear_error (&error);
+ 
+   if (!init_fallback_shadowfb (view, cogl_context, width, height, &error))
+-- 
+2.29.2
+

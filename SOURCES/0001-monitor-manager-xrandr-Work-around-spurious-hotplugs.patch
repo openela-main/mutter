@@ -1,0 +1,62 @@
+From 7e21503dc7c3b8321475eb5ccfdb23e71f86c0a0 Mon Sep 17 00:00:00 2001
+From: Rui Matos <tiagomatos@gmail.com>
+Date: Tue, 6 Oct 2015 21:16:18 +0200
+Subject: [PATCH] monitor-manager-xrandr: Work around spurious hotplugs on Xvnc
+
+Xvnc turns its outputs off/on on every mode set which makes us believe
+there was an hotplug when there actually wasn't. Work around this by
+requiring new randr configuration timestamps to be ahead of the last
+set timestamp by at least 100 ms for us to consider them an actual
+hotplug.
+---
+ .../x11/meta-monitor-manager-xrandr.c         | 20 ++++++++++++++++++-
+ 1 file changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/src/backends/x11/meta-monitor-manager-xrandr.c b/src/backends/x11/meta-monitor-manager-xrandr.c
+index 45c81f4eb..448e51fae 100644
+--- a/src/backends/x11/meta-monitor-manager-xrandr.c
++++ b/src/backends/x11/meta-monitor-manager-xrandr.c
+@@ -1110,6 +1110,19 @@ meta_monitor_manager_xrandr_class_init (MetaMonitorManagerXrandrClass *klass)
+     g_quark_from_static_string ("-meta-monitor-xrandr-data");
+ }
+ 
++static gboolean
++is_xvnc (MetaMonitorManager *manager)
++{
++  MetaMonitorManagerXrandr *manager_xrandr = META_MONITOR_MANAGER_XRANDR (manager);
++  GList *l;
++
++  for (l = meta_gpu_get_outputs (manager_xrandr->gpu); l; l = l->next)
++    if (g_str_has_prefix (((MetaOutput *)l->data)->name, "VNC-"))
++      return TRUE;
++
++  return FALSE;
++}
++
+ gboolean
+ meta_monitor_manager_xrandr_handle_xevent (MetaMonitorManagerXrandr *manager_xrandr,
+ 					   XEvent                   *event)
+@@ -1119,6 +1132,7 @@ meta_monitor_manager_xrandr_handle_xevent (MetaMonitorManagerXrandr *manager_xra
+   XRRScreenResources *resources;
+   gboolean is_hotplug;
+   gboolean is_our_configuration;
++  unsigned int timestamp;
+ 
+   if ((event->type - manager_xrandr->rr_event_base) != RRScreenChangeNotify)
+     return FALSE;
+@@ -1130,7 +1144,11 @@ meta_monitor_manager_xrandr_handle_xevent (MetaMonitorManagerXrandr *manager_xra
+   gpu_xrandr = META_GPU_XRANDR (manager_xrandr->gpu);
+   resources = meta_gpu_xrandr_get_resources (gpu_xrandr);
+ 
+-  is_hotplug = resources->timestamp < resources->configTimestamp;
++  timestamp = resources->timestamp;
++  if (is_xvnc (manager))
++    timestamp += 100;
++
++  is_hotplug = (timestamp < resources->configTimestamp);
+   is_our_configuration = (resources->timestamp ==
+                           manager_xrandr->last_xrandr_set_timestamp);
+   if (is_hotplug)
+-- 
+2.21.0
+

@@ -1,0 +1,150 @@
+From 9269b09028ae51c7bb74e9cc9aefafd8eaa882d6 Mon Sep 17 00:00:00 2001
+From: Robert Mader <robert.mader@posteo.de>
+Date: Tue, 16 Apr 2019 23:35:28 +0200
+Subject: [PATCH 1/2] wayland: Move check for present window out of the
+ actor-surface class
+
+All child classes of `MetaWaylandShellSurface` as well as
+`MetaWaylandSurfaceRoleXWayland` should only sync their actor if
+their toplevel surface has a window. Currently this check is done
+in the actor-surface class, but not all surface classes have a
+toplevel window, e.g. dnd-surfaces.
+Move the check to the right places.
+
+For subsurfaces this assumes that the subsurface is not the child of
+a window-less surface (like, as stated above, e.g. a dnd-surface).
+If we want to support subsurfaces of window-less surfaces in the future
+we have to extend the check here.
+But as this is not a regression, ignore this case for now.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/537
+(cherry picked from commit 7e2a0ede16bed5671fe55d3d81ccc9f82eebd94b)
+---
+ src/wayland/meta-wayland-actor-surface.c |  7 -------
+ src/wayland/meta-wayland-shell-surface.c | 20 ++++++++++++++++++++
+ src/wayland/meta-wayland-subsurface.c    |  5 ++++-
+ src/wayland/meta-xwayland.c              | 18 ++++++++++++++++++
+ 4 files changed, 42 insertions(+), 8 deletions(-)
+
+diff --git a/src/wayland/meta-wayland-actor-surface.c b/src/wayland/meta-wayland-actor-surface.c
+index 037dd901ab..e2143e51f1 100644
+--- a/src/wayland/meta-wayland-actor-surface.c
++++ b/src/wayland/meta-wayland-actor-surface.c
+@@ -295,9 +295,6 @@ meta_wayland_actor_surface_commit (MetaWaylandSurfaceRole  *surface_role,
+     META_WAYLAND_ACTOR_SURFACE (surface_role);
+   MetaWaylandActorSurfacePrivate *priv =
+     meta_wayland_actor_surface_get_instance_private (actor_surface);
+-  MetaWaylandSurface *surface =
+-    meta_wayland_surface_role_get_surface (surface_role);
+-  MetaWaylandSurface *toplevel_surface;
+ 
+   if (!wl_list_empty (&pending->frame_callback_list) &&
+       priv->actor &&
+@@ -311,10 +308,6 @@ meta_wayland_actor_surface_commit (MetaWaylandSurfaceRole  *surface_role,
+ 
+   meta_wayland_actor_surface_queue_frame_callbacks (actor_surface, pending);
+ 
+-  toplevel_surface = meta_wayland_surface_get_toplevel (surface);
+-  if (!toplevel_surface || !toplevel_surface->window)
+-    return;
+-
+   meta_wayland_actor_surface_sync_actor_state (actor_surface);
+ }
+ 
+diff --git a/src/wayland/meta-wayland-shell-surface.c b/src/wayland/meta-wayland-shell-surface.c
+index 04f2aaeea8..f8354ab7c5 100644
+--- a/src/wayland/meta-wayland-shell-surface.c
++++ b/src/wayland/meta-wayland-shell-surface.c
+@@ -175,6 +175,22 @@ meta_wayland_shell_surface_surface_commit (MetaWaylandSurfaceRole  *surface_role
+   window->buffer_rect.height = cogl_texture_get_height (texture) * scale;
+ }
+ 
++static void
++meta_wayland_shell_surface_sync_actor_state (MetaWaylandActorSurface *actor_surface)
++{
++  MetaWaylandSurfaceRole *surface_role =
++    META_WAYLAND_SURFACE_ROLE (actor_surface);
++  MetaWaylandSurface *surface =
++    meta_wayland_surface_role_get_surface (surface_role);
++  MetaWaylandActorSurfaceClass *actor_surface_class =
++    META_WAYLAND_ACTOR_SURFACE_CLASS (meta_wayland_shell_surface_parent_class);
++  MetaWaylandSurface *toplevel_surface;
++
++  toplevel_surface = meta_wayland_surface_get_toplevel (surface);
++  if (toplevel_surface && toplevel_surface->window)
++    actor_surface_class->sync_actor_state (actor_surface);
++}
++
+ static void
+ meta_wayland_shell_surface_init (MetaWaylandShellSurface *role)
+ {
+@@ -185,6 +201,10 @@ meta_wayland_shell_surface_class_init (MetaWaylandShellSurfaceClass *klass)
+ {
+   MetaWaylandSurfaceRoleClass *surface_role_class =
+     META_WAYLAND_SURFACE_ROLE_CLASS (klass);
++  MetaWaylandActorSurfaceClass *actor_surface_class =
++    META_WAYLAND_ACTOR_SURFACE_CLASS (klass);
+ 
+   surface_role_class->commit = meta_wayland_shell_surface_surface_commit;
++  actor_surface_class->sync_actor_state =
++    meta_wayland_shell_surface_sync_actor_state;
+ }
+diff --git a/src/wayland/meta-wayland-subsurface.c b/src/wayland/meta-wayland-subsurface.c
+index c7059b99a2..9a7ff3ec12 100644
+--- a/src/wayland/meta-wayland-subsurface.c
++++ b/src/wayland/meta-wayland-subsurface.c
+@@ -199,8 +199,11 @@ meta_wayland_subsurface_sync_actor_state (MetaWaylandActorSurface *actor_surface
+     meta_wayland_surface_role_get_surface (surface_role);
+   MetaWaylandActorSurfaceClass *actor_surface_class =
+     META_WAYLAND_ACTOR_SURFACE_CLASS (meta_wayland_subsurface_parent_class);
++  MetaWaylandSurface *toplevel_surface;
+ 
+-  actor_surface_class->sync_actor_state (actor_surface);
++  toplevel_surface = meta_wayland_surface_get_toplevel (surface);
++  if (toplevel_surface && toplevel_surface->window)
++    actor_surface_class->sync_actor_state (actor_surface);
+ 
+   sync_actor_subsurface_state (surface);
+ }
+diff --git a/src/wayland/meta-xwayland.c b/src/wayland/meta-xwayland.c
+index 6e4b9a8ffd..b71c638d93 100644
+--- a/src/wayland/meta-xwayland.c
++++ b/src/wayland/meta-xwayland.c
+@@ -794,6 +794,20 @@ xwayland_surface_get_toplevel (MetaWaylandSurfaceRole *surface_role)
+   return meta_wayland_surface_role_get_surface (surface_role);
+ }
+ 
++static void
++xwayland_surface_sync_actor_state (MetaWaylandActorSurface *actor_surface)
++{
++  MetaWaylandSurfaceRole *surface_role =
++    META_WAYLAND_SURFACE_ROLE (actor_surface);
++  MetaWaylandSurface *surface =
++    meta_wayland_surface_role_get_surface (surface_role);
++  MetaWaylandActorSurfaceClass *actor_surface_class =
++    META_WAYLAND_ACTOR_SURFACE_CLASS (meta_wayland_surface_role_xwayland_parent_class);
++
++  if (surface->window)
++    actor_surface_class->sync_actor_state (actor_surface);
++}
++
+ static void
+ meta_wayland_surface_role_xwayland_init (MetaWaylandSurfaceRoleXWayland *role)
+ {
+@@ -804,9 +818,13 @@ meta_wayland_surface_role_xwayland_class_init (MetaWaylandSurfaceRoleXWaylandCla
+ {
+   MetaWaylandSurfaceRoleClass *surface_role_class =
+     META_WAYLAND_SURFACE_ROLE_CLASS (klass);
++  MetaWaylandActorSurfaceClass *actor_surface_class =
++    META_WAYLAND_ACTOR_SURFACE_CLASS (klass);
+ 
+   surface_role_class->get_toplevel = xwayland_surface_get_toplevel;
+ 
++  actor_surface_class->sync_actor_state = xwayland_surface_sync_actor_state;
++
+   xwayland_surface_signals[XWAYLAND_SURFACE_WINDOW_ASSOCIATED] =
+     g_signal_new ("window-associated",
+                   G_TYPE_FROM_CLASS (klass),
+-- 
+2.31.1
+

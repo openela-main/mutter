@@ -1,0 +1,479 @@
+From 8e756d48ed31bcacf12b99cbd82fb2052503f51e Mon Sep 17 00:00:00 2001
+From: Hans de Goede <hdegoede@redhat.com>
+Date: Tue, 18 Jun 2019 16:12:46 +0200
+Subject: [PATCH 1/4] xwayland: Generate a Xauth file and pass this to Xwayland
+ when starting it
+
+Before this commit, sudo x11-app, e.g. sudo gvim /etc/some-file, fails
+when running a Wayland session. Where as doing this under a "GNOME on Xorg"
+session works fine. For a user switching from the Xorg session to the
+Wayland session, this is regression, which we want to avoid.
+
+This commit fixes this by creating and passing an xauth file to Xwayland when
+mutter starts it. Just like gdm or startx pass a xauth file to Xorg when they
+start Xorg.
+
+Fixes #643
+
+https://gitlab.gnome.org/GNOME/mutter/issues/643
+---
+ meson.build                        |  1 +
+ src/meson.build                    |  1 +
+ src/wayland/meta-wayland-private.h |  1 +
+ src/wayland/meta-wayland.c         | 11 +++-
+ src/wayland/meta-xwayland.c        | 81 ++++++++++++++++++++++++++++++
+ 5 files changed, 94 insertions(+), 1 deletion(-)
+
+diff --git a/meson.build b/meson.build
+index 8ef592bc58..2a404857ce 100644
+--- a/meson.build
++++ b/meson.build
+@@ -117,6 +117,7 @@ xrandr_dep = dependency('xrandr', version: xrandr_req)
+ xcb_randr_dep = dependency('xcb-randr')
+ xcb_res_dep = dependency('xcb-res')
+ xinerama_dep = dependency('xinerama')
++xau_dep = dependency('xau')
+ ice_dep = dependency('ice')
+ atk_dep = dependency('atk', version: atk_req)
+ libcanberra_dep = dependency('libcanberra', version: libcanberra_req)
+diff --git a/src/meson.build b/src/meson.build
+index 7cced8f534..91fe74b99a 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -101,6 +101,7 @@ if have_x11
+     x11_xcb_dep,
+     xcb_randr_dep,
+     xcb_res_dep,
++    xau_dep,
+   ]
+ 
+   if have_sm
+diff --git a/src/wayland/meta-wayland-private.h b/src/wayland/meta-wayland-private.h
+index 07a71f82b1..5bcb0ea4f9 100644
+--- a/src/wayland/meta-wayland-private.h
++++ b/src/wayland/meta-wayland-private.h
+@@ -51,6 +51,7 @@ typedef struct
+   struct wl_client *client;
+   struct wl_resource *xserver_resource;
+   char *display_name;
++  char *auth_file;
+ 
+   GCancellable *xserver_died_cancellable;
+   GSubprocess *proc;
+diff --git a/src/wayland/meta-wayland.c b/src/wayland/meta-wayland.c
+index a593f0a7b7..129da8e20d 100644
+--- a/src/wayland/meta-wayland.c
++++ b/src/wayland/meta-wayland.c
+@@ -362,6 +362,12 @@ meta_wayland_override_display_name (const char *display_name)
+   _display_name_override = g_strdup (display_name);
+ }
+ 
++static const char *
++meta_wayland_get_xwayland_auth_file (MetaWaylandCompositor *compositor)
++{
++  return compositor->xwayland_manager.auth_file;
++}
++
+ void
+ meta_wayland_init (void)
+ {
+@@ -439,7 +445,10 @@ meta_wayland_init (void)
+     }
+ 
+   if (meta_should_autostart_x11_display ())
+-    set_gnome_env ("DISPLAY", meta_wayland_get_xwayland_display_name (compositor));
++    {
++      set_gnome_env ("DISPLAY", meta_wayland_get_xwayland_display_name (compositor));
++      set_gnome_env ("XAUTHORITY", meta_wayland_get_xwayland_auth_file (compositor));
++    }
+ 
+   set_gnome_env ("WAYLAND_DISPLAY", meta_wayland_get_wayland_display_name (compositor));
+ }
+diff --git a/src/wayland/meta-xwayland.c b/src/wayland/meta-xwayland.c
+index f3df9766ee..c883eb3d6f 100644
+--- a/src/wayland/meta-xwayland.c
++++ b/src/wayland/meta-xwayland.c
+@@ -32,6 +32,9 @@
+ #include <sys/socket.h>
+ #include <sys/stat.h>
+ #include <sys/un.h>
++#include <sys/random.h>
++#include <unistd.h>
++#include <X11/Xauth.h>
+ 
+ #include "compositor/meta-surface-actor-wayland.h"
+ #include "meta/main.h"
+@@ -525,6 +528,75 @@ choose_xdisplay (MetaXWaylandManager *manager)
+   return TRUE;
+ }
+ 
++G_DEFINE_AUTOPTR_CLEANUP_FUNC (FILE, fclose)
++
++static gboolean
++prepare_auth_file (MetaXWaylandManager *manager)
++{
++  Xauth auth_entry = { 0 };
++  g_autoptr (FILE) fp = NULL;
++  char hostname[HOST_NAME_MAX + 1];
++  char auth_data[16];
++  int fd;
++
++  manager->auth_file = g_build_filename (g_get_user_runtime_dir (),
++                                         ".mutter-Xwaylandauth.XXXXXX",
++                                         NULL);
++
++  if (gethostname (hostname, HOST_NAME_MAX) < 0)
++    g_strlcpy (hostname, "localhost", HOST_NAME_MAX);
++
++  if (getrandom (auth_data, sizeof (auth_data), 0) != sizeof (auth_data))
++    {
++      g_warning ("Failed to get random data: %s", g_strerror (errno));
++      return FALSE;
++    }
++
++  auth_entry.family = FamilyLocal;
++  auth_entry.address = hostname;
++  auth_entry.address_length = strlen (auth_entry.address);
++  auth_entry.name = (char *) "MIT-MAGIC-COOKIE-1";
++  auth_entry.name_length = strlen (auth_entry.name);
++  auth_entry.data = auth_data;
++  auth_entry.data_length = sizeof (auth_data);
++
++  fd = g_mkstemp (manager->auth_file);
++  if (fd < 0)
++    {
++      g_warning ("Failed to open Xauthority file: %s", g_strerror (errno));
++      return FALSE;
++    }
++
++  fp = fdopen (fd, "w+");
++  if (!fp)
++    {
++      g_warning ("Failed to open Xauthority stream: %s", g_strerror (errno));
++      close (fd);
++      return FALSE;
++    }
++
++  if (!XauWriteAuth (fp, &auth_entry))
++    {
++      g_warning ("Error writing to Xauthority file: %s", g_strerror (errno));
++      return FALSE;
++    }
++
++  auth_entry.family = FamilyWild;
++  if (!XauWriteAuth (fp, &auth_entry))
++    {
++      g_warning ("Error writing to Xauthority file: %s", g_strerror (errno));
++      return FALSE;
++    }
++
++  if (fflush (fp) == EOF)
++    {
++      g_warning ("Error writing to Xauthority file: %s", g_strerror (errno));
++      return FALSE;
++    }
++
++  return TRUE;
++}
++
+ static void
+ xserver_finished_init (MetaXWaylandManager *manager)
+ {
+@@ -566,6 +638,9 @@ meta_xwayland_start (MetaXWaylandManager *manager,
+   if (!choose_xdisplay (manager))
+     goto out;
+ 
++  if (!prepare_auth_file (manager))
++    goto out;
++
+   /* We want xwayland to be a wayland client so we make a socketpair to setup a
+    * wayland protocol connection. */
+   if (socketpair (AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, xwayland_client_fd) < 0)
+@@ -610,6 +685,7 @@ meta_xwayland_start (MetaXWaylandManager *manager,
+                                                "-terminate",
+                                                "-accessx",
+                                                "-core",
++                                               "-auth", manager->auth_file,
+                                                "-listen", "4",
+                                                "-listen", "5",
+                                                "-displayfd", "6",
+@@ -678,6 +754,11 @@ meta_xwayland_stop (MetaXWaylandManager *manager)
+   unlink (path);
+ 
+   g_clear_pointer (&manager->display_name, g_free);
++  if (manager->auth_file)
++    {
++      unlink (manager->auth_file);
++      g_clear_pointer (&manager->auth_file, g_free);
++    }
+   if (manager->lock_file)
+     {
+       unlink (manager->lock_file);
+-- 
+2.31.1
+
+
+From fdf6969cf89dc9127fc9f4d03d9408e54ccd1b40 Mon Sep 17 00:00:00 2001
+From: Olivier Fourdan <ofourdan@redhat.com>
+Date: Mon, 19 Aug 2019 15:36:32 +0200
+Subject: [PATCH 2/4] xwayland: pass the X11 display
+
+Pass the X11 display to `meta_xwayland_complete_init()` so that it can
+be used without poking into GDK.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/735
+---
+ src/wayland/meta-xwayland-private.h | 3 ++-
+ src/wayland/meta-xwayland.c         | 3 ++-
+ src/x11/meta-x11-display.c          | 5 ++---
+ 3 files changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/src/wayland/meta-xwayland-private.h b/src/wayland/meta-xwayland-private.h
+index 38874eda3f..abcb09e49b 100644
+--- a/src/wayland/meta-xwayland-private.h
++++ b/src/wayland/meta-xwayland-private.h
+@@ -29,7 +29,8 @@ meta_xwayland_start (MetaXWaylandManager *manager,
+                      struct wl_display   *display);
+ 
+ void
+-meta_xwayland_complete_init (MetaDisplay *display);
++meta_xwayland_complete_init (MetaDisplay *display,
++                             Display     *xdisplay);
+ 
+ void
+ meta_xwayland_stop (MetaXWaylandManager *manager);
+diff --git a/src/wayland/meta-xwayland.c b/src/wayland/meta-xwayland.c
+index c883eb3d6f..350626dfdb 100644
+--- a/src/wayland/meta-xwayland.c
++++ b/src/wayland/meta-xwayland.c
+@@ -727,7 +727,8 @@ on_x11_display_closing (MetaDisplay *display)
+ 
+ /* To be called right after connecting */
+ void
+-meta_xwayland_complete_init (MetaDisplay *display)
++meta_xwayland_complete_init (MetaDisplay *display,
++                             Display     *xdisplay)
+ {
+   /* We install an X IO error handler in addition to the child watch,
+      because after Xlib connects our child watch may not be called soon
+diff --git a/src/x11/meta-x11-display.c b/src/x11/meta-x11-display.c
+index 065ffcdda5..d40dcfa3f8 100644
+--- a/src/x11/meta-x11-display.c
++++ b/src/x11/meta-x11-display.c
+@@ -1066,14 +1066,13 @@ meta_x11_display_new (MetaDisplay *display, GError **error)
+ 
+   g_assert (prepared_gdk_display);
+   gdk_display = g_steal_pointer (&prepared_gdk_display);
++  xdisplay = GDK_DISPLAY_XDISPLAY (gdk_display);
+ 
+ #ifdef HAVE_WAYLAND
+   if (meta_is_wayland_compositor ())
+-    meta_xwayland_complete_init (display);
++    meta_xwayland_complete_init (display, xdisplay);
+ #endif
+ 
+-  xdisplay = GDK_DISPLAY_XDISPLAY (gdk_display);
+-
+   if (meta_is_syncing ())
+     XSynchronize (xdisplay, True);
+ 
+-- 
+2.31.1
+
+
+From 25a0945aa69c479d6356a970b39e6ae42e43c877 Mon Sep 17 00:00:00 2001
+From: Olivier Fourdan <ofourdan@redhat.com>
+Date: Mon, 19 Aug 2019 15:48:17 +0200
+Subject: [PATCH 3/4] xwayland: Use given X11 display for DnD setup
+
+Use the provided X11 display instead of poking into GDK to get the X11
+display.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/735
+---
+ src/wayland/meta-xwayland-private.h   |  4 ++--
+ src/wayland/meta-xwayland-selection.c | 18 +++++++++---------
+ src/wayland/meta-xwayland.c           |  7 +++++--
+ 3 files changed, 16 insertions(+), 13 deletions(-)
+
+diff --git a/src/wayland/meta-xwayland-private.h b/src/wayland/meta-xwayland-private.h
+index abcb09e49b..f562d7c96d 100644
+--- a/src/wayland/meta-xwayland-private.h
++++ b/src/wayland/meta-xwayland-private.h
+@@ -36,8 +36,8 @@ void
+ meta_xwayland_stop (MetaXWaylandManager *manager);
+ 
+ /* wl_data_device/X11 selection interoperation */
+-void     meta_xwayland_init_selection         (void);
+-void     meta_xwayland_shutdown_selection     (void);
++void     meta_xwayland_init_selection         (Display *xdisplay);
++void     meta_xwayland_shutdown_selection     (Display *xdisplay);
+ gboolean meta_xwayland_selection_handle_event (XEvent *xevent);
+ 
+ const MetaWaylandDragDestFuncs * meta_xwayland_selection_get_drag_dest_funcs (void);
+diff --git a/src/wayland/meta-xwayland-selection.c b/src/wayland/meta-xwayland-selection.c
+index 808f913339..122bb76e1c 100644
+--- a/src/wayland/meta-xwayland-selection.c
++++ b/src/wayland/meta-xwayland-selection.c
+@@ -353,9 +353,9 @@ xdnd_send_status (MetaXWaylandSelection *selection_data,
+ }
+ 
+ static void
+-meta_xwayland_init_dnd (MetaXWaylandManager *manager)
++meta_xwayland_init_dnd (MetaXWaylandManager *manager,
++                        Display             *xdisplay)
+ {
+-  Display *xdisplay = GDK_DISPLAY_XDISPLAY (gdk_display_get_default ());
+   MetaDndBridge *dnd = &manager->selection_data->dnd;
+   XSetWindowAttributes attributes;
+   guint32 i, version = XDND_VERSION;
+@@ -382,12 +382,12 @@ meta_xwayland_init_dnd (MetaXWaylandManager *manager)
+ }
+ 
+ static void
+-meta_xwayland_shutdown_dnd (MetaXWaylandManager *manager)
++meta_xwayland_shutdown_dnd (MetaXWaylandManager *manager,
++                            Display             *xdisplay)
+ {
+   MetaDndBridge *dnd = &manager->selection_data->dnd;
+ 
+-  XDestroyWindow (GDK_DISPLAY_XDISPLAY (gdk_display_get_default ()),
+-                  dnd->dnd_window);
++  XDestroyWindow (xdisplay, dnd->dnd_window);
+   dnd->dnd_window = None;
+ }
+ 
+@@ -1755,7 +1755,7 @@ shutdown_selection_bridge (MetaSelectionBridge *selection)
+ }
+ 
+ void
+-meta_xwayland_init_selection (void)
++meta_xwayland_init_selection (Display *xdisplay)
+ {
+   MetaWaylandCompositor *compositor = meta_wayland_compositor_get_default ();
+   MetaXWaylandManager *manager = &compositor->xwayland_manager;
+@@ -1764,7 +1764,7 @@ meta_xwayland_init_selection (void)
+ 
+   manager->selection_data = g_slice_new0 (MetaXWaylandSelection);
+ 
+-  meta_xwayland_init_dnd (manager);
++  meta_xwayland_init_dnd (manager, xdisplay);
+   init_selection_bridge (&manager->selection_data->clipboard,
+                          gdk_x11_get_xatom_by_name ("CLIPBOARD"),
+                          &compositor->seat->data_device.selection_ownership_signal);
+@@ -1777,7 +1777,7 @@ meta_xwayland_init_selection (void)
+ }
+ 
+ void
+-meta_xwayland_shutdown_selection (void)
++meta_xwayland_shutdown_selection (Display *xdisplay)
+ {
+   MetaWaylandCompositor *compositor = meta_wayland_compositor_get_default ();
+   MetaXWaylandManager *manager = &compositor->xwayland_manager;
+@@ -1787,7 +1787,7 @@ meta_xwayland_shutdown_selection (void)
+ 
+   g_clear_object (&selection->clipboard.source);
+ 
+-  meta_xwayland_shutdown_dnd (manager);
++  meta_xwayland_shutdown_dnd (manager, xdisplay);
+   shutdown_selection_bridge (&selection->clipboard);
+   shutdown_selection_bridge (&selection->primary);
+   shutdown_selection_bridge (&selection->dnd.selection);
+diff --git a/src/wayland/meta-xwayland.c b/src/wayland/meta-xwayland.c
+index 350626dfdb..3236711482 100644
+--- a/src/wayland/meta-xwayland.c
++++ b/src/wayland/meta-xwayland.c
+@@ -38,6 +38,7 @@
+ 
+ #include "compositor/meta-surface-actor-wayland.h"
+ #include "meta/main.h"
++#include "meta/meta-x11-display.h"
+ #include "wayland/meta-wayland-actor-surface.h"
+ 
+ enum
+@@ -722,7 +723,9 @@ out:
+ static void
+ on_x11_display_closing (MetaDisplay *display)
+ {
+-  meta_xwayland_shutdown_selection ();
++  Display *xdisplay = meta_x11_display_get_xdisplay (display->x11_display);
++
++  meta_xwayland_shutdown_selection (xdisplay);
+ }
+ 
+ /* To be called right after connecting */
+@@ -739,7 +742,7 @@ meta_xwayland_complete_init (MetaDisplay *display,
+ 
+   g_signal_connect (display, "x11-display-closing",
+                     G_CALLBACK (on_x11_display_closing), NULL);
+-  meta_xwayland_init_selection ();
++  meta_xwayland_init_selection (xdisplay);
+ }
+ 
+ void
+-- 
+2.31.1
+
+
+From a398699a53b9cc6efda4aa8abe0e3176bab80e92 Mon Sep 17 00:00:00 2001
+From: Olivier Fourdan <ofourdan@redhat.com>
+Date: Mon, 19 Aug 2019 15:50:54 +0200
+Subject: [PATCH 4/4] xwayland: Add local user to xhost
+
+With the addition of xauth support (commit a8984a81c), Xwayland would
+rely only on the provided cookies for authentication.
+
+As a result, running an Xclient from another VT (hence without the
+XAUTHORITY environment variable set) would result in an access denied.
+
+The same on X11 is granted because the local user is automatically
+granted access to Xserver by the startup scripts.
+
+Add the local user to xhost at startup on Xwayland so that the user can
+still run a client by setting the DISPLAY as long as it's the same user
+on the same host.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/735
+---
+ src/wayland/meta-xwayland.c | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/src/wayland/meta-xwayland.c b/src/wayland/meta-xwayland.c
+index 3236711482..275aeb78cb 100644
+--- a/src/wayland/meta-xwayland.c
++++ b/src/wayland/meta-xwayland.c
+@@ -598,6 +598,23 @@ prepare_auth_file (MetaXWaylandManager *manager)
+   return TRUE;
+ }
+ 
++static void
++add_local_user_to_xhost (Display *xdisplay)
++{
++  XHostAddress host_entry;
++  XServerInterpretedAddress siaddr;
++
++  siaddr.type = (char *) "localuser";
++  siaddr.typelength = strlen (siaddr.type);
++  siaddr.value = (char *) g_get_user_name();
++  siaddr.valuelength = strlen (siaddr.value);
++
++  host_entry.family = FamilyServerInterpreted;
++  host_entry.address = (char *) &siaddr;
++
++  XAddHost (xdisplay, &host_entry);
++}
++
+ static void
+ xserver_finished_init (MetaXWaylandManager *manager)
+ {
+@@ -743,6 +760,7 @@ meta_xwayland_complete_init (MetaDisplay *display,
+   g_signal_connect (display, "x11-display-closing",
+                     G_CALLBACK (on_x11_display_closing), NULL);
+   meta_xwayland_init_selection (xdisplay);
++  add_local_user_to_xhost (xdisplay);
+ }
+ 
+ void
+-- 
+2.31.1
+

@@ -1,0 +1,27 @@
+From 03c30b76bae4c2e3f51a6689ebb7c0c60bd7b29a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Tue, 9 Feb 2021 18:00:26 +0100
+Subject: [PATCH 2/2] cogl/gpu-info: Fix software acceleration detection
+
+The string used to match mesa changed; update to fix software rendering
+detection.
+---
+ cogl/cogl/cogl-gpu-info.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/cogl/cogl/cogl-gpu-info.c b/cogl/cogl/cogl-gpu-info.c
+index f44319e96..c1817b3b0 100644
+--- a/cogl/cogl/cogl-gpu-info.c
++++ b/cogl/cogl/cogl-gpu-info.c
+@@ -192,6 +192,8 @@ check_mesa_vendor (const CoglGpuInfoStrings *strings)
+     return TRUE;
+   else if (strcmp (strings->vendor_string, "Mesa Project") == 0)
+     return TRUE;
++  else if (strcmp (strings->vendor_string, "Mesa/X.org") == 0)
++    return TRUE;
+ 
+   return FALSE;
+ }
+-- 
+2.29.2
+

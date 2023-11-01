@@ -1,0 +1,41 @@
+From 9f8564ce066aeb704341d6f926daec0045243b70 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Thu, 25 Jun 2020 10:06:38 +0200
+Subject: [PATCH 1/2] monitor-manager-kms: Trigger hotplug processing on gpu
+ removal
+
+---
+ src/backends/native/meta-monitor-manager-kms.c | 16 +++++++++++-----
+ 1 file changed, 11 insertions(+), 5 deletions(-)
+
+diff --git a/src/backends/native/meta-monitor-manager-kms.c b/src/backends/native/meta-monitor-manager-kms.c
+index 9a0364441a..2819881576 100644
+--- a/src/backends/native/meta-monitor-manager-kms.c
++++ b/src/backends/native/meta-monitor-manager-kms.c
+@@ -470,12 +470,18 @@ on_uevent (GUdevClient *client,
+ 
+       if (!g_strcmp0 (seat_id, device_seat))
+         handle_gpu_hotplug (manager_kms, device);
+-    }
+-
+-  if (!g_udev_device_get_property_as_boolean (device, "HOTPLUG"))
+-    return;
+ 
+-  handle_hotplug_event (manager);
++      handle_hotplug_event (manager);
++    }
++  else if (g_str_equal (action, "remove") &&
++           g_udev_device_get_device_file (device) != NULL)
++    {
++      handle_hotplug_event (manager);
++    }
++  else if (g_udev_device_get_property_as_boolean (device, "HOTPLUG"))
++    {
++      handle_hotplug_event (manager);
++    }
+ }
+ 
+ static void
+-- 
+2.26.2
+
