@@ -1,0 +1,35 @@
+From 6e2ef652cd58136aa668d0c1bd843fe83f11a0ab Mon Sep 17 00:00:00 2001
+From: Olivier Fourdan <ofourdan@redhat.com>
+Date: Fri, 26 Oct 2018 08:49:39 +0200
+Subject: [PATCH] wayland: Allow Xwayland grabs on selected apps
+
+Allow Xwayland grabs on a selected set of X11 applications.
+---
+ data/org.gnome.mutter.wayland.gschema.xml.in | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/data/org.gnome.mutter.wayland.gschema.xml.in b/data/org.gnome.mutter.wayland.gschema.xml.in
+index 8a1878e105..5527a46bc6 100644
+--- a/data/org.gnome.mutter.wayland.gschema.xml.in
++++ b/data/org.gnome.mutter.wayland.gschema.xml.in
+@@ -66,7 +66,7 @@
+           gettext-domain="@GETTEXT_DOMAIN@">
+ 
+     <key name="xwayland-allow-grabs" type="b">
+-      <default>false</default>
++      <default>true</default>
+       <summary>Allow X11 grabs to lock keyboard focus with Xwayland</summary>
+       <description>
+         Allow all keyboard events to be routed to X11 “override redirect”
+@@ -86,7 +86,7 @@
+     </key>
+ 
+     <key name="xwayland-grab-access-rules" type="as">
+-      <default>[]</default>
++      <default>['@XWAYLAND_GRAB_DEFAULT_ACCESS_RULES@']</default>
+       <summary>Xwayland applications allowed to issue keyboard grabs</summary>
+       <description>
+         List the resource names or resource class of X11 windows either
+-- 
+2.31.1
+

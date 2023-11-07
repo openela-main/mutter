@@ -1,0 +1,49 @@
+From 99c74360451a85fca9dacad531ed22adbc1b0805 Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Tue, 13 Feb 2018 09:44:50 -0500
+Subject: [PATCH] main: be more aggressive in assuming X11 backend
+
+If the session is started by vncserver right now, the
+XDG_SESSION_TYPE won't be X11.  Ideally that would be
+fixed, but for backward compatibility we should default
+to X11 if the session type isn't set to wayland explicitly.
+---
+ src/core/main.c | 8 +++-----
+ 1 file changed, 3 insertions(+), 5 deletions(-)
+
+diff --git a/src/core/main.c b/src/core/main.c
+index a07dda9ecc..0d241f952b 100644
+--- a/src/core/main.c
++++ b/src/core/main.c
+@@ -407,7 +407,6 @@ find_session_type (void)
+   char *session_id;
+   char *session_type;
+   const char *session_type_env;
+-  gboolean is_tty = FALSE;
+   int ret, i;
+ 
+   ret = sd_pid_get_session (0, &session_id);
+@@ -420,8 +419,7 @@ find_session_type (void)
+         {
+           if (session_type_is_supported (session_type))
+             goto out;
+-          else
+-            is_tty = g_strcmp0 (session_type, "tty") == 0;
++
+           free (session_type);
+         }
+     }
+@@ -453,8 +451,8 @@ find_session_type (void)
+       goto out;
+     }
+ 
+-  /* Legacy support for starting through xinit */
+-  if (is_tty && (g_getenv ("MUTTER_DISPLAY") || g_getenv ("DISPLAY")))
++  /* Legacy support for starting through xinit or vncserver */
++  if (g_getenv ("MUTTER_DISPLAY") || g_getenv ("DISPLAY"))
+     {
+       session_type = strdup ("x11");
+       goto out;
+-- 
+2.31.1
+

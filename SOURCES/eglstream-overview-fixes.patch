@@ -1,0 +1,324 @@
+From d3d8ab8eabc3178f3c31ee71dcc926297ff1c1b0 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Tue, 8 Feb 2022 17:14:06 +0100
+Subject: [PATCH 1/2] shaped-texture: Pass along the snippet to the texture
+ tower
+
+The snippet is used make sure the right source is sampled in the shader.
+This wasn't done in the texture tower, meaning the textures from the
+tower were not correct.
+
+Related: https://gitlab.gnome.org/GNOME/mutter/-/issues/528
+---
+ src/compositor/meta-shaped-texture.c |  2 ++
+ src/compositor/meta-texture-tower.c  | 27 +++++++++++++++++++++++++++
+ src/compositor/meta-texture-tower.h  |  3 +++
+ 3 files changed, 32 insertions(+)
+
+diff --git a/src/compositor/meta-shaped-texture.c b/src/compositor/meta-shaped-texture.c
+index 095dd246f0c0..68919c5f1c5c 100644
+--- a/src/compositor/meta-shaped-texture.c
++++ b/src/compositor/meta-shaped-texture.c
+@@ -1242,6 +1242,8 @@ meta_shaped_texture_set_snippet (MetaShapedTexture *stex,
+   g_clear_pointer (&stex->snippet, cogl_object_unref);
+   if (snippet)
+     stex->snippet = cogl_object_ref (snippet);
++
++  meta_texture_tower_set_snippet (stex->paint_tower, snippet);
+ }
+ 
+ /**
+diff --git a/src/compositor/meta-texture-tower.c b/src/compositor/meta-texture-tower.c
+index 1fc4623e5e54..0ae717abe4d4 100644
+--- a/src/compositor/meta-texture-tower.c
++++ b/src/compositor/meta-texture-tower.c
+@@ -62,6 +62,7 @@ struct _MetaTextureTower
+   CoglOffscreen *fbos[MAX_TEXTURE_LEVELS];
+   Box invalid[MAX_TEXTURE_LEVELS];
+   CoglPipeline *pipeline_template;
++  CoglSnippet *snippet;
+ };
+ 
+ /**
+@@ -97,6 +98,7 @@ meta_texture_tower_free (MetaTextureTower *tower)
+     cogl_object_unref (tower->pipeline_template);
+ 
+   meta_texture_tower_set_base_texture (tower, NULL);
++  cogl_clear_object (&tower->snippet);
+ 
+   g_free (tower);
+ }
+@@ -216,6 +218,28 @@ meta_texture_tower_update_area (MetaTextureTower *tower,
+     }
+ }
+ 
++void
++meta_texture_tower_set_snippet (MetaTextureTower *tower,
++                                CoglSnippet      *snippet)
++{
++  int i;
++
++  if (tower->snippet == snippet)
++    return;
++
++  g_clear_pointer (&tower->snippet, cogl_object_unref);
++
++  if (snippet)
++    tower->snippet = cogl_object_ref (snippet);
++
++  for (i = 1; i < tower->n_levels; i++)
++    {
++      cogl_clear_object (&tower->textures[i]);
++      g_clear_object (&tower->fbos[i]);
++    }
++  cogl_clear_object (&tower->pipeline_template);
++}
++
+ /* It generally looks worse if we scale up a window texture by even a
+  * small amount than if we scale it down using bilinear filtering, so
+  * we always pick the *larger* adjacent level. */
+@@ -408,6 +432,9 @@ texture_tower_revalidate (MetaTextureTower *tower,
+   pipeline = cogl_pipeline_copy (tower->pipeline_template);
+   cogl_pipeline_set_layer_texture (pipeline, 0, tower->textures[level - 1]);
+ 
++  if (tower->snippet && level == 1)
++    cogl_pipeline_add_layer_snippet (pipeline, 0, tower->snippet);
++
+   cogl_framebuffer_draw_textured_rectangle (fb, pipeline,
+                                             invalid->x1, invalid->y1,
+                                             invalid->x2, invalid->y2,
+diff --git a/src/compositor/meta-texture-tower.h b/src/compositor/meta-texture-tower.h
+index 1f5b371467c9..5522dfbb16ac 100644
+--- a/src/compositor/meta-texture-tower.h
++++ b/src/compositor/meta-texture-tower.h
+@@ -63,6 +63,9 @@ void              meta_texture_tower_update_area       (MetaTextureTower *tower,
+ CoglTexture      *meta_texture_tower_get_paint_texture (MetaTextureTower    *tower,
+                                                         ClutterPaintContext *paint_context);
+ 
++void meta_texture_tower_set_snippet (MetaTextureTower *tower,
++                                     CoglSnippet      *snippet);
++
+ G_END_DECLS
+ 
+ #endif /* __META_TEXTURE_TOWER_H__ */
+-- 
+2.34.1
+
+
+From b78a24dfebf56b04538058ff731890ee997d0d10 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Wed, 9 Feb 2022 12:41:14 +0100
+Subject: [PATCH 2/2] shaped-texture: Paint with the right layer snippet
+
+When we get passed a "snippet" to the shaped texture, it's added as a
+pipeline layer snippet to change how the source texture is sampled. When
+we draw from a texture tower however we have allocated regular textures
+which doesn't need any special layer snippet, so create separate
+pipelines for those that doesn't use that snippet.
+
+Closes: https://gitlab.gnome.org/GNOME/mutter/-/issues/528
+---
+ src/compositor/meta-shaped-texture.c | 126 +++++++++++++++++++++------
+ 1 file changed, 98 insertions(+), 28 deletions(-)
+
+diff --git a/src/compositor/meta-shaped-texture.c b/src/compositor/meta-shaped-texture.c
+index 68919c5f1c5c..0d09f2f4e164 100644
+--- a/src/compositor/meta-shaped-texture.c
++++ b/src/compositor/meta-shaped-texture.c
+@@ -91,8 +91,12 @@ struct _MetaShapedTexture
+   CoglSnippet *snippet;
+ 
+   CoglPipeline *base_pipeline;
++  CoglPipeline *unmasked_pipeline;
++  CoglPipeline *unmasked_tower_pipeline;
+   CoglPipeline *masked_pipeline;
++  CoglPipeline *masked_tower_pipeline;
+   CoglPipeline *unblended_pipeline;
++  CoglPipeline *unblended_tower_pipeline;
+ 
+   gboolean is_y_inverted;
+ 
+@@ -243,8 +247,12 @@ static void
+ meta_shaped_texture_reset_pipelines (MetaShapedTexture *stex)
+ {
+   g_clear_pointer (&stex->base_pipeline, cogl_object_unref);
++  g_clear_pointer (&stex->unmasked_pipeline, cogl_object_unref);
++  g_clear_pointer (&stex->unmasked_tower_pipeline, cogl_object_unref);
+   g_clear_pointer (&stex->masked_pipeline, cogl_object_unref);
++  g_clear_pointer (&stex->masked_tower_pipeline, cogl_object_unref);
+   g_clear_pointer (&stex->unblended_pipeline, cogl_object_unref);
++  g_clear_pointer (&stex->unblended_tower_pipeline, cogl_object_unref);
+ }
+ 
+ static void
+@@ -381,9 +389,6 @@ get_base_pipeline (MetaShapedTexture *stex,
+ 
+   cogl_pipeline_set_layer_matrix (pipeline, 0, &matrix);
+ 
+-  if (stex->snippet)
+-    cogl_pipeline_add_layer_snippet (pipeline, 0, stex->snippet);
+-
+   stex->base_pipeline = pipeline;
+ 
+   return stex->base_pipeline;
+@@ -391,47 +396,112 @@ get_base_pipeline (MetaShapedTexture *stex,
+ 
+ static CoglPipeline *
+ get_unmasked_pipeline (MetaShapedTexture *stex,
+-                       CoglContext       *ctx)
++                       CoglContext       *ctx,
++                       CoglTexture       *tex)
+ {
+-  return get_base_pipeline (stex, ctx);
++  if (stex->texture == tex)
++    {
++      CoglPipeline *pipeline;
++
++      if (stex->unmasked_pipeline)
++        return stex->unmasked_pipeline;
++
++      pipeline = cogl_pipeline_copy (get_base_pipeline (stex, ctx));
++      if (stex->snippet)
++        cogl_pipeline_add_layer_snippet (pipeline, 0, stex->snippet);
++
++      stex->unmasked_pipeline = pipeline;
++      return pipeline;
++    }
++  else
++    {
++      CoglPipeline *pipeline;
++
++      if (stex->unmasked_tower_pipeline)
++        return stex->unmasked_tower_pipeline;
++
++      pipeline = cogl_pipeline_copy (get_base_pipeline (stex, ctx));
++      stex->unmasked_tower_pipeline = pipeline;
++      return pipeline;
++    }
+ }
+ 
+ static CoglPipeline *
+ get_masked_pipeline (MetaShapedTexture *stex,
+-                     CoglContext       *ctx)
++                     CoglContext       *ctx,
++                     CoglTexture       *tex)
+ {
+-  CoglPipeline *pipeline;
++  if (stex->texture == tex)
++    {
++      CoglPipeline *pipeline;
+ 
+-  if (stex->masked_pipeline)
+-    return stex->masked_pipeline;
++      if (stex->masked_pipeline)
++        return stex->masked_pipeline;
+ 
+-  pipeline = cogl_pipeline_copy (get_base_pipeline (stex, ctx));
+-  cogl_pipeline_set_layer_combine (pipeline, 1,
+-                                   "RGBA = MODULATE (PREVIOUS, TEXTURE[A])",
+-                                   NULL);
++      pipeline = cogl_pipeline_copy (get_base_pipeline (stex, ctx));
++      cogl_pipeline_set_layer_combine (pipeline, 1,
++                                       "RGBA = MODULATE (PREVIOUS, TEXTURE[A])",
++                                       NULL);
++      if (stex->snippet)
++        cogl_pipeline_add_layer_snippet (pipeline, 0, stex->snippet);
+ 
+-  stex->masked_pipeline = pipeline;
++      stex->masked_pipeline = pipeline;
++      return pipeline;
++    }
++  else
++    {
++      CoglPipeline *pipeline;
+ 
+-  return pipeline;
++      if (stex->masked_tower_pipeline)
++        return stex->masked_tower_pipeline;
++
++      pipeline = cogl_pipeline_copy (get_base_pipeline (stex, ctx));
++      cogl_pipeline_set_layer_combine (pipeline, 1,
++                                       "RGBA = MODULATE (PREVIOUS, TEXTURE[A])",
++                                       NULL);
++
++      stex->masked_tower_pipeline = pipeline;
++      return pipeline;
++    }
+ }
+ 
+ static CoglPipeline *
+ get_unblended_pipeline (MetaShapedTexture *stex,
+-                        CoglContext       *ctx)
++                        CoglContext       *ctx,
++                        CoglTexture       *tex)
+ {
+-  CoglPipeline *pipeline;
++  if (stex->texture == tex)
++    {
++      CoglPipeline *pipeline;
+ 
+-  if (stex->unblended_pipeline)
+-    return stex->unblended_pipeline;
++      if (stex->unblended_pipeline)
++        return stex->unblended_pipeline;
+ 
+-  pipeline = cogl_pipeline_copy (get_base_pipeline (stex, ctx));
+-  cogl_pipeline_set_layer_combine (pipeline, 0,
+-                                   "RGBA = REPLACE (TEXTURE)",
+-                                   NULL);
++      pipeline = cogl_pipeline_copy (get_base_pipeline (stex, ctx));
++      cogl_pipeline_set_layer_combine (pipeline, 0,
++                                       "RGBA = REPLACE (TEXTURE)",
++                                       NULL);
++      if (stex->snippet)
++        cogl_pipeline_add_layer_snippet (pipeline, 0, stex->snippet);
+ 
+-  stex->unblended_pipeline = pipeline;
++      stex->unblended_pipeline = pipeline;
++      return pipeline;
++    }
++  else
++    {
++      CoglPipeline *pipeline;
+ 
+-  return pipeline;
++      if (stex->unblended_tower_pipeline)
++        return stex->unblended_tower_pipeline;
++
++      pipeline = cogl_pipeline_copy (get_base_pipeline (stex, ctx));
++      cogl_pipeline_set_layer_combine (pipeline, 0,
++                                       "RGBA = REPLACE (TEXTURE)",
++                                       NULL);
++
++      stex->unblended_tower_pipeline = pipeline;
++      return pipeline;
++    }
+ }
+ 
+ static CoglPipeline *
+@@ -742,7 +812,7 @@ do_paint_content (MetaShapedTexture   *stex,
+         {
+           CoglPipeline *opaque_pipeline;
+ 
+-          opaque_pipeline = get_unblended_pipeline (stex, ctx);
++          opaque_pipeline = get_unblended_pipeline (stex, ctx, paint_tex);
+           cogl_pipeline_set_layer_texture (opaque_pipeline, 0, paint_tex);
+           cogl_pipeline_set_layer_filters (opaque_pipeline, 0, filter, filter);
+ 
+@@ -786,11 +856,11 @@ do_paint_content (MetaShapedTexture   *stex,
+ 
+       if (stex->mask_texture == NULL)
+         {
+-          blended_pipeline = get_unmasked_pipeline (stex, ctx);
++          blended_pipeline = get_unmasked_pipeline (stex, ctx, paint_tex);
+         }
+       else
+         {
+-          blended_pipeline = get_masked_pipeline (stex, ctx);
++          blended_pipeline = get_masked_pipeline (stex, ctx, paint_tex);
+           cogl_pipeline_set_layer_texture (blended_pipeline, 1, stex->mask_texture);
+           cogl_pipeline_set_layer_filters (blended_pipeline, 1, filter, filter);
+         }
+-- 
+2.34.1
+

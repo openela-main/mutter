@@ -1,0 +1,37 @@
+From 8d6e41fc9b5194fb24523c939de54a2af46b5d07 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Fri, 27 May 2022 18:19:27 +0200
+Subject: [PATCH] kms/crtc: Determine gamma support given the gamma length
+
+The property doesn't necessarily exist when using drivers that doesn't
+support atomic mode setting, and the way it worked will break night
+light and other gamma related features. This makes things use the gamma
+length; if it is higher than 0, it definitely supports it one way or the
+other, i.e. GAMMA_LUT with the atomic backend, and drmModeCrtcSetGamma()
+with the legacy/simple backend.
+
+Fixes: 364572b95c8354ac66674064a8058aa98bc0bbef
+Closes: https://gitlab.gnome.org/GNOME/mutter/-/issues/2287
+(cherry picked from commit a2ebd10f049d888e451938e23a035ed97e0c8eff)
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/2452>
+---
+ src/backends/native/meta-kms-crtc.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/backends/native/meta-kms-crtc.c b/src/backends/native/meta-kms-crtc.c
+index 24f5a2d7400..0513af947c9 100644
+--- a/src/backends/native/meta-kms-crtc.c
++++ b/src/backends/native/meta-kms-crtc.c
+@@ -96,7 +96,7 @@ meta_kms_crtc_is_active (MetaKmsCrtc *crtc)
+ gboolean
+ meta_kms_crtc_has_gamma (MetaKmsCrtc *crtc)
+ {
+-  return !!meta_kms_crtc_get_prop_id (crtc, META_KMS_CRTC_PROP_GAMMA_LUT);
++  return crtc->current_state.gamma.size > 0;
+ }
+ 
+ static void
+-- 
+2.36.1
+

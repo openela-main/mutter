@@ -1,0 +1,490 @@
+From acb3e966b26ea55019a148d6482f5aa4c05275a9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Tue, 8 Feb 2022 15:58:33 +0100
+Subject: [PATCH 1/4] drm-buffer: Keep track of handle as well
+
+This handle is used by the legacy KMS API; lets avoid having to have GBM
+specific code where this is done by letting the MetaDrmBuffer API, that
+already has this information, expose it.
+---
+ src/backends/native/meta-drm-buffer-dumb.c    |  1 +
+ src/backends/native/meta-drm-buffer-gbm.c     |  1 +
+ src/backends/native/meta-drm-buffer-import.c  |  1 +
+ src/backends/native/meta-drm-buffer-private.h |  1 +
+ src/backends/native/meta-drm-buffer.c         | 10 ++++++++++
+ src/backends/native/meta-drm-buffer.h         |  2 ++
+ 6 files changed, 16 insertions(+)
+
+diff --git a/src/backends/native/meta-drm-buffer-dumb.c b/src/backends/native/meta-drm-buffer-dumb.c
+index 373eb5c73581..b5e15528a1c6 100644
+--- a/src/backends/native/meta-drm-buffer-dumb.c
++++ b/src/backends/native/meta-drm-buffer-dumb.c
+@@ -194,6 +194,7 @@ init_dumb_buffer_in_impl (MetaKmsImpl  *impl,
+     .width = data->width,
+     .height = data->height,
+     .format = data->format,
++    .handle = create_arg.handle,
+     .handles = { create_arg.handle },
+     .strides = { create_arg.pitch },
+   };
+diff --git a/src/backends/native/meta-drm-buffer-gbm.c b/src/backends/native/meta-drm-buffer-gbm.c
+index 48ee9eb048ba..fa45dd98b91e 100644
+--- a/src/backends/native/meta-drm-buffer-gbm.c
++++ b/src/backends/native/meta-drm-buffer-gbm.c
+@@ -119,6 +119,7 @@ init_fb_id (MetaDrmBufferGbm  *buffer_gbm,
+   fb_args.width = gbm_bo_get_width (bo);
+   fb_args.height = gbm_bo_get_height (bo);
+   fb_args.format = gbm_bo_get_format (bo);
++  fb_args.handle = gbm_bo_get_handle (bo).u32;
+ 
+   if (!meta_drm_buffer_ensure_fb_id (META_DRM_BUFFER (buffer_gbm),
+                                      use_modifiers, &fb_args, error))
+diff --git a/src/backends/native/meta-drm-buffer-import.c b/src/backends/native/meta-drm-buffer-import.c
+index 1e5a38246172..ea744953cb9b 100644
+--- a/src/backends/native/meta-drm-buffer-import.c
++++ b/src/backends/native/meta-drm-buffer-import.c
+@@ -125,6 +125,7 @@ import_gbm_buffer (MetaDrmBufferImport  *buffer_import,
+   fb_args.width = gbm_bo_get_width (primary_bo);
+   fb_args.height = gbm_bo_get_height (primary_bo);
+   fb_args.format = gbm_bo_get_format (primary_bo);
++  fb_args.handle = gbm_bo_get_handle (primary_bo).u32;
+ 
+   imported_bo = dmabuf_to_gbm_bo (importer,
+                                   dmabuf_fd,
+diff --git a/src/backends/native/meta-drm-buffer-private.h b/src/backends/native/meta-drm-buffer-private.h
+index 2c77eb957948..f660d3a7f363 100644
+--- a/src/backends/native/meta-drm-buffer-private.h
++++ b/src/backends/native/meta-drm-buffer-private.h
+@@ -33,6 +33,7 @@ typedef struct _MetaDrmFbArgs
+   uint32_t offsets[4];
+   uint32_t strides[4];
+   uint64_t modifiers[4];
++  uint32_t handle;
+ } MetaDrmFbArgs;
+ 
+ struct _MetaDrmBufferClass
+diff --git a/src/backends/native/meta-drm-buffer.c b/src/backends/native/meta-drm-buffer.c
+index 81a36196e528..a0f8055b3107 100644
+--- a/src/backends/native/meta-drm-buffer.c
++++ b/src/backends/native/meta-drm-buffer.c
+@@ -50,6 +50,7 @@ typedef struct _MetaDrmBufferPrivate
+ {
+   MetaKmsDevice *device;
+   uint32_t fb_id;
++  uint32_t handle;
+ } MetaDrmBufferPrivate;
+ 
+ G_DEFINE_ABSTRACT_TYPE_WITH_PRIVATE (MetaDrmBuffer, meta_drm_buffer,
+@@ -139,6 +140,7 @@ meta_drm_buffer_ensure_fb_in_impl (MetaDrmBuffer        *buffer,
+     }
+ 
+   priv->fb_id = fb_id;
++  priv->handle = fb_args->handle;
+ 
+   return TRUE;
+ }
+@@ -242,6 +244,14 @@ meta_drm_buffer_get_fb_id (MetaDrmBuffer *buffer)
+   return priv->fb_id;
+ }
+ 
++uint32_t
++meta_drm_buffer_get_handle (MetaDrmBuffer *buffer)
++{
++  MetaDrmBufferPrivate *priv = meta_drm_buffer_get_instance_private (buffer);
++
++  return priv->handle;
++}
++
+ int
+ meta_drm_buffer_get_width (MetaDrmBuffer *buffer)
+ {
+diff --git a/src/backends/native/meta-drm-buffer.h b/src/backends/native/meta-drm-buffer.h
+index 1647d399e7f2..476264ce753e 100644
+--- a/src/backends/native/meta-drm-buffer.h
++++ b/src/backends/native/meta-drm-buffer.h
+@@ -34,6 +34,8 @@ G_DECLARE_DERIVABLE_TYPE (MetaDrmBuffer,
+ 
+ uint32_t meta_drm_buffer_get_fb_id (MetaDrmBuffer *buffer);
+ 
++uint32_t meta_drm_buffer_get_handle (MetaDrmBuffer *buffer);
++
+ int meta_drm_buffer_get_width (MetaDrmBuffer *buffer);
+ 
+ int meta_drm_buffer_get_height (MetaDrmBuffer *buffer);
+-- 
+2.34.1
+
+
+From bdd2f1dd0a67743085c84f6e060160fbd28122df Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Tue, 8 Feb 2022 16:00:17 +0100
+Subject: [PATCH 2/4] kms/impl-device/simple: Get the buffer handle from
+ MetaDrmBuffer
+
+This avoids buffer implementation specific code where it shouldn't
+matter.
+---
+ src/backends/native/meta-kms-impl-device-simple.c | 15 ++-------------
+ 1 file changed, 2 insertions(+), 13 deletions(-)
+
+diff --git a/src/backends/native/meta-kms-impl-device-simple.c b/src/backends/native/meta-kms-impl-device-simple.c
+index 1519962b8ed7..1663a2e9cacd 100644
+--- a/src/backends/native/meta-kms-impl-device-simple.c
++++ b/src/backends/native/meta-kms-impl-device-simple.c
+@@ -1182,20 +1182,9 @@ process_cursor_plane_assignment (MetaKmsImplDevice       *impl_device,
+       height = plane_assignment->dst_rect.height;
+ 
+       if (plane_assignment->buffer)
+-        {
+-          MetaDrmBufferGbm *buffer_gbm =
+-            META_DRM_BUFFER_GBM (plane_assignment->buffer);
+-          struct gbm_bo *bo;
+-          union gbm_bo_handle handle;
+-
+-          bo = meta_drm_buffer_gbm_get_bo (buffer_gbm);
+-          handle = gbm_bo_get_handle (bo);
+-          handle_u32 = handle.u32;
+-        }
++        handle_u32 = meta_drm_buffer_get_handle (plane_assignment->buffer);
+       else
+-        {
+-          handle_u32 = 0;
+-        }
++        handle_u32 = 0;
+ 
+       meta_topic (META_DEBUG_KMS,
+                   "[simple] Setting HW cursor of CRTC %u (%s) to %u "
+-- 
+2.34.1
+
+
+From d781f140b7197d3c9cd67f8fded4e2b58a4eda92 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Tue, 8 Feb 2022 15:05:32 +0100
+Subject: [PATCH 3/4] cursor-renderer/native: Move buffer creation to helper
+
+---
+ .../native/meta-cursor-renderer-native.c      | 134 ++++++++++++------
+ 1 file changed, 89 insertions(+), 45 deletions(-)
+
+diff --git a/src/backends/native/meta-cursor-renderer-native.c b/src/backends/native/meta-cursor-renderer-native.c
+index 098ef24bdf2e..2bcbe6b2c8b0 100644
+--- a/src/backends/native/meta-cursor-renderer-native.c
++++ b/src/backends/native/meta-cursor-renderer-native.c
+@@ -1215,6 +1215,81 @@ ensure_cursor_priv (MetaCursorSprite *cursor_sprite)
+   return cursor_priv;
+ }
+ 
++static MetaDrmBuffer *
++create_cursor_drm_buffer_gbm (MetaGpuKms  *gpu_kms,
++                              uint8_t     *pixels,
++                              int          width,
++                              int          height,
++                              int          stride,
++                              int          cursor_width,
++                              int          cursor_height,
++                              uint32_t     format,
++                              GError     **error)
++{
++  MetaKmsDevice *kms_device = meta_gpu_kms_get_kms_device (gpu_kms);
++  struct gbm_device *gbm_device;
++  struct gbm_bo *bo;
++  uint8_t buf[4 * cursor_width * cursor_height];
++  int i;
++  MetaDrmBufferGbm *buffer_gbm;
++
++  gbm_device = meta_gbm_device_from_gpu (gpu_kms);
++  if (!gbm_device_is_format_supported (gbm_device, format,
++                                       GBM_BO_USE_CURSOR | GBM_BO_USE_WRITE))
++    {
++      g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
++                   "Buffer format not supported");
++      return NULL;
++    }
++
++  bo = gbm_bo_create (gbm_device, cursor_width, cursor_height,
++                      format, GBM_BO_USE_CURSOR | GBM_BO_USE_WRITE);
++  if (!bo)
++    {
++      g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
++                   "Failed to allocate gbm_bo: %s", g_strerror (errno));
++      return NULL;
++    }
++
++  memset (buf, 0, sizeof (buf));
++  for (i = 0; i < height; i++)
++    memcpy (buf + i * 4 * cursor_width, pixels + i * stride, width * 4);
++  if (gbm_bo_write (bo, buf, cursor_width * cursor_height * 4) != 0)
++    {
++      g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
++                   "Failed write to gbm_bo: %s", g_strerror (errno));
++      gbm_bo_destroy (bo);
++      return NULL;
++    }
++
++  buffer_gbm = meta_drm_buffer_gbm_new_take (kms_device, bo, FALSE, error);
++  if (!buffer_gbm)
++    {
++      gbm_bo_destroy (bo);
++      return NULL;
++    }
++
++  return META_DRM_BUFFER (buffer_gbm);
++}
++
++static MetaDrmBuffer *
++create_cursor_drm_buffer (MetaGpuKms  *gpu_kms,
++                          uint8_t     *pixels,
++                          int          width,
++                          int          height,
++                          int          stride,
++                          int          cursor_width,
++                          int          cursor_height,
++                          uint32_t     format,
++                          GError     **error)
++{
++  return create_cursor_drm_buffer_gbm (gpu_kms, pixels,
++                                       width, height, stride,
++                                       cursor_width, cursor_height,
++                                       format,
++                                       error);
++}
++
+ static void
+ load_cursor_sprite_gbm_buffer_for_gpu (MetaCursorRendererNative *native,
+                                        MetaGpuKms               *gpu_kms,
+@@ -1226,8 +1301,9 @@ load_cursor_sprite_gbm_buffer_for_gpu (MetaCursorRendererNative *native,
+                                        uint32_t                  gbm_format)
+ {
+   uint64_t cursor_width, cursor_height;
++  MetaDrmBuffer *buffer;
+   MetaCursorRendererNativeGpuData *cursor_renderer_gpu_data;
+-  struct gbm_device *gbm_device;
++  g_autoptr (GError) error = NULL;
+ 
+   cursor_renderer_gpu_data =
+     meta_cursor_renderer_native_gpu_data_from_gpu (gpu_kms);
+@@ -1244,52 +1320,20 @@ load_cursor_sprite_gbm_buffer_for_gpu (MetaCursorRendererNative *native,
+       return;
+     }
+ 
+-  gbm_device = meta_gbm_device_from_gpu (gpu_kms);
+-  if (gbm_device_is_format_supported (gbm_device, gbm_format,
+-                                      GBM_BO_USE_CURSOR | GBM_BO_USE_WRITE))
+-    {
+-      MetaKmsDevice *kms_device = meta_gpu_kms_get_kms_device (gpu_kms);
+-      struct gbm_bo *bo;
+-      uint8_t buf[4 * cursor_width * cursor_height];
+-      uint i;
+-      g_autoptr (GError) error = NULL;
+-      MetaDrmBufferGbm *buffer_gbm;
+-
+-      bo = gbm_bo_create (gbm_device, cursor_width, cursor_height,
+-                          gbm_format, GBM_BO_USE_CURSOR | GBM_BO_USE_WRITE);
+-      if (!bo)
+-        {
+-          meta_warning ("Failed to allocate HW cursor buffer");
+-          return;
+-        }
+-
+-      memset (buf, 0, sizeof(buf));
+-      for (i = 0; i < height; i++)
+-        memcpy (buf + i * 4 * cursor_width, pixels + i * rowstride, width * 4);
+-      if (gbm_bo_write (bo, buf, cursor_width * cursor_height * 4) != 0)
+-        {
+-          meta_warning ("Failed to write cursors buffer data: %s",
+-                        g_strerror (errno));
+-          gbm_bo_destroy (bo);
+-          return;
+-        }
+-
+-      buffer_gbm = meta_drm_buffer_gbm_new_take (kms_device, bo, FALSE, &error);
+-      if (!buffer_gbm)
+-        {
+-          meta_warning ("Failed to create DRM buffer wrapper: %s",
+-                        error->message);
+-          gbm_bo_destroy (bo);
+-          return;
+-        }
+-
+-      set_pending_cursor_sprite_buffer (cursor_sprite, gpu_kms,
+-                                        META_DRM_BUFFER (buffer_gbm));
+-    }
+-  else
++  buffer = create_cursor_drm_buffer (gpu_kms,
++                                     pixels,
++                                     width, height, rowstride,
++                                     cursor_width,
++                                     cursor_height,
++                                     gbm_format,
++                                     &error);
++  if (!buffer)
+     {
+-      meta_warning ("HW cursor for format %d not supported", gbm_format);
++      g_warning ("Realizing HW cursor failed: %s", error->message);
++      return;
+     }
++
++  set_pending_cursor_sprite_buffer (cursor_sprite, gpu_kms, buffer);
+ }
+ 
+ static gboolean
+-- 
+2.34.1
+
+
+From 717baf8dc1dd2f043350dd354bc4905285ba3337 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Tue, 8 Feb 2022 15:38:37 +0100
+Subject: [PATCH 4/4] cursor-renderer/native: Support allocating dumb buffers
+
+---
+ .../native/meta-cursor-renderer-native.c      | 88 ++++++++++++++-----
+ 1 file changed, 67 insertions(+), 21 deletions(-)
+
+diff --git a/src/backends/native/meta-cursor-renderer-native.c b/src/backends/native/meta-cursor-renderer-native.c
+index 2bcbe6b2c8b0..18ffdf37dac4 100644
+--- a/src/backends/native/meta-cursor-renderer-native.c
++++ b/src/backends/native/meta-cursor-renderer-native.c
+@@ -39,6 +39,7 @@
+ #include "backends/meta-monitor-manager-private.h"
+ #include "backends/meta-output.h"
+ #include "backends/native/meta-crtc-kms.h"
++#include "backends/native/meta-drm-buffer-dumb.h"
+ #include "backends/native/meta-drm-buffer-gbm.h"
+ #include "backends/native/meta-kms-device.h"
+ #include "backends/native/meta-kms-plane.h"
+@@ -1216,24 +1217,23 @@ ensure_cursor_priv (MetaCursorSprite *cursor_sprite)
+ }
+ 
+ static MetaDrmBuffer *
+-create_cursor_drm_buffer_gbm (MetaGpuKms  *gpu_kms,
+-                              uint8_t     *pixels,
+-                              int          width,
+-                              int          height,
+-                              int          stride,
+-                              int          cursor_width,
+-                              int          cursor_height,
+-                              uint32_t     format,
+-                              GError     **error)
++create_cursor_drm_buffer_gbm (MetaGpuKms         *gpu_kms,
++                              struct gbm_device  *gbm_device,
++                              uint8_t            *pixels,
++                              int                 width,
++                              int                 height,
++                              int                 stride,
++                              int                 cursor_width,
++                              int                 cursor_height,
++                              uint32_t            format,
++                              GError            **error)
+ {
+   MetaKmsDevice *kms_device = meta_gpu_kms_get_kms_device (gpu_kms);
+-  struct gbm_device *gbm_device;
+   struct gbm_bo *bo;
+   uint8_t buf[4 * cursor_width * cursor_height];
+   int i;
+   MetaDrmBufferGbm *buffer_gbm;
+ 
+-  gbm_device = meta_gbm_device_from_gpu (gpu_kms);
+   if (!gbm_device_is_format_supported (gbm_device, format,
+                                        GBM_BO_USE_CURSOR | GBM_BO_USE_WRITE))
+     {
+@@ -1272,6 +1272,38 @@ create_cursor_drm_buffer_gbm (MetaGpuKms  *gpu_kms,
+   return META_DRM_BUFFER (buffer_gbm);
+ }
+ 
++static MetaDrmBuffer *
++create_cursor_drm_buffer_dumb (MetaGpuKms         *gpu_kms,
++                               uint8_t            *pixels,
++                               int                 width,
++                               int                 height,
++                               int                 stride,
++                               int                 cursor_width,
++                               int                 cursor_height,
++                               uint32_t            format,
++                               GError            **error)
++{
++  MetaKmsDevice *kms_device = meta_gpu_kms_get_kms_device (gpu_kms);
++  MetaDrmBufferDumb *buffer_dumb;
++  int i;
++  uint8_t *data;
++
++  buffer_dumb = meta_drm_buffer_dumb_new (kms_device,
++                                          cursor_width, cursor_height,
++                                          format,
++                                          error);
++  if (!buffer_dumb)
++    return NULL;
++
++  data = meta_drm_buffer_dumb_get_data (buffer_dumb);
++
++  memset (data, 0, cursor_width * cursor_height * 4);
++  for (i = 0; i < height; i++)
++    memcpy (data + i * 4 * cursor_width, pixels + i * stride, width * 4);
++
++  return META_DRM_BUFFER (buffer_dumb);
++}
++
+ static MetaDrmBuffer *
+ create_cursor_drm_buffer (MetaGpuKms  *gpu_kms,
+                           uint8_t     *pixels,
+@@ -1283,11 +1315,27 @@ create_cursor_drm_buffer (MetaGpuKms  *gpu_kms,
+                           uint32_t     format,
+                           GError     **error)
+ {
+-  return create_cursor_drm_buffer_gbm (gpu_kms, pixels,
+-                                       width, height, stride,
+-                                       cursor_width, cursor_height,
+-                                       format,
+-                                       error);
++  struct gbm_device *gbm_device;
++
++  gbm_device = meta_gbm_device_from_gpu (gpu_kms);
++  if (gbm_device)
++    {
++      return create_cursor_drm_buffer_gbm (gpu_kms, gbm_device,
++                                           pixels,
++                                           width, height, stride,
++                                           cursor_width, cursor_height,
++                                           format,
++                                           error);
++    }
++  else
++    {
++      return create_cursor_drm_buffer_dumb (gpu_kms,
++                                            pixels,
++                                            width, height, stride,
++                                            cursor_width, cursor_height,
++                                            format,
++                                            error);
++    }
+ }
+ 
+ static void
+@@ -1629,6 +1677,9 @@ realize_cursor_sprite_from_wl_buffer_for_gpu (MetaCursorRenderer      *renderer,
+         }
+ 
+       gbm_device = meta_gbm_device_from_gpu (gpu_kms);
++      if (!gbm_device)
++        return;
++
+       bo = gbm_bo_import (gbm_device,
+                           GBM_BO_IMPORT_WL_BUFFER,
+                           buffer,
+@@ -1807,13 +1858,8 @@ init_hw_cursor_support_for_gpu (MetaGpuKms *gpu_kms)
+ {
+   MetaKmsDevice *kms_device = meta_gpu_kms_get_kms_device (gpu_kms);
+   MetaCursorRendererNativeGpuData *cursor_renderer_gpu_data;
+-  struct gbm_device *gbm_device;
+   uint64_t width, height;
+ 
+-  gbm_device = meta_gbm_device_from_gpu (gpu_kms);
+-  if (!gbm_device)
+-    return;
+-
+   cursor_renderer_gpu_data =
+     meta_create_cursor_renderer_native_gpu_data (gpu_kms);
+ 
+-- 
+2.34.1
+

@@ -1,0 +1,120 @@
+From b328c8cc8b0b31a4afe2bfc857c6ea5a2b837ef2 Mon Sep 17 00:00:00 2001
+From: Piotr Lopatka <piotr.lopatka@gmail.com>
+Date: Fri, 3 Sep 2021 20:01:59 +0100
+Subject: [PATCH 2/2] onscreen/native: Pass damage rectangles when page
+ flipping
+
+This commit passes damage rectangles metadata to the (KMS) primary
+plane.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/1879>
+---
+ src/backends/native/meta-crtc-kms.c        |  4 +++-
+ src/backends/native/meta-crtc-kms.h        |  6 +++---
+ src/backends/native/meta-onscreen-native.c | 22 ++++++++++++++++++----
+ 3 files changed, 24 insertions(+), 8 deletions(-)
+
+diff --git a/src/backends/native/meta-crtc-kms.c b/src/backends/native/meta-crtc-kms.c
+index f1bc79146af..fde64817532 100644
+--- a/src/backends/native/meta-crtc-kms.c
++++ b/src/backends/native/meta-crtc-kms.c
+@@ -115,7 +115,7 @@ meta_crtc_kms_apply_transform (MetaCrtcKms            *crtc_kms,
+                                       hw_transform);
+ }
+ 
+-void
++MetaKmsPlaneAssignment *
+ meta_crtc_kms_assign_primary_plane (MetaCrtcKms   *crtc_kms,
+                                     MetaDrmBuffer *buffer,
+                                     MetaKmsUpdate *kms_update)
+@@ -161,6 +161,8 @@ meta_crtc_kms_assign_primary_plane (MetaCrtcKms   *crtc_kms,
+                                                    dst_rect,
+                                                    flags);
+   meta_crtc_kms_apply_transform (crtc_kms, plane_assignment);
++
++  return plane_assignment;
+ }
+ 
+ static GList *
+diff --git a/src/backends/native/meta-crtc-kms.h b/src/backends/native/meta-crtc-kms.h
+index f8d241bbb51..bd80835f986 100644
+--- a/src/backends/native/meta-crtc-kms.h
++++ b/src/backends/native/meta-crtc-kms.h
+@@ -48,9 +48,9 @@ void meta_crtc_kms_set_cursor_renderer_private (MetaCrtcKms    *crtc_kms,
+ void meta_crtc_kms_apply_transform (MetaCrtcKms            *crtc_kms,
+                                     MetaKmsPlaneAssignment *kms_plane_assignment);
+ 
+-void meta_crtc_kms_assign_primary_plane (MetaCrtcKms   *crtc_kms,
+-                                         MetaDrmBuffer *buffer,
+-                                         MetaKmsUpdate *kms_update);
++MetaKmsPlaneAssignment * meta_crtc_kms_assign_primary_plane (MetaCrtcKms   *crtc_kms,
++                                                             MetaDrmBuffer *buffer,
++                                                             MetaKmsUpdate *kms_update);
+ 
+ void meta_crtc_kms_set_mode (MetaCrtcKms   *crtc_kms,
+                              MetaKmsUpdate *kms_update);
+diff --git a/src/backends/native/meta-onscreen-native.c b/src/backends/native/meta-onscreen-native.c
+index 112bd0d438b..00b2d9f89cc 100644
+--- a/src/backends/native/meta-onscreen-native.c
++++ b/src/backends/native/meta-onscreen-native.c
+@@ -416,7 +416,9 @@ static void
+ meta_onscreen_native_flip_crtc (CoglOnscreen                *onscreen,
+                                 MetaRendererView            *view,
+                                 MetaCrtc                    *crtc,
+-                                MetaKmsPageFlipListenerFlag  flags)
++                                MetaKmsPageFlipListenerFlag  flags,
++                                const int                   *rectangles,
++                                int                          n_rectangles)
+ {
+   MetaOnscreenNative *onscreen_native = META_ONSCREEN_NATIVE (onscreen);
+   MetaRendererNative *renderer_native = onscreen_native->renderer_native;
+@@ -430,6 +432,7 @@ meta_onscreen_native_flip_crtc (CoglOnscreen                *onscreen,
+   MetaKmsUpdate *kms_update;
+   MetaOnscreenNativeSecondaryGpuState *secondary_gpu_state = NULL;
+   MetaDrmBuffer *buffer;
++  MetaKmsPlaneAssignment *plane_assignment;
+ 
+   COGL_TRACE_BEGIN_SCOPED (MetaOnscreenNativeFlipCrtcs,
+                            "Onscreen (flip CRTCs)");
+@@ -456,8 +459,15 @@ meta_onscreen_native_flip_crtc (CoglOnscreen                *onscreen,
+           buffer = secondary_gpu_state->gbm.next_fb;
+         }
+ 
+-      meta_crtc_kms_assign_primary_plane (crtc_kms, buffer, kms_update);
++      plane_assignment = meta_crtc_kms_assign_primary_plane (crtc_kms,
++                                                             buffer,
++                                                             kms_update);
+ 
++      if (rectangles != NULL && n_rectangles != 0)
++        {
++          meta_kms_plane_assignment_set_fb_damage (plane_assignment,
++                                                   rectangles, n_rectangles);
++        }
+       break;
+     case META_RENDERER_NATIVE_MODE_SURFACELESS:
+       g_assert_not_reached ();
+@@ -1081,7 +1091,9 @@ meta_onscreen_native_swap_buffers_with_damage (CoglOnscreen  *onscreen,
+       meta_onscreen_native_flip_crtc (onscreen,
+                                       onscreen_native->view,
+                                       onscreen_native->crtc,
+-                                      META_KMS_PAGE_FLIP_LISTENER_FLAG_NONE);
++                                      META_KMS_PAGE_FLIP_LISTENER_FLAG_NONE,
++                                      rectangles,
++                                      n_rectangles);
+     }
+   else
+     {
+@@ -1299,7 +1311,9 @@ meta_onscreen_native_direct_scanout (CoglOnscreen   *onscreen,
+   meta_onscreen_native_flip_crtc (onscreen,
+                                   onscreen_native->view,
+                                   onscreen_native->crtc,
+-                                  META_KMS_PAGE_FLIP_LISTENER_FLAG_DROP_ON_ERROR);
++                                  META_KMS_PAGE_FLIP_LISTENER_FLAG_DROP_ON_ERROR,
++                                  NULL,
++                                  0);
+ 
+   kms_crtc = meta_crtc_kms_get_kms_crtc (META_CRTC_KMS (onscreen_native->crtc));
+   kms_device = meta_kms_crtc_get_device (kms_crtc);
+-- 
+2.36.1
+

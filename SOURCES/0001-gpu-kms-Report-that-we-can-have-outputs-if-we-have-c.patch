@@ -1,0 +1,45 @@
+From 168a47c9ebefaeca6cc25fcbc0d41ac50c16f400 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Wed, 1 Feb 2023 10:07:53 +0100
+Subject: [PATCH] gpu/kms: Report that we can have outputs if we have
+ connectors
+
+As part of https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/525
+(introduction of transactional KMS API), the logic determining whether a
+GPU can have outputs was changed from whether any connectors existed to
+whether any connected connectors existed. That effectively meant that we
+wouldn't attempt to start at all if there were no monitors connected
+while starting up.
+
+This was unintentional, so lets revert back the expected behavior.
+---
+ src/backends/native/meta-gpu-kms.c | 13 +------------
+ 1 file changed, 1 insertion(+), 12 deletions(-)
+
+diff --git a/src/backends/native/meta-gpu-kms.c b/src/backends/native/meta-gpu-kms.c
+index e81c90a022..2756bddb26 100644
+--- a/src/backends/native/meta-gpu-kms.c
++++ b/src/backends/native/meta-gpu-kms.c
+@@ -399,18 +399,7 @@ meta_gpu_kms_read_current (MetaGpu  *gpu,
+ gboolean
+ meta_gpu_kms_can_have_outputs (MetaGpuKms *gpu_kms)
+ {
+-  GList *l;
+-  int n_connected_connectors = 0;
+-
+-  for (l = meta_kms_device_get_connectors (gpu_kms->kms_device); l; l = l->next)
+-    {
+-      MetaKmsConnector *kms_connector = l->data;
+-
+-      if (meta_kms_connector_get_current_state (kms_connector))
+-        n_connected_connectors++;
+-    }
+-
+-  return n_connected_connectors > 0;
++  return !!meta_kms_device_get_connectors (gpu_kms->kms_device);
+ }
+ 
+ MetaGpuKms *
+-- 
+2.39.1
+

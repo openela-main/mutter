@@ -1,0 +1,193 @@
+From af0460d0cedd5a66b2110ab2a99e67c647e7b6fb Mon Sep 17 00:00:00 2001
+From: Piotr Lopatka <piotr.lopatka@gmail.com>
+Date: Fri, 3 Sep 2021 19:39:12 +0100
+Subject: [PATCH 1/2] kms: Allow passing framebuffer damage metadata
+
+This commit adds support to atomic KMS backend for optional plane property
+prop_fb_damage_clips. Some drivers (e.g. EVDI) take advantage of this
+property and process only updated regions of the screen instead of
+processing the full frame. This can save system resources.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/1879>
+---
+ .../native/meta-kms-impl-device-atomic.c      | 28 +++++++++++++++
+ src/backends/native/meta-kms-plane-private.h  |  1 +
+ src/backends/native/meta-kms-plane.c          |  5 +++
+ src/backends/native/meta-kms-update-private.h |  7 ++++
+ src/backends/native/meta-kms-update.c         | 35 +++++++++++++++++++
+ src/backends/native/meta-kms-update.h         |  4 +++
+ 6 files changed, 80 insertions(+)
+
+diff --git a/src/backends/native/meta-kms-impl-device-atomic.c b/src/backends/native/meta-kms-impl-device-atomic.c
+index 8e41207ee14..674a24902bd 100644
+--- a/src/backends/native/meta-kms-impl-device-atomic.c
++++ b/src/backends/native/meta-kms-impl-device-atomic.c
+@@ -416,6 +416,8 @@ process_plane_assignment (MetaKmsImplDevice  *impl_device,
+   MetaKmsPlaneAssignment *plane_assignment = update_entry;
+   MetaKmsPlane *plane = plane_assignment->plane;
+   MetaDrmBuffer *buffer;
++  MetaKmsFbDamage *fb_damage;
++  uint32_t prop_id;
+ 
+   buffer = plane_assignment->buffer;
+ 
+@@ -539,6 +541,32 @@ process_plane_assignment (MetaKmsImplDevice  *impl_device,
+         return FALSE;
+     }
+ 
++  fb_damage = plane_assignment->fb_damage;
++  if (fb_damage &&
++      meta_kms_plane_get_prop_id (plane,
++                                  META_KMS_PLANE_PROP_FB_DAMAGE_CLIPS_ID))
++    {
++      meta_topic (META_DEBUG_KMS,
++                  "[atomic] Setting %d damage clips on %u",
++                  fb_damage->n_rects,
++                  meta_kms_plane_get_id (plane));
++
++      prop_id = store_new_blob (impl_device,
++                                blob_ids,
++                                fb_damage->rects,
++                                fb_damage->n_rects *
++                                sizeof (struct drm_mode_rect),
++                                error);
++      if (!prop_id)
++        return FALSE;
++
++      if (!add_plane_property (impl_device,
++                               plane, req,
++                               META_KMS_PLANE_PROP_FB_DAMAGE_CLIPS_ID,
++                               prop_id,
++                               error))
++        return FALSE;
++    }
+   return TRUE;
+ }
+ 
+diff --git a/src/backends/native/meta-kms-plane-private.h b/src/backends/native/meta-kms-plane-private.h
+index 92f9cfcc9aa..f735c8da8f6 100644
+--- a/src/backends/native/meta-kms-plane-private.h
++++ b/src/backends/native/meta-kms-plane-private.h
+@@ -41,6 +41,7 @@ typedef enum _MetaKmsPlaneProp
+   META_KMS_PLANE_PROP_CRTC_H,
+   META_KMS_PLANE_PROP_FB_ID,
+   META_KMS_PLANE_PROP_CRTC_ID,
++  META_KMS_PLANE_PROP_FB_DAMAGE_CLIPS_ID,
+   META_KMS_PLANE_N_PROPS
+ } MetaKmsPlaneProp;
+ 
+diff --git a/src/backends/native/meta-kms-plane.c b/src/backends/native/meta-kms-plane.c
+index 73fab7d8f80..3cb58764ff3 100644
+--- a/src/backends/native/meta-kms-plane.c
++++ b/src/backends/native/meta-kms-plane.c
+@@ -446,6 +446,11 @@ init_properties (MetaKmsPlane            *plane,
+           .name = "CRTC_ID",
+           .type = DRM_MODE_PROP_OBJECT,
+         },
++      [META_KMS_PLANE_PROP_FB_DAMAGE_CLIPS_ID] =
++        {
++          .name = "FB_DAMAGE_CLIPS",
++          .type = DRM_MODE_PROP_BLOB,
++        },
+     }
+   };
+ 
+diff --git a/src/backends/native/meta-kms-update-private.h b/src/backends/native/meta-kms-update-private.h
+index 22491ece2d5..c89622d09a5 100644
+--- a/src/backends/native/meta-kms-update-private.h
++++ b/src/backends/native/meta-kms-update-private.h
+@@ -34,6 +34,12 @@ typedef struct _MetaKmsFeedback
+   GError *error;
+ } MetaKmsFeedback;
+ 
++typedef struct _MetaKmsFbDamage
++{
++  struct drm_mode_rect *rects;
++  int n_rects;
++} MetaKmsFbDamage;
++
+ typedef struct _MetaKmsPlaneAssignment
+ {
+   MetaKmsUpdate *update;
+@@ -43,6 +49,7 @@ typedef struct _MetaKmsPlaneAssignment
+   MetaFixed16Rectangle src_rect;
+   MetaRectangle dst_rect;
+   MetaKmsAssignPlaneFlag flags;
++  MetaKmsFbDamage *fb_damage;
+ 
+   uint64_t rotation;
+ 
+diff --git a/src/backends/native/meta-kms-update.c b/src/backends/native/meta-kms-update.c
+index be6eaefcc2c..71e5b423fb7 100644
+--- a/src/backends/native/meta-kms-update.c
++++ b/src/backends/native/meta-kms-update.c
+@@ -129,9 +129,17 @@ meta_kms_feedback_get_error (const MetaKmsFeedback *feedback)
+   return feedback->error;
+ }
+ 
++static void
++meta_kms_fb_damage_free (MetaKmsFbDamage *fb_damage)
++{
++  g_free (fb_damage->rects);
++  g_free (fb_damage);
++}
++
+ static void
+ meta_kms_plane_assignment_free (MetaKmsPlaneAssignment *plane_assignment)
+ {
++  g_clear_pointer (&plane_assignment->fb_damage, meta_kms_fb_damage_free);
+   g_free (plane_assignment);
+ }
+ 
+@@ -456,6 +464,33 @@ meta_kms_update_set_custom_page_flip (MetaKmsUpdate             *update,
+   update->custom_page_flip = custom_page_flip;
+ }
+ 
++void
++meta_kms_plane_assignment_set_fb_damage (MetaKmsPlaneAssignment *plane_assignment,
++                                         const int              *rectangles,
++                                         int                     n_rectangles)
++{
++  MetaKmsFbDamage *fb_damage;
++  struct drm_mode_rect *mode_rects;
++  int i;
++
++  mode_rects = g_new0 (struct drm_mode_rect, n_rectangles);
++  for (i = 0; i < n_rectangles; ++i)
++    {
++      mode_rects[i].x1 = rectangles[i * 4];
++      mode_rects[i].y1 = rectangles[i * 4 + 1];
++      mode_rects[i].x2 = mode_rects[i].x1 + rectangles[i * 4 + 2];
++      mode_rects[i].y2 = mode_rects[i].y1 + rectangles[i * 4 + 3];
++    }
++
++  fb_damage = g_new0 (MetaKmsFbDamage, 1);
++  *fb_damage = (MetaKmsFbDamage) {
++    .rects = mode_rects,
++    .n_rects = n_rectangles,
++  };
++
++  plane_assignment->fb_damage = fb_damage;
++}
++
+ void
+ meta_kms_plane_assignment_set_rotation (MetaKmsPlaneAssignment *plane_assignment,
+                                         uint64_t                rotation)
+diff --git a/src/backends/native/meta-kms-update.h b/src/backends/native/meta-kms-update.h
+index 4a6a8bb4373..e63b6d8711d 100644
+--- a/src/backends/native/meta-kms-update.h
++++ b/src/backends/native/meta-kms-update.h
+@@ -115,6 +115,10 @@ void meta_kms_update_set_crtc_gamma (MetaKmsUpdate  *update,
+                                      const uint16_t *green,
+                                      const uint16_t *blue);
+ 
++void meta_kms_plane_assignment_set_fb_damage (MetaKmsPlaneAssignment *plane_assignment,
++                                              const int              *rectangles,
++                                              int                     n_rectangles);
++
+ MetaKmsPlaneAssignment * meta_kms_update_assign_plane (MetaKmsUpdate          *update,
+                                                        MetaKmsCrtc            *crtc,
+                                                        MetaKmsPlane           *plane,
+-- 
+2.36.1
+
