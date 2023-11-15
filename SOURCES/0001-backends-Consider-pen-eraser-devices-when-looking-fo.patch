@@ -1,0 +1,30 @@
+From e512c397a640994807f239c570333e9942717ef5 Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Fri, 13 Dec 2019 17:01:44 +0100
+Subject: [PATCH] backends: Consider pen/eraser devices when looking for
+ matching WacomDevice
+
+Those device types are still in use through the X11 backend, breaking some
+checks around on that backend...
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/972
+---
+ src/backends/meta-input-settings.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/src/backends/meta-input-settings.c b/src/backends/meta-input-settings.c
+index 2e6672d9c..18ae52dd7 100644
+--- a/src/backends/meta-input-settings.c
++++ b/src/backends/meta-input-settings.c
+@@ -1589,6 +1589,8 @@ check_add_mappable_device (MetaInputSettings  *input_settings,
+ 
+ #ifdef HAVE_LIBWACOM
+   if (device_type == CLUTTER_TABLET_DEVICE ||
++      device_type == CLUTTER_PEN_DEVICE ||
++      device_type == CLUTTER_ERASER_DEVICE ||
+       device_type == CLUTTER_PAD_DEVICE)
+     {
+       WacomError *error = libwacom_error_new ();
+-- 
+2.23.0
+

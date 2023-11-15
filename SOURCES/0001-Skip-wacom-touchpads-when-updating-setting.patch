@@ -1,0 +1,94 @@
+From dafc9cb414fd47112b972d34c205e73797a3c1c1 Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Fri, 21 Feb 2020 16:45:35 +0100
+Subject: [PATCH] Skip wacom touchpads when updating setting
+
+---
+ src/backends/meta-input-settings.c | 46 +++++++++++++++++++++++-------
+ 1 file changed, 36 insertions(+), 10 deletions(-)
+
+diff --git a/src/backends/meta-input-settings.c b/src/backends/meta-input-settings.c
+index cdff7b346..7d866594a 100644
+--- a/src/backends/meta-input-settings.c
++++ b/src/backends/meta-input-settings.c
+@@ -569,20 +569,33 @@ update_touchpad_tap_enabled (MetaInputSettings  *input_settings,
+ 
+   priv = meta_input_settings_get_instance_private (input_settings);
+   input_settings_class = META_INPUT_SETTINGS_GET_CLASS (input_settings);
+-  enabled = device_is_tablet_touchpad (input_settings, device) ||
+-    g_settings_get_boolean (priv->touchpad_settings, "tap-to-click");
+ 
+   if (device)
+     {
++      enabled = device_is_tablet_touchpad (input_settings, device) ||
++        g_settings_get_boolean (priv->touchpad_settings, "tap-to-click");
+       settings_device_set_bool_setting (input_settings, device,
+                                         input_settings_class->set_tap_enabled,
+                                         enabled);
+     }
+   else
+     {
+-      settings_set_bool_setting (input_settings, CLUTTER_TOUCHPAD_DEVICE,
+-                                 input_settings_class->set_tap_enabled,
+-                                 enabled);
++      const GSList *devices, *l;
++
++      devices = clutter_device_manager_peek_devices (priv->device_manager);
++      for (l = devices; l; l = l->next)
++        {
++          device = l->data;
++
++          if (clutter_input_device_get_device_type (device) != CLUTTER_TOUCHPAD_DEVICE)
++            continue;
++
++          enabled = device_is_tablet_touchpad (input_settings, device) ||
++            g_settings_get_boolean (priv->touchpad_settings, "tap-to-click");
++          settings_device_set_bool_setting (input_settings, device,
++                                            input_settings_class->set_tap_enabled,
++                                            enabled);
++        }
+     }
+ }
+ 
+@@ -600,20 +613,33 @@ update_touchpad_tap_and_drag_enabled (MetaInputSettings  *input_settings,
+ 
+   priv = meta_input_settings_get_instance_private (input_settings);
+   input_settings_class = META_INPUT_SETTINGS_GET_CLASS (input_settings);
+-  enabled = device_is_tablet_touchpad (input_settings, device) ||
+-    g_settings_get_boolean (priv->touchpad_settings, "tap-and-drag");
+ 
+   if (device)
+     {
++      enabled = device_is_tablet_touchpad (input_settings, device) ||
++        g_settings_get_boolean (priv->touchpad_settings, "tap-and-drag");
+       settings_device_set_bool_setting (input_settings, device,
+                                         input_settings_class->set_tap_and_drag_enabled,
+                                         enabled);
+     }
+   else
+     {
+-      settings_set_bool_setting (input_settings, CLUTTER_TOUCHPAD_DEVICE,
+-                                 input_settings_class->set_tap_and_drag_enabled,
+-                                 enabled);
++      const GSList *devices, *l;
++
++      devices = clutter_device_manager_peek_devices (priv->device_manager);
++      for (l = devices; l; l = l->next)
++        {
++          device = l->data;
++
++          if (clutter_input_device_get_device_type (device) != CLUTTER_TOUCHPAD_DEVICE)
++            continue;
++
++          enabled = device_is_tablet_touchpad (input_settings, device) ||
++            g_settings_get_boolean (priv->touchpad_settings, "tap-and-drag");
++          settings_device_set_bool_setting (input_settings, device,
++                                            input_settings_class->set_tap_and_drag_enabled,
++                                            enabled);
++        }
+     }
+ }
+ 
+-- 
+2.24.1
+

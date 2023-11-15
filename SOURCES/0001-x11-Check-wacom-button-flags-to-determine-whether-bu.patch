@@ -1,0 +1,53 @@
+From 57b3a2ea620f754cfd38f1ed4851dd8223efbcab Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Thu, 28 Nov 2019 22:50:36 +0100
+Subject: [PATCH] x11: Check wacom button flags to determine whether button is
+ mode switch
+
+Checking the leds is not really accurate, since some devices have mode
+switch buttons without leds. Check in the button flags whether they are
+mode switch buttons for any of ring/ring2/strip/strip2, and return the
+appropriate group.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/952
+---
+ .../clutter/x11/clutter-input-device-xi2.c    | 19 +++++++++++++++----
+ 1 file changed, 15 insertions(+), 4 deletions(-)
+
+diff --git a/clutter/clutter/x11/clutter-input-device-xi2.c b/clutter/clutter/x11/clutter-input-device-xi2.c
+index 1254aca3ae..4e5e2fd12c 100644
+--- a/clutter/clutter/x11/clutter-input-device-xi2.c
++++ b/clutter/clutter/x11/clutter-input-device-xi2.c
+@@ -155,14 +155,25 @@ clutter_input_device_xi2_get_button_group (ClutterInputDevice *device,
+ 
+   if (device_xi2->wacom_device)
+     {
++      WacomButtonFlags flags;
++
+       if (button >= libwacom_get_num_buttons (device_xi2->wacom_device))
+         return -1;
+ 
+-      return libwacom_get_button_led_group (device_xi2->wacom_device,
+-                                            'A' + button);
++      flags = libwacom_get_button_flag (device_xi2->wacom_device,
++                                        'A' + button);
++
++      if (flags &
++          (WACOM_BUTTON_RING_MODESWITCH |
++           WACOM_BUTTON_TOUCHSTRIP_MODESWITCH))
++        return 0;
++      if (flags &
++          (WACOM_BUTTON_RING2_MODESWITCH |
++           WACOM_BUTTON_TOUCHSTRIP2_MODESWITCH))
++        return 1;
+     }
+-  else
+-    return -1;
++
++  return -1;
+ }
+ #endif
+ 
+-- 
+2.24.0
+

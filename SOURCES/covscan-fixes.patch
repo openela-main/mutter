@@ -1,0 +1,246 @@
+From 55417eea4294210495eceebd6dd4b832f371f054 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20Dre=C3=9Fler?= <verdre@v0yd.nl>
+Date: Sun, 14 Apr 2019 17:15:06 +0200
+Subject: [PATCH 1/5] display: Fix a possible bug in
+ meta_display_sync_wayland_focus
+
+The check for the focus xwindow is called, but not used. Fix that by
+renaming the variable to reflect better what it does and actually using
+the return value of the check.
+
+This was the original intention of the author in commit
+05899596d10918df5359d89baa82e6fedd0ae208 and got broken in commit
+8e7e1eeef59c4f74046e6783b6334c1432255c5a.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/535
+---
+ src/core/display.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/src/core/display.c b/src/core/display.c
+index 0de99edb2..4c8907f40 100644
+--- a/src/core/display.c
++++ b/src/core/display.c
+@@ -1208,15 +1208,15 @@ meta_display_sync_wayland_input_focus (MetaDisplay *display)
+   MetaWindow *focus_window = NULL;
+   MetaBackend *backend = meta_get_backend ();
+   MetaStage *stage = META_STAGE (meta_backend_get_stage (backend));
+-  gboolean is_focus_xwindow = FALSE;
++  gboolean is_no_focus_xwindow = FALSE;
+ 
+   if (display->x11_display)
+-    meta_x11_display_xwindow_is_a_no_focus_window (display->x11_display,
+-                                                   display->x11_display->focus_xwindow);
++    is_no_focus_xwindow = meta_x11_display_xwindow_is_a_no_focus_window (display->x11_display,
++                                                                         display->x11_display->focus_xwindow);
+ 
+   if (!meta_display_windows_are_interactable (display))
+     focus_window = NULL;
+-  else if (is_focus_xwindow)
++  else if (is_no_focus_xwindow)
+     focus_window = NULL;
+   else if (display->focus_window && display->focus_window->surface)
+     focus_window = display->focus_window;
+-- 
+2.21.0
+
+
+From 17cc0a2a21c504b8631bf2ce0f508f611f9b1d3e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Florian=20M=C3=BCllner?= <fmuellner@gnome.org>
+Date: Mon, 27 May 2019 20:03:25 +0000
+Subject: [PATCH 2/5] renderer-x11-nested: Fix copy-and-paste error
+
+The rounding added in commit c5471e5b8b1 mixed up some variables,
+whoops.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/598
+---
+ src/backends/x11/nested/meta-renderer-x11-nested.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/backends/x11/nested/meta-renderer-x11-nested.c b/src/backends/x11/nested/meta-renderer-x11-nested.c
+index 71a85a8c2..5000bf357 100644
+--- a/src/backends/x11/nested/meta-renderer-x11-nested.c
++++ b/src/backends/x11/nested/meta-renderer-x11-nested.c
+@@ -203,7 +203,7 @@ meta_renderer_x11_nested_create_view (MetaRenderer       *renderer,
+       height = logical_monitor->rect.height;
+     }
+   width = roundf (width * view_scale);
+-  height = roundf (width * view_scale);
++  height = roundf (height * view_scale);
+ 
+   fake_onscreen = create_offscreen (cogl_context, width, height);
+ 
+-- 
+2.21.0
+
+
+From a58fabbb0e3173359d3374b931815c21ce65032d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Florian=20M=C3=BCllner?= <fmuellner@gnome.org>
+Date: Mon, 27 May 2019 19:59:53 +0000
+Subject: [PATCH 3/5] input-mapper: Remove unnecessary return value
+
+Since commit ae6d9e35bd, there is a fallback to META_MATCH_IS_BUILTIN,
+so the condition for returning FALSE is never met.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/598
+---
+ src/backends/meta-input-mapper.c | 15 +++------------
+ 1 file changed, 3 insertions(+), 12 deletions(-)
+
+diff --git a/src/backends/meta-input-mapper.c b/src/backends/meta-input-mapper.c
+index acc9b1618..fc4f3bd59 100644
+--- a/src/backends/meta-input-mapper.c
++++ b/src/backends/meta-input-mapper.c
+@@ -353,7 +353,7 @@ find_builtin_output (MetaInputMapper  *mapper,
+   return panel != NULL;
+ }
+ 
+-static gboolean
++static void
+ guess_candidates (MetaInputMapper     *mapper,
+                   MetaMapperInputInfo *input,
+                   DeviceCandidates    *info)
+@@ -387,15 +387,7 @@ guess_candidates (MetaInputMapper     *mapper,
+       find_builtin_output (mapper, &info->candidates[META_MATCH_IS_BUILTIN]);
+     }
+ 
+-  if (best < N_OUTPUT_MATCHES)
+-    {
+-      info->best = best;
+-      return TRUE;
+-    }
+-  else
+-    {
+-      return FALSE;
+-    }
++  info->best = best;
+ }
+ 
+ static void
+@@ -408,8 +400,7 @@ mapping_helper_add (MappingHelper       *helper,
+ 
+   info.input = input;
+ 
+-  if (!guess_candidates (mapper, input, &info))
+-    return;
++  guess_candidates (mapper, input, &info);
+ 
+   for (i = 0; i < helper->device_maps->len; i++)
+     {
+-- 
+2.21.0
+
+
+From 4eb025cf36a9118cc496ae9143ee2eb510b6228c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Florian=20M=C3=BCllner?= <fmuellner@gnome.org>
+Date: Mon, 27 May 2019 20:22:50 +0000
+Subject: [PATCH 4/5] workspace-manager: Remove unnecessary assignment
+
+The initialization to -1 is never used, instead the variables are
+re-initialized to 0 before the loop that uses them.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/598
+---
+ src/core/meta-workspace-manager.c | 2 --
+ 1 file changed, 2 deletions(-)
+
+diff --git a/src/core/meta-workspace-manager.c b/src/core/meta-workspace-manager.c
+index af7344709..8e1f03fe8 100644
+--- a/src/core/meta-workspace-manager.c
++++ b/src/core/meta-workspace-manager.c
+@@ -600,8 +600,6 @@ meta_workspace_manager_calc_workspace_layout (MetaWorkspaceManager *workspace_ma
+ 
+   grid = g_new (int, grid_area);
+ 
+-  current_row = -1;
+-  current_col = -1;
+   i = 0;
+ 
+   switch (workspace_manager->starting_corner)
+-- 
+2.21.0
+
+
+From a854a337ac8807f310ac2c474f9be290089f79f3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Florian=20M=C3=BCllner?= <fmuellner@gnome.org>
+Date: Mon, 27 May 2019 20:43:21 +0000
+Subject: [PATCH 5/5] x11-display: Simplify bell handling
+
+Since commit 956ab4bd made libcanberra mandatory, we never use
+the system bell for handling the `audible-bell` setting. So
+instead of reacting to settings changes with the exact same call
+to XkbChangeEnabledControls(), just call it once when initializing.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/598
+---
+ src/x11/meta-x11-display.c | 39 +++++++-------------------------------
+ 1 file changed, 7 insertions(+), 32 deletions(-)
+
+diff --git a/src/x11/meta-x11-display.c b/src/x11/meta-x11-display.c
+index 8ce12b994..065ffcdda 100644
+--- a/src/x11/meta-x11-display.c
++++ b/src/x11/meta-x11-display.c
+@@ -463,6 +463,13 @@ init_x11_bell (MetaX11Display *x11_display)
+                                    &mask);
+         }
+     }
++
++  /* We are playing sounds using libcanberra support, we handle the
++   * bell whether its an audible bell or a visible bell */
++  XkbChangeEnabledControls (x11_display->xdisplay,
++                            XkbUseCoreKbd,
++                            XkbAudibleBellMask,
++                            0);
+ }
+ 
+ /*
+@@ -480,32 +487,6 @@ shutdown_x11_bell (MetaX11Display *x11_display)
+                             XkbAudibleBellMask);
+ }
+ 
+-/*
+- * Turns the bell to audible or visual. This tells X what to do, but
+- * not Mutter; you will need to set the "visual bell" pref for that.
+- */
+-static void
+-set_x11_bell_is_audible (MetaX11Display *x11_display,
+-                         gboolean is_audible)
+-{
+-  /* When we are playing sounds using libcanberra support, we handle the
+-   * bell whether its an audible bell or a visible bell */
+-  gboolean enable_system_bell = FALSE;
+-
+-  XkbChangeEnabledControls (x11_display->xdisplay,
+-                            XkbUseCoreKbd,
+-                            XkbAudibleBellMask,
+-                            enable_system_bell ? XkbAudibleBellMask : 0);
+-}
+-
+-static void
+-on_is_audible_changed (MetaBell       *bell,
+-                       gboolean        is_audible,
+-                       MetaX11Display *x11_display)
+-{
+-  set_x11_bell_is_audible (x11_display, is_audible);
+-}
+-
+ static void
+ set_desktop_geometry_hint (MetaX11Display *x11_display)
+ {
+@@ -1320,12 +1301,6 @@ meta_x11_display_new (MetaDisplay *display, GError **error)
+ 
+   init_x11_bell (x11_display);
+ 
+-  g_signal_connect_object (display->bell, "is-audible-changed",
+-                           G_CALLBACK (on_is_audible_changed),
+-                           x11_display, 0);
+-
+-  set_x11_bell_is_audible (x11_display, meta_prefs_bell_is_audible ());
+-
+   meta_x11_startup_notification_init (x11_display);
+ 
+   return x11_display;
+-- 
+2.21.0
+

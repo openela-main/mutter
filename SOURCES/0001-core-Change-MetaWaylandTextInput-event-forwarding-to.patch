@@ -1,0 +1,163 @@
+From bfd49687aa862a7e69d0d7fe76f803ae180d40c2 Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Wed, 7 Jun 2023 11:04:15 +0200
+Subject: [PATCH] core: Change MetaWaylandTextInput event forwarding to IMs
+
+We need to juggle with some things here to keep key event ordering
+and accounting consistent.
+
+The keyboard internal state changes (and maybe modifier event emission)
+happening through meta_wayland_seat_update() should ideally happen
+from the same key events that reach the client through wl_keyboard.key,
+so that wl_keyboard.modifier events are emitted in the right relative
+order to other key events.
+
+In order to fix this, we need to decide at an earlier point whether
+the event will get processed through IM (and maybe be reinjected),
+thus ignored in wait of IM-postprocessed events.
+
+This means we pay less attention to whether events are first-hand
+hardware events for some things and go with the event that does
+eventually reach to us (hardware or IM).
+
+Closes: https://gitlab.gnome.org/GNOME/gnome-shell/-/issues/5890
+---
+ src/core/events.c                   |  8 ++++++++
+ src/wayland/meta-wayland-keyboard.c |  8 --------
+ src/wayland/meta-wayland-seat.c     | 30 ++++++++++++++++++++++-------
+ src/wayland/meta-wayland-seat.h     |  3 +++
+ src/wayland/meta-wayland.c          |  7 +++++++
+ src/wayland/meta-wayland.h          |  4 ++++
+ 6 files changed, 45 insertions(+), 15 deletions(-)
+
+diff --git a/src/core/events.c b/src/core/events.c
+index 5b8e49fc79..19d701779b 100644
+--- a/src/core/events.c
++++ b/src/core/events.c
+@@ -207,6 +207,14 @@ meta_display_handle_event (MetaDisplay        *display,
+   if (meta_is_wayland_compositor ())
+     {
+       compositor = meta_wayland_compositor_get_default ();
++
++      if (display->event_route == META_EVENT_ROUTE_NORMAL &&
++          meta_wayland_compositor_handle_text_input_event (compositor, event))
++        {
++          bypass_wayland = bypass_clutter = TRUE;
++          goto out;
++        }
++
+       meta_wayland_compositor_update (compositor, event);
+     }
+ #endif
+diff --git a/src/wayland/meta-wayland-keyboard.c b/src/wayland/meta-wayland-keyboard.c
+index 8b23d76ce7..84f46bcf8e 100644
+--- a/src/wayland/meta-wayland-keyboard.c
++++ b/src/wayland/meta-wayland-keyboard.c
+@@ -753,14 +753,6 @@ meta_wayland_keyboard_update (MetaWaylandKeyboard *keyboard,
+ {
+   gboolean is_press = event->type == CLUTTER_KEY_PRESS;
+ 
+-  /* Only handle real, non-synthetic, events here. The IM is free to reemit
+-   * key events (incl. modifiers), handling those additionally will result
+-   * in doubly-pressed keys.
+-   */
+-  if ((event->flags &
+-       (CLUTTER_EVENT_FLAG_SYNTHETIC | CLUTTER_EVENT_FLAG_INPUT_METHOD)) != 0)
+-    return;
+-
+   /* If we get a key event but still have pending modifier state
+    * changes from a previous event that didn't get cleared, we need to
+    * send that state right away so that the new key event can be
+diff --git a/src/wayland/meta-wayland-seat.c b/src/wayland/meta-wayland-seat.c
+index 91fe376ffe..dcf420201f 100644
+--- a/src/wayland/meta-wayland-seat.c
++++ b/src/wayland/meta-wayland-seat.c
+@@ -362,6 +362,29 @@ meta_wayland_seat_update (MetaWaylandSeat    *seat,
+     }
+ }
+ 
++gboolean
++meta_wayland_seat_handle_text_input_event (MetaWaylandSeat    *seat,
++					   const ClutterEvent *event)
++{
++  switch (event->type)
++    {
++    case CLUTTER_KEY_PRESS:
++    case CLUTTER_KEY_RELEASE:
++      if (meta_wayland_text_input_handle_event (seat->text_input, event))
++        return TRUE;
++
++      if (meta_wayland_gtk_text_input_handle_event (seat->gtk_text_input,
++                                                    event))
++        return TRUE;
++
++      break;
++    default:
++      break;
++    }
++
++  return FALSE;
++}
++
+ gboolean
+ meta_wayland_seat_handle_event (MetaWaylandSeat *seat,
+                                 const ClutterEvent *event)
+@@ -384,13 +407,6 @@ meta_wayland_seat_handle_event (MetaWaylandSeat *seat,
+       break;
+     case CLUTTER_KEY_PRESS:
+     case CLUTTER_KEY_RELEASE:
+-      if (meta_wayland_text_input_handle_event (seat->text_input, event))
+-        return TRUE;
+-
+-      if (meta_wayland_gtk_text_input_handle_event (seat->gtk_text_input,
+-                                                    event))
+-        return TRUE;
+-
+       if (meta_wayland_seat_has_keyboard (seat))
+         return meta_wayland_keyboard_handle_event (seat->keyboard,
+                                                    (const ClutterKeyEvent *) event);
+diff --git a/src/wayland/meta-wayland-seat.h b/src/wayland/meta-wayland-seat.h
+index 3a744d0580..da20e69d8d 100644
+--- a/src/wayland/meta-wayland-seat.h
++++ b/src/wayland/meta-wayland-seat.h
+@@ -82,4 +82,7 @@ gboolean meta_wayland_seat_has_pointer (MetaWaylandSeat *seat);
+ 
+ gboolean meta_wayland_seat_has_touch (MetaWaylandSeat *seat);
+ 
++gboolean meta_wayland_seat_handle_text_input_event (MetaWaylandSeat    *seat,
++                                                    const ClutterEvent *event);
++
+ #endif /* META_WAYLAND_SEAT_H */
+diff --git a/src/wayland/meta-wayland.c b/src/wayland/meta-wayland.c
+index a593f0a7b7..24a68f1e06 100644
+--- a/src/wayland/meta-wayland.c
++++ b/src/wayland/meta-wayland.c
+@@ -565,3 +565,10 @@ meta_wayland_compositor_notify_surface_id (MetaWaylandCompositor *compositor,
+       meta_wayland_compositor_remove_surface_association (compositor, id);
+     }
+ }
++
++gboolean
++meta_wayland_compositor_handle_text_input_event (MetaWaylandCompositor *compositor,
++                                                 const ClutterEvent    *event)
++{
++  return meta_wayland_seat_handle_text_input_event (compositor->seat, event);
++}
+diff --git a/src/wayland/meta-wayland.h b/src/wayland/meta-wayland.h
+index 2a0aa11400..b5281d2014 100644
+--- a/src/wayland/meta-wayland.h
++++ b/src/wayland/meta-wayland.h
+@@ -87,6 +87,10 @@ META_EXPORT_TEST
+ void                    meta_wayland_compositor_schedule_surface_association (MetaWaylandCompositor *compositor,
+                                                                               int                    id,
+                                                                               MetaWindow            *window);
++
++gboolean meta_wayland_compositor_handle_text_input_event (MetaWaylandCompositor *compositor,
++                                                          const ClutterEvent    *event);
++
+ META_EXPORT_TEST
+ void                    meta_wayland_compositor_notify_surface_id (MetaWaylandCompositor *compositor,
+                                                                    int                    id,
+-- 
+2.40.1
+

@@ -1,0 +1,45 @@
+diff --git a/src/backends/native/meta-backend-native.c b/src/backends/native/meta-backend-native.c
+index 2bf7f5e..1221c7b 100644
+--- a/src/backends/native/meta-backend-native.c
++++ b/src/backends/native/meta-backend-native.c
+@@ -341,25 +341,30 @@ maybe_disable_screen_cast_dma_bufs (MetaBackendNative *native)
+   MetaGpuKms *primary_gpu;
+   const char *driver_name;
+   int i;
+-  static const char *disable_dma_buf_drivers[] = {
+-    "qxl",
++  static const char *enable_dma_buf_drivers[] = {
++    "i915",
+   };
++  MetaScreenCast *screen_cast = meta_backend_get_screen_cast (backend);
++  gboolean enable_dma_buf = FALSE;
+ 
+   primary_gpu = meta_renderer_native_get_primary_gpu (renderer_native);
+   driver_name = meta_gpu_kms_get_driver_name (primary_gpu);
+ 
+-  for (i = 0; i < G_N_ELEMENTS (disable_dma_buf_drivers); i++)
++  for (i = 0; i < G_N_ELEMENTS (enable_dma_buf_drivers); i++)
+     {
+-      if (g_strcmp0 (driver_name, disable_dma_buf_drivers[i]) == 0)
++      if (g_strcmp0 (driver_name, enable_dma_buf_drivers[i]) == 0)
+         {
+-          MetaScreenCast *screen_cast = meta_backend_get_screen_cast (backend);
++          enable_dma_buf = TRUE;
++          break;
++        }
++    }
+ 
+-          g_message ("The '%s' driver doesn't support DMA buffer screen sharing, disabling.",
+-                     driver_name);
++  if (!enable_dma_buf)
++    {
++      g_message ("Not enabling DMA buffer screen sharing for driver '%s'.",
++                 driver_name);
+ 
+-          meta_screen_cast_disable_dma_bufs (screen_cast);
+-          return;
+-        }
++      meta_screen_cast_disable_dma_bufs (screen_cast);
+     }
+ }
+ #endif /* HAVE_REMOTE_DESKTOP */

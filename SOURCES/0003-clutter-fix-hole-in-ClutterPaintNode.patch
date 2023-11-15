@@ -1,0 +1,167 @@
+From df565fcb681a50aac5046981c5aba04073d14856 Mon Sep 17 00:00:00 2001
+From: Christian Hergert <christian@hergert.me>
+Date: Fri, 21 Feb 2020 22:36:31 +0000
+Subject: [PATCH 3/3] clutter: fix hole in ClutterPaintNode
+
+Fixing the missalignment takes the structure from 80 bytes down to 72.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/1081
+---
+ clutter/clutter/clutter-actor.c              |  8 +++----
+ clutter/clutter/clutter-canvas.c             |  2 +-
+ clutter/clutter/clutter-image.c              |  2 +-
+ clutter/clutter/clutter-paint-node-private.h |  6 ++---
+ clutter/clutter/clutter-paint-node.c         | 23 +++++++++++++++-----
+ clutter/clutter/clutter-paint-node.h         |  3 +++
+ 6 files changed, 30 insertions(+), 14 deletions(-)
+
+diff --git a/clutter/clutter/clutter-actor.c b/clutter/clutter/clutter-actor.c
+index 93d0a93ef..ff5c4a69d 100644
+--- a/clutter/clutter/clutter-actor.c
++++ b/clutter/clutter/clutter-actor.c
+@@ -3758,7 +3758,7 @@ clutter_actor_paint_node (ClutterActor     *actor,
+         clear_flags |= COGL_BUFFER_BIT_COLOR;
+ 
+       node = clutter_root_node_new (fb, &bg_color, clear_flags);
+-      clutter_paint_node_set_name (node, "stageClear");
++      clutter_paint_node_set_static_name (node, "stageClear");
+       clutter_paint_node_add_rectangle (node, &box);
+       clutter_paint_node_add_child (root, node);
+       clutter_paint_node_unref (node);
+@@ -3773,7 +3773,7 @@ clutter_actor_paint_node (ClutterActor     *actor,
+                      / 255;
+ 
+       node = clutter_color_node_new (&bg_color);
+-      clutter_paint_node_set_name (node, "backgroundColor");
++      clutter_paint_node_set_static_name (node, "backgroundColor");
+       clutter_paint_node_add_rectangle (node, &box);
+       clutter_paint_node_add_child (root, node);
+       clutter_paint_node_unref (node);
+@@ -4069,7 +4069,7 @@ clutter_actor_continue_paint (ClutterActor *self)
+            * virtual function can then be called directly.
+            */
+           dummy = _clutter_dummy_node_new (self);
+-          clutter_paint_node_set_name (dummy, "Root");
++          clutter_paint_node_set_static_name (dummy, "Root");
+ 
+           /* XXX - for 1.12, we use the return value of paint_node() to
+            * decide whether we should emit the ::paint signal.
+@@ -21427,7 +21427,7 @@ clutter_actor_create_texture_paint_node (ClutterActor *self,
+   color.alpha = clutter_actor_get_paint_opacity_internal (self);
+ 
+   node = clutter_texture_node_new (texture, &color, priv->min_filter, priv->mag_filter);
+-  clutter_paint_node_set_name (node, "Texture");
++  clutter_paint_node_set_static_name (node, "Texture");
+ 
+   if (priv->content_repeat == CLUTTER_REPEAT_NONE)
+     clutter_paint_node_add_rectangle (node, &box);
+diff --git a/clutter/clutter/clutter-canvas.c b/clutter/clutter/clutter-canvas.c
+index b0f1f080c..89c031be2 100644
+--- a/clutter/clutter/clutter-canvas.c
++++ b/clutter/clutter/clutter-canvas.c
+@@ -351,7 +351,7 @@ clutter_canvas_paint_content (ClutterContent   *content,
+     return;
+ 
+   node = clutter_actor_create_texture_paint_node (actor, priv->texture);
+-  clutter_paint_node_set_name (node, "Canvas Content");
++  clutter_paint_node_set_static_name (node, "Canvas Content");
+   clutter_paint_node_add_child (root, node);
+   clutter_paint_node_unref (node);
+ 
+diff --git a/clutter/clutter/clutter-image.c b/clutter/clutter/clutter-image.c
+index 266c68799..790e09521 100644
+--- a/clutter/clutter/clutter-image.c
++++ b/clutter/clutter/clutter-image.c
+@@ -129,7 +129,7 @@ clutter_image_paint_content (ClutterContent   *content,
+     return;
+ 
+   node = clutter_actor_create_texture_paint_node (actor, priv->texture);
+-  clutter_paint_node_set_name (node, "Image Content");
++  clutter_paint_node_set_static_name (node, "Image Content");
+   clutter_paint_node_add_child (root, node);
+   clutter_paint_node_unref (node);
+ }
+diff --git a/clutter/clutter/clutter-paint-node-private.h b/clutter/clutter/clutter-paint-node-private.h
+index d61b89951..720df1458 100644
+--- a/clutter/clutter/clutter-paint-node-private.h
++++ b/clutter/clutter/clutter-paint-node-private.h
+@@ -48,11 +48,11 @@ struct _ClutterPaintNode
+   ClutterPaintNode *next_sibling;
+   ClutterPaintNode *last_child;
+ 
+-  guint n_children;
+-
+   GArray *operations;
+ 
+-  gchar *name;
++  const gchar *name;
++
++  guint n_children;
+ 
+   volatile int ref_count;
+ };
+diff --git a/clutter/clutter/clutter-paint-node.c b/clutter/clutter/clutter-paint-node.c
+index 73765a4e9..1f9451a43 100644
+--- a/clutter/clutter/clutter-paint-node.c
++++ b/clutter/clutter/clutter-paint-node.c
+@@ -171,8 +171,6 @@ clutter_paint_node_real_finalize (ClutterPaintNode *node)
+ {
+   ClutterPaintNode *iter;
+ 
+-  g_free (node->name);
+-
+   if (node->operations != NULL)
+     {
+       guint i;
+@@ -294,7 +292,8 @@ clutter_paint_node_get_type (void)
+  *
+  * The @name will be used for debugging purposes.
+  *
+- * The @node will copy the passed string.
++ * The @node will intern @name using g_intern_string(). If you have access to a
++ * static string, use clutter_paint_node_set_static_name() instead.
+  *
+  * Since: 1.10
+  */
+@@ -304,8 +303,22 @@ clutter_paint_node_set_name (ClutterPaintNode *node,
+ {
+   g_return_if_fail (CLUTTER_IS_PAINT_NODE (node));
+ 
+-  g_free (node->name);
+-  node->name = g_strdup (name);
++  node->name = g_intern_string (name);
++}
++
++/**
++ * clutter_paint_node_set_static_name: (skip)
++ *
++ * Like clutter_paint_node_set_name() but uses a static or interned string
++ * containing the name.
++ */
++void
++clutter_paint_node_set_static_name (ClutterPaintNode *node,
++                                    const char       *name)
++{
++  g_return_if_fail (CLUTTER_IS_PAINT_NODE (node));
++
++  node->name = name;
+ }
+ 
+ /**
+diff --git a/clutter/clutter/clutter-paint-node.h b/clutter/clutter/clutter-paint-node.h
+index c42abbc3d..7d25f1681 100644
+--- a/clutter/clutter/clutter-paint-node.h
++++ b/clutter/clutter/clutter-paint-node.h
+@@ -55,6 +55,9 @@ void                    clutter_paint_node_paint                        (Clutter
+ CLUTTER_EXPORT
+ void                    clutter_paint_node_set_name                     (ClutterPaintNode      *node,
+                                                                          const char            *name);
++CLUTTER_EXPORT
++void                    clutter_paint_node_set_static_name              (ClutterPaintNode      *node,
++                                                                         const char            *name);
+ 
+ CLUTTER_EXPORT
+ void                    clutter_paint_node_add_child                    (ClutterPaintNode      *node,
+-- 
+2.26.0
+

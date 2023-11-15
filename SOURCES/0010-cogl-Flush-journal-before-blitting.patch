@@ -1,0 +1,34 @@
+From 4c7fe200e05f9a028d440ed2032961d1b798c83b Mon Sep 17 00:00:00 2001
+From: Olivier Fourdan <ofourdan@redhat.com>
+Date: Tue, 1 Oct 2019 15:54:47 +0200
+Subject: [PATCH 10/12] cogl: Flush journal before blitting
+
+Make sure to submit all pending primitives before blitting, otherwise
+rendering from the shell may be incomplete leaving partial drawing of
+the shell widgets.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/820
+(cherry picked from commit 0cdf13ac12c570d38737fddb68946157c0b7a4d2)
+---
+ cogl/cogl/cogl-framebuffer.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/cogl/cogl/cogl-framebuffer.c b/cogl/cogl/cogl-framebuffer.c
+index 6d35c6b13..948cd112d 100644
+--- a/cogl/cogl/cogl-framebuffer.c
++++ b/cogl/cogl/cogl-framebuffer.c
+@@ -1482,6 +1482,11 @@ cogl_blit_framebuffer (CoglFramebuffer *src,
+       return FALSE;
+     }
+ 
++  /* Make sure any batched primitives get submitted to the driver
++   * before blitting
++   */
++  _cogl_framebuffer_flush_journal (src);
++
+   /* Make sure the current framebuffers are bound. We explicitly avoid
+      flushing the clip state so we can bind our own empty state */
+   _cogl_framebuffer_flush_state (dest,
+-- 
+2.21.0
+

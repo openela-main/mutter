@@ -1,0 +1,265 @@
+From b0f3604cdb653ef133f9684adffeb6b93f6906f8 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Wed, 26 Jan 2022 10:51:07 +0100
+Subject: [PATCH] compositor: Make sure _NET_WM_FRAME_DRAWN timestamp has the
+ right scope
+
+The timestamp sent with _NET_WM_FRAME_DRAWN should be in "high
+resolution X server timestamps", meaning they should have the same scope
+as the built in X11 32 bit unsigned integer timestamps, i.e. overflow at
+the same time.
+
+This was not done correctly when mutter had determined the X server used
+the monotonic clock, where it'd just forward the monotonic clock,
+confusing any client using _NET_WM_FRAME_DRAWN and friends.
+
+Fix this by 1) splitting the timestamp conversiot into an X11 case and a
+display server case, where the display server case simply clamps the
+monotonic clock, as it is assumed Xwayland is always usign the monotonic
+clock, and 2) if we're a X11 compositing manager, if the X server is
+using the monotonic clock, apply the same semantics as the display
+server case and always just clamp, or if not, calculate the offset every
+10 seconds, and offset the monotonic clock timestamp with the calculated
+X server timestamp offset.
+
+This fixes an issue that would occur if mutter (or rather GNOME Shell)
+would have been started before a X11 timestamp overflow, after the
+overflow happened. In this case, GTK3 clients would get unclamped
+timestamps, and get very confused, resulting in frames queued several
+weeks into the future.
+---
+ src/compositor/compositor-private.h    |   9 +-
+ src/compositor/compositor.c            | 117 +++++++++++++++++++------
+ src/compositor/meta-window-actor-x11.c |  12 +--
+ 3 files changed, 104 insertions(+), 34 deletions(-)
+
+diff --git a/src/compositor/compositor-private.h b/src/compositor/compositor-private.h
+index f7008751215d..4588a8af7f2f 100644
+--- a/src/compositor/compositor-private.h
++++ b/src/compositor/compositor-private.h
+@@ -49,6 +49,10 @@ struct _MetaCompositor
+ 
+   gboolean frame_has_updated_xsurfaces;
+   gboolean have_x11_sync_object;
++
++  gboolean xserver_uses_monotonic_clock;
++  int64_t xserver_time_query_time_us;
++  int64_t xserver_time_offset_us;
+ };
+ 
+ /* Wait 2ms after vblank before starting to draw next frame */
+@@ -64,8 +68,9 @@ void     meta_end_modal_for_plugin   (MetaCompositor   *compositor,
+                                       MetaPlugin       *plugin,
+                                       guint32           timestamp);
+ 
+-gint64 meta_compositor_monotonic_time_to_server_time (MetaDisplay *display,
+-                                                      gint64       monotonic_time);
++int64_t
++meta_compositor_monotonic_to_high_res_xserver_time (MetaDisplay *display,
++                                                    int64_t      monotonic_time_us);
+ 
+ gboolean meta_compositor_window_is_stereo     (MetaDisplay *display,
+                                                Window       xwindow);
+diff --git a/src/compositor/compositor.c b/src/compositor/compositor.c
+index ce2c1b8a3bc1..a3fbe5d888f9 100644
+--- a/src/compositor/compositor.c
++++ b/src/compositor/compositor.c
+@@ -88,6 +88,40 @@
+ #include "wayland/meta-wayland-private.h"
+ #endif
+ 
++static inline int64_t
++us (int64_t us)
++{
++  return us;
++}
++
++static inline int64_t
++ms2us (int64_t ms)
++{
++  return us (ms * 1000);
++}
++
++static inline int64_t
++s2us (int64_t s)
++{
++  return ms2us(s * 1000);
++}
++
++/*
++ * This function takes a 64 bit time stamp from the monotonic clock, and clamps
++ * it to the scope of the X server clock, without losing the granularity.
++ */
++static inline int64_t
++meta_translate_to_high_res_xserver_time (int64_t time_us)
++{
++  int64_t us;
++  int64_t ms;
++
++  us = time_us % 1000;
++  ms = time_us / 1000;
++
++  return ms2us (ms & 0xffffffff) + us;
++}
++
+ static void
+ on_presented (ClutterStage     *stage,
+               CoglFrameEvent    event,
+@@ -612,6 +646,37 @@ meta_compositor_select_stereo_notify (MetaDisplay *display,
+     }
+ }
+ 
++static void
++determine_server_clock_source (MetaCompositor *compositor)
++{
++  MetaDisplay *display = compositor->display;
++  MetaX11Display *x11_display = display->x11_display;
++  uint32_t server_time_ms;
++  int64_t server_time_us;
++  int64_t translated_monotonic_now_us;
++
++  if (meta_is_wayland_compositor ())
++    {
++      compositor->xserver_uses_monotonic_clock = TRUE;
++      return;
++    }
++
++  server_time_ms = meta_x11_display_get_current_time_roundtrip (x11_display);
++  server_time_us = ms2us (server_time_ms);
++  translated_monotonic_now_us =
++    meta_translate_to_high_res_xserver_time (g_get_monotonic_time ());
++
++  /* If the server time offset is within a second of the monotonic time, we
++   * assume that they are identical. This seems like a big margin, but we want
++   * to be as robust as possible even if the system is under load and our
++   * processing of the server response is delayed.
++   */
++  if (ABS (server_time_us - translated_monotonic_now_us) < s2us (1))
++    compositor->xserver_uses_monotonic_clock = TRUE;
++  else
++    compositor->xserver_uses_monotonic_clock = FALSE;
++}
++
+ void
+ meta_compositor_manage (MetaCompositor *compositor)
+ {
+@@ -622,6 +687,9 @@ meta_compositor_manage (MetaCompositor *compositor)
+   if (display->x11_display)
+     {
+       xdisplay = display->x11_display->xdisplay;
++
++      determine_server_clock_source (compositor);
++
+       meta_x11_display_set_cm_selection (display->x11_display);
+ 
+       compositor->stereo_tree_ext = display_has_stereo_tree_ext (display->x11_display);
+@@ -1593,7 +1661,7 @@ meta_compositor_flash_window (MetaCompositor *compositor,
+ }
+ 
+ /**
+- * meta_compositor_monotonic_time_to_server_time:
++ * meta_compositor_monotonic_to_high_res_xserver_time:
+  * @display: a #MetaDisplay
+  * @monotonic_time: time in the units of g_get_monotonic_time()
+  *
+@@ -1606,38 +1674,35 @@ meta_compositor_flash_window (MetaCompositor *compositor,
+  * a time representation with high accuracy. If there is not a common
+  * time source, then the time synchronization will be less accurate.
+  */
+-gint64
+-meta_compositor_monotonic_time_to_server_time (MetaDisplay *display,
+-                                               gint64       monotonic_time)
++int64_t
++meta_compositor_monotonic_to_high_res_xserver_time (MetaDisplay *display,
++                                                    int64_t      monotonic_time_us)
+ {
+   MetaCompositor *compositor = display->compositor;
++  int64_t now_us;
++
++  if (compositor->xserver_uses_monotonic_clock)
++    return meta_translate_to_high_res_xserver_time (monotonic_time_us);
+ 
+-  if (compositor->server_time_query_time == 0 ||
+-      (!compositor->server_time_is_monotonic_time &&
+-       monotonic_time > compositor->server_time_query_time + 10*1000*1000)) /* 10 seconds */
++  now_us = g_get_monotonic_time ();
++
++  if (compositor->xserver_time_query_time_us == 0 ||
++      now_us > (compositor->xserver_time_query_time_us + s2us (10)))
+     {
+-      guint32 server_time = meta_display_get_current_time_roundtrip (display);
+-      gint64 server_time_usec = (gint64)server_time * 1000;
+-      gint64 current_monotonic_time = g_get_monotonic_time ();
+-      compositor->server_time_query_time = current_monotonic_time;
+-
+-      /* If the server time is within a second of the monotonic time,
+-       * we assume that they are identical. This seems like a big margin,
+-       * but we want to be as robust as possible even if the system
+-       * is under load and our processing of the server response is
+-       * delayed.
+-       */
+-      if (server_time_usec > current_monotonic_time - 1000*1000 &&
+-          server_time_usec < current_monotonic_time + 1000*1000)
+-        compositor->server_time_is_monotonic_time = TRUE;
++      MetaDisplay *display = compositor->display;
++      MetaX11Display *x11_display = display->x11_display;
++      uint32_t xserver_time_ms;
++      int64_t xserver_time_us;
+ 
+-      compositor->server_time_offset = server_time_usec - current_monotonic_time;
++      compositor->xserver_time_query_time_us = now_us;
++
++      xserver_time_ms =
++        meta_x11_display_get_current_time_roundtrip (x11_display);
++      xserver_time_us = ms2us (xserver_time_ms);
++      compositor->xserver_time_offset_us = xserver_time_us - now_us;
+     }
+ 
+-  if (compositor->server_time_is_monotonic_time)
+-    return monotonic_time;
+-  else
+-    return monotonic_time + compositor->server_time_offset;
++  return monotonic_time_us + compositor->xserver_time_offset_us;
+ }
+ 
+ void
+diff --git a/src/compositor/meta-window-actor-x11.c b/src/compositor/meta-window-actor-x11.c
+index a364323fe057..2b9c25510dc9 100644
+--- a/src/compositor/meta-window-actor-x11.c
++++ b/src/compositor/meta-window-actor-x11.c
+@@ -105,8 +105,8 @@ do_send_frame_drawn (MetaWindowActorX11 *actor_x11,
+   XClientMessageEvent ev = { 0, };
+ 
+   frame->frame_drawn_time =
+-    meta_compositor_monotonic_time_to_server_time (display,
+-                                                   g_get_monotonic_time ());
++    meta_compositor_monotonic_to_high_res_xserver_time (display,
++                                                        g_get_monotonic_time ());
+   actor_x11->frame_drawn_time = frame->frame_drawn_time;
+ 
+   ev.type = ClientMessage;
+@@ -147,8 +147,8 @@ do_send_frame_timings (MetaWindowActorX11 *actor_x11,
+   if (presentation_time != 0)
+     {
+       int64_t presentation_time_server =
+-        meta_compositor_monotonic_time_to_server_time (display,
+-                                                       presentation_time);
++        meta_compositor_monotonic_to_high_res_xserver_time (display,
++                                                            presentation_time);
+       int64_t presentation_time_offset = presentation_time_server - frame->frame_drawn_time;
+       if (presentation_time_offset == 0)
+         presentation_time_offset = 1;
+@@ -246,8 +246,8 @@ queue_send_frame_messages_timeout (MetaWindowActorX11 *actor_x11)
+     }
+ 
+   current_time =
+-    meta_compositor_monotonic_time_to_server_time (display,
+-                                                   g_get_monotonic_time ());
++    meta_compositor_monotonic_to_high_res_xserver_time (display,
++                                                        g_get_monotonic_time ());
+   interval = (int) (1000000 / refresh_rate) * 6;
+   offset = MAX (0, actor_x11->frame_drawn_time + interval - current_time) / 1000;
+ 
+-- 
+2.33.1
+

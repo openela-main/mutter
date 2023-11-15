@@ -1,0 +1,172 @@
+From 66e2e438b8796351a72bfec2024ee41bbde77780 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Thu, 6 Apr 2023 18:40:41 +0200
+Subject: [PATCH] renderer-native: Queue fail safe callbacks when mode set
+ failed
+
+This allows to recover, e.g. Ctrl-Alt-F# and using any other monitor
+that managed to turn on.
+---
+ src/backends/native/meta-crtc-kms.c        | 19 ++++++++++
+ src/backends/native/meta-crtc-kms.h        |  5 +++
+ src/backends/native/meta-gpu-kms.c         | 10 +++++
+ src/backends/native/meta-renderer-native.c | 43 ++++++++++++++++++++++
+ 4 files changed, 77 insertions(+)
+
+diff --git a/src/backends/native/meta-crtc-kms.c b/src/backends/native/meta-crtc-kms.c
+index 8374376d5..44f271eb5 100644
+--- a/src/backends/native/meta-crtc-kms.c
++++ b/src/backends/native/meta-crtc-kms.c
+@@ -52,6 +52,8 @@ typedef struct _MetaCrtcKms
+    * value: owned GArray* (uint64_t modifier), or NULL
+    */
+   GHashTable *formats_modifiers;
++
++  gboolean is_active;
+ } MetaCrtcKms;
+ 
+ /**
+@@ -540,3 +542,20 @@ meta_create_kms_crtc (MetaGpuKms   *gpu_kms,
+ 
+   return crtc;
+ }
++
++void
++meta_crtc_kms_set_active (MetaCrtc *crtc,
++                          gboolean  is_active)
++{
++  MetaCrtcKms *crtc_kms = crtc->driver_private;
++
++  crtc_kms->is_active = is_active;
++}
++
++gboolean
++meta_crtc_kms_is_active (MetaCrtc *crtc)
++{
++  MetaCrtcKms *crtc_kms = crtc->driver_private;
++
++  return crtc_kms->is_active;
++}
+diff --git a/src/backends/native/meta-crtc-kms.h b/src/backends/native/meta-crtc-kms.h
+index 456f4400a..666aebcaf 100644
+--- a/src/backends/native/meta-crtc-kms.h
++++ b/src/backends/native/meta-crtc-kms.h
+@@ -58,4 +58,9 @@ MetaCrtc * meta_create_kms_crtc (MetaGpuKms   *gpu_kms,
+                                  drmModeCrtc  *drm_crtc,
+                                  unsigned int  crtc_index);
+ 
++void meta_crtc_kms_set_active (MetaCrtc *crtc,
++			       gboolean  is_active);
++
++gboolean meta_crtc_kms_is_active (MetaCrtc *crtc);
++
+ #endif /* META_CRTC_KMS_H */
+diff --git a/src/backends/native/meta-gpu-kms.c b/src/backends/native/meta-gpu-kms.c
+index dc93abb7b..5f7a48730 100644
+--- a/src/backends/native/meta-gpu-kms.c
++++ b/src/backends/native/meta-gpu-kms.c
+@@ -169,9 +169,12 @@ meta_gpu_kms_apply_crtc_mode (MetaGpuKms *gpu_kms,
+       else
+         g_warning ("Failed to disable CRTC");
+       g_free (connectors);
++      meta_crtc_kms_set_active (crtc, FALSE);
+       return FALSE;
+     }
+ 
++  meta_crtc_kms_set_active (crtc, !!mode);
++
+   g_free (connectors);
+ 
+   return TRUE;
+@@ -278,6 +281,13 @@ meta_gpu_kms_flip_crtc (MetaGpuKms  *gpu_kms,
+   g_assert (meta_monitor_manager_get_power_save_mode (monitor_manager) ==
+             META_POWER_SAVE_ON);
+ 
++  if (!meta_crtc_kms_is_active (crtc))
++    {
++      g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
++                   "CRTC is not active");
++      return FALSE;
++    }
++
+   get_crtc_drm_connectors (gpu, crtc, &connectors, &n_connectors);
+   g_assert (n_connectors > 0);
+   g_free (connectors);
+diff --git a/src/backends/native/meta-renderer-native.c b/src/backends/native/meta-renderer-native.c
+index 62ca4bcbd..76e311508 100644
+--- a/src/backends/native/meta-renderer-native.c
++++ b/src/backends/native/meta-renderer-native.c
+@@ -217,6 +217,9 @@ struct _MetaRendererNative
+ 
+   GList *power_save_page_flip_closures;
+   guint power_save_page_flip_source_id;
++
++  GList *fail_safe_page_flip_closures;
++  guint fail_safe_page_flip_source_id;
+ };
+ 
+ static void
+@@ -2048,6 +2051,34 @@ flip_crtc (MetaLogicalMonitor *logical_monitor,
+     }
+ }
+ 
++static gboolean
++fail_safe_page_flip_cb (gpointer user_data)
++{
++  MetaRendererNative *renderer_native = user_data;
++
++  g_list_free_full (renderer_native->fail_safe_page_flip_closures,
++                    (GDestroyNotify) g_closure_unref);
++  renderer_native->fail_safe_page_flip_closures = NULL;
++  renderer_native->fail_safe_page_flip_source_id = 0;
++
++  return G_SOURCE_REMOVE;
++}
++
++static void
++queue_fail_safe_page_flip (MetaRendererNative *renderer_native,
++                           GClosure           *flip_closure)
++{
++  if (!renderer_native->fail_safe_page_flip_source_id)
++    {
++      renderer_native->fail_safe_page_flip_source_id =
++        g_idle_add (fail_safe_page_flip_cb, renderer_native);
++    }
++
++  renderer_native->fail_safe_page_flip_closures =
++    g_list_prepend (renderer_native->fail_safe_page_flip_closures,
++                    g_closure_ref (flip_closure));
++}
++
+ static void
+ meta_onscreen_native_flip_crtcs (CoglOnscreen *onscreen)
+ {
+@@ -2093,6 +2124,11 @@ meta_onscreen_native_flip_crtcs (CoglOnscreen *onscreen)
+        */
+       if (!data.did_flip && data.did_mode_set)
+         meta_onscreen_native_swap_drm_fb (onscreen);
++      else if (!data.did_flip)
++        {
++          meta_onscreen_native_swap_drm_fb (onscreen);
++          queue_fail_safe_page_flip (renderer_native, flip_closure);
++        }
+     }
+   else
+     {
+@@ -4549,6 +4585,13 @@ meta_renderer_native_finalize (GObject *object)
+       g_source_remove (renderer_native->power_save_page_flip_source_id);
+     }
+ 
++  if (renderer_native->fail_safe_page_flip_closures)
++    {
++      g_list_free_full (renderer_native->fail_safe_page_flip_closures,
++                        (GDestroyNotify) g_closure_unref);
++      g_source_remove (renderer_native->fail_safe_page_flip_source_id);
++    }
++
+   g_hash_table_destroy (renderer_native->gpu_datas);
+   g_clear_object (&renderer_native->gles3);
+ 
+-- 
+2.39.2
+

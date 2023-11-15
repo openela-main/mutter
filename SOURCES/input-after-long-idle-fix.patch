@@ -1,0 +1,374 @@
+From 05bca153bb92c5daa5b961214ff7f80af88cb7cf Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Thu, 24 Oct 2019 21:19:36 +0200
+Subject: [PATCH 1/2] display: Move finishing of touch sequence to the backend
+
+We need to manipulate an X11 grab when a touch sequence ends; move that
+logic to where it belongs - in the X11 backend.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/886
+---
+ src/backends/meta-backend-private.h     | 16 ++++++++++++
+ src/backends/meta-backend.c             | 14 +++++++++++
+ src/backends/x11/meta-backend-x11.c     | 23 +++++++++++++++++
+ src/core/display.c                      | 33 +++++++++++--------------
+ src/core/meta-gesture-tracker-private.h |  9 +------
+ 5 files changed, 69 insertions(+), 26 deletions(-)
+
+diff --git a/src/backends/meta-backend-private.h b/src/backends/meta-backend-private.h
+index 7eba1806b..81ec81e5f 100644
+--- a/src/backends/meta-backend-private.h
++++ b/src/backends/meta-backend-private.h
+@@ -49,6 +49,14 @@
+ #define DEFAULT_XKB_RULES_FILE "evdev"
+ #define DEFAULT_XKB_MODEL "pc105+inet"
+ 
++typedef enum
++{
++  META_SEQUENCE_NONE,
++  META_SEQUENCE_ACCEPTED,
++  META_SEQUENCE_REJECTED,
++  META_SEQUENCE_PENDING_END
++} MetaSequenceState;
++
+ struct _MetaBackendClass
+ {
+   GObjectClass parent_class;
+@@ -71,6 +79,10 @@ struct _MetaBackendClass
+                               int          device_id,
+                               uint32_t     timestamp);
+ 
++  void (* finish_touch_sequence) (MetaBackend          *backend,
++                                  ClutterEventSequence *sequence,
++                                  MetaSequenceState     state);
++
+   void (* warp_pointer) (MetaBackend *backend,
+                          int          x,
+                          int          y);
+@@ -135,6 +147,10 @@ gboolean meta_backend_ungrab_device (MetaBackend *backend,
+                                      int          device_id,
+                                      uint32_t     timestamp);
+ 
++void meta_backend_finish_touch_sequence (MetaBackend          *backend,
++                                         ClutterEventSequence *sequence,
++                                         MetaSequenceState     state);
++
+ void meta_backend_warp_pointer (MetaBackend *backend,
+                                 int          x,
+                                 int          y);
+diff --git a/src/backends/meta-backend.c b/src/backends/meta-backend.c
+index c980cf150..bb7d66f2a 100644
+--- a/src/backends/meta-backend.c
++++ b/src/backends/meta-backend.c
+@@ -1086,6 +1086,20 @@ meta_backend_ungrab_device (MetaBackend *backend,
+   return META_BACKEND_GET_CLASS (backend)->ungrab_device (backend, device_id, timestamp);
+ }
+ 
++/**
++ * meta_backend_finish_touch_sequence: (skip)
++ */
++void
++meta_backend_finish_touch_sequence (MetaBackend          *backend,
++                                    ClutterEventSequence *sequence,
++                                    MetaSequenceState     state)
++{
++  if (META_BACKEND_GET_CLASS (backend)->finish_touch_sequence)
++    META_BACKEND_GET_CLASS (backend)->finish_touch_sequence (backend,
++                                                             sequence,
++                                                             state);
++}
++
+ /**
+  * meta_backend_warp_pointer: (skip)
+  */
+diff --git a/src/backends/x11/meta-backend-x11.c b/src/backends/x11/meta-backend-x11.c
+index c10365f9d..cdefa50a9 100644
+--- a/src/backends/x11/meta-backend-x11.c
++++ b/src/backends/x11/meta-backend-x11.c
+@@ -591,6 +591,28 @@ meta_backend_x11_ungrab_device (MetaBackend *backend,
+   return (ret == Success);
+ }
+ 
++static void
++meta_backend_x11_finish_touch_sequence (MetaBackend          *backend,
++                                        ClutterEventSequence *sequence,
++                                        MetaSequenceState     state)
++{
++  MetaBackendX11 *x11 = META_BACKEND_X11 (backend);
++  MetaBackendX11Private *priv = meta_backend_x11_get_instance_private (x11);
++  int event_mode;
++
++  if (state == META_SEQUENCE_ACCEPTED)
++    event_mode = XIAcceptTouch;
++  else if (state == META_SEQUENCE_REJECTED)
++    event_mode = XIRejectTouch;
++  else
++    g_return_if_reached ();
++
++  XIAllowTouchEvents (priv->xdisplay,
++                      META_VIRTUAL_CORE_POINTER_ID,
++                      clutter_x11_event_sequence_get_touch_detail (sequence),
++                      DefaultRootWindow (priv->xdisplay), event_mode);
++}
++
+ static void
+ meta_backend_x11_warp_pointer (MetaBackend *backend,
+                                int          x,
+@@ -776,6 +798,7 @@ meta_backend_x11_class_init (MetaBackendX11Class *klass)
+   backend_class->post_init = meta_backend_x11_post_init;
+   backend_class->grab_device = meta_backend_x11_grab_device;
+   backend_class->ungrab_device = meta_backend_x11_ungrab_device;
++  backend_class->finish_touch_sequence = meta_backend_x11_finish_touch_sequence;
+   backend_class->warp_pointer = meta_backend_x11_warp_pointer;
+   backend_class->get_current_logical_monitor = meta_backend_x11_get_current_logical_monitor;
+   backend_class->get_keymap = meta_backend_x11_get_keymap;
+diff --git a/src/core/display.c b/src/core/display.c
+index 4c8907f40..eb7dc43b6 100644
+--- a/src/core/display.c
++++ b/src/core/display.c
+@@ -42,6 +42,7 @@
+ #include <X11/extensions/Xdamage.h>
+ #include <X11/extensions/Xfixes.h>
+ 
++#include "backends/meta-backend-private.h"
+ #include "backends/meta-cursor-sprite-xcursor.h"
+ #include "backends/meta-cursor-tracker-private.h"
+ #include "backends/meta-idle-monitor-dbus.h"
+@@ -598,27 +599,23 @@ gesture_tracker_state_changed (MetaGestureTracker   *tracker,
+                                MetaSequenceState     state,
+                                MetaDisplay          *display)
+ {
+-  if (meta_is_wayland_compositor ())
++  switch (state)
+     {
+-      if (state == META_SEQUENCE_ACCEPTED)
+-        meta_display_cancel_touch (display);
+-    }
+-  else
+-    {
+-      MetaBackendX11 *backend = META_BACKEND_X11 (meta_get_backend ());
+-      int event_mode;
++    case META_SEQUENCE_NONE:
++    case META_SEQUENCE_PENDING_END:
++      return;
++    case META_SEQUENCE_ACCEPTED:
++      meta_display_cancel_touch (display);
+ 
+-      if (state == META_SEQUENCE_ACCEPTED)
+-        event_mode = XIAcceptTouch;
+-      else if (state == META_SEQUENCE_REJECTED)
+-        event_mode = XIRejectTouch;
+-      else
+-        return;
++      /* Intentional fall-through */
++    case META_SEQUENCE_REJECTED:
++      {
++        MetaBackend *backend;
+ 
+-      XIAllowTouchEvents (meta_backend_x11_get_xdisplay (backend),
+-                          META_VIRTUAL_CORE_POINTER_ID,
+-                          clutter_x11_event_sequence_get_touch_detail (sequence),
+-                          DefaultRootWindow (display->x11_display->xdisplay), event_mode);
++        backend = meta_get_backend ();
++        meta_backend_finish_touch_sequence (backend, sequence, state);
++        break;
++      }
+     }
+ }
+ 
+diff --git a/src/core/meta-gesture-tracker-private.h b/src/core/meta-gesture-tracker-private.h
+index a9db35ebc..e7bfc5472 100644
+--- a/src/core/meta-gesture-tracker-private.h
++++ b/src/core/meta-gesture-tracker-private.h
+@@ -26,6 +26,7 @@
+ 
+ #include <glib-object.h>
+ 
++#include "backends/meta-backend-private.h"
+ #include "clutter/clutter.h"
+ #include "meta/window.h"
+ 
+@@ -39,14 +40,6 @@
+ typedef struct _MetaGestureTracker MetaGestureTracker;
+ typedef struct _MetaGestureTrackerClass MetaGestureTrackerClass;
+ 
+-typedef enum
+-{
+-  META_SEQUENCE_NONE,
+-  META_SEQUENCE_ACCEPTED,
+-  META_SEQUENCE_REJECTED,
+-  META_SEQUENCE_PENDING_END
+-} MetaSequenceState;
+-
+ struct _MetaGestureTracker
+ {
+   GObject parent_instance;
+-- 
+2.23.0
+
+
+From 8cf4f500defb421d5c96f2c1f9fcf7bb5545d70d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Fri, 25 Oct 2019 10:06:55 +0200
+Subject: [PATCH 2/2] x11: Limit touch replay pointer events to when replaying
+
+When a touch sequence was rejected, the emulated pointer events would be
+replayed with old timestamps. This caused issues with grabs as they
+would be ignored due to being too old. This was mitigated by making sure
+device event timestamps never travelled back in time by tampering with
+any event that had a timestamp seemingly in the past.
+
+This failed when the most recent timestamp that had been received were
+much older than the timestamp of the new event. This could for example
+happen when a session was left not interacted with for 40+ days or so;
+when interacted with again, as any new timestamp would according to
+XSERVER_TIME_IS_BEFORE() still be in the past compared to the "most
+recent" one. The effect is that we'd always use the `latest_evtime` for
+all new device events without ever updating it.
+
+The end result of this was that passive grabs would become active when
+interacted with, but would then newer be released, as the timestamps to
+XIAllowEvents() would out of date, resulting in the desktop effectively
+freezing, as the Shell would have an active pointer grab.
+
+To avoid the situation where we get stuck with an old `latest_evtime`
+timestamp, limit the tampering with device event timestamp to 1) only
+pointer events, and 2) only during the replay sequence. The second part
+is implemented by sending an asynchronous message via the X server after
+rejecting a touch sequence, only potentially tampering with the device
+event timestamps until the reply. This should avoid the stuck timestamp
+as in those situations, we'll always have a relatively up to date
+`latest_evtime` meaning XSERVER_TIME_IS_BEFORE() will not get confused.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/886
+---
+ src/backends/x11/meta-backend-x11.c | 71 +++++++++++++++++++++++------
+ 1 file changed, 58 insertions(+), 13 deletions(-)
+
+diff --git a/src/backends/x11/meta-backend-x11.c b/src/backends/x11/meta-backend-x11.c
+index cdefa50a9..821b30f5b 100644
+--- a/src/backends/x11/meta-backend-x11.c
++++ b/src/backends/x11/meta-backend-x11.c
+@@ -66,6 +66,10 @@ struct _MetaBackendX11Private
+   XSyncAlarm user_active_alarm;
+   XSyncCounter counter;
+ 
++  int current_touch_replay_sync_serial;
++  int pending_touch_replay_sync_serial;
++  Atom touch_replay_sync_atom;
++
+   int xinput_opcode;
+   int xinput_event_base;
+   int xinput_error_base;
+@@ -174,6 +178,26 @@ meta_backend_x11_translate_device_event (MetaBackendX11 *x11,
+   backend_x11_class->translate_device_event (x11, device_event);
+ }
+ 
++static void
++maybe_translate_touch_replay_pointer_event (MetaBackendX11 *x11,
++                                            XIDeviceEvent  *device_event)
++{
++  MetaBackendX11Private *priv = meta_backend_x11_get_instance_private (x11);
++
++  if (!device_event->send_event &&
++      device_event->time != META_CURRENT_TIME &&
++      priv->current_touch_replay_sync_serial !=
++      priv->pending_touch_replay_sync_serial &&
++      XSERVER_TIME_IS_BEFORE (device_event->time, priv->latest_evtime))
++    {
++      /* Emulated pointer events received after XIRejectTouch is received
++       * on a passive touch grab will contain older timestamps, update those
++       * so we dont get InvalidTime at grabs.
++       */
++      device_event->time = priv->latest_evtime;
++    }
++}
++
+ static void
+ translate_device_event (MetaBackendX11 *x11,
+                         XIDeviceEvent  *device_event)
+@@ -183,19 +207,7 @@ translate_device_event (MetaBackendX11 *x11,
+   meta_backend_x11_translate_device_event (x11, device_event);
+ 
+   if (!device_event->send_event && device_event->time != META_CURRENT_TIME)
+-    {
+-      if (XSERVER_TIME_IS_BEFORE (device_event->time, priv->latest_evtime))
+-        {
+-          /* Emulated pointer events received after XIRejectTouch is received
+-           * on a passive touch grab will contain older timestamps, update those
+-           * so we dont get InvalidTime at grabs.
+-           */
+-          device_event->time = priv->latest_evtime;
+-        }
+-
+-      /* Update the internal latest evtime, for any possible later use */
+-      priv->latest_evtime = device_event->time;
+-    }
++    priv->latest_evtime = device_event->time;
+ }
+ 
+ static void
+@@ -260,6 +272,9 @@ maybe_spoof_event_as_stage_event (MetaBackendX11 *x11,
+     case XI_Motion:
+     case XI_ButtonPress:
+     case XI_ButtonRelease:
++      maybe_translate_touch_replay_pointer_event (x11,
++                                                  (XIDeviceEvent *) input_event);
++      /* Intentional fall-through */
+     case XI_KeyPress:
+     case XI_KeyRelease:
+     case XI_TouchBegin:
+@@ -327,6 +342,17 @@ handle_host_xevent (MetaBackend *backend,
+   MetaBackendX11Private *priv = meta_backend_x11_get_instance_private (x11);
+   gboolean bypass_clutter = FALSE;
+ 
++  switch (event->type)
++    {
++    case ClientMessage:
++      if (event->xclient.window == meta_backend_x11_get_xwindow (x11) &&
++          event->xclient.message_type == priv->touch_replay_sync_atom)
++        priv->current_touch_replay_sync_serial = event->xclient.data.l[0];
++      break;
++    default:
++      break;
++    }
++
+   XGetEventData (priv->xdisplay, &event->xcookie);
+ 
+   {
+@@ -534,6 +560,10 @@ meta_backend_x11_post_init (MetaBackend *backend)
+   monitor_manager = meta_backend_get_monitor_manager (backend);
+   g_signal_connect (monitor_manager, "monitors-changed-internal",
+                     G_CALLBACK (on_monitors_changed), backend);
++
++  priv->touch_replay_sync_atom = XInternAtom (priv->xdisplay,
++                                              "_MUTTER_TOUCH_SEQUENCE_SYNC",
++                                              False);
+ }
+ 
+ static ClutterBackend *
+@@ -611,6 +641,21 @@ meta_backend_x11_finish_touch_sequence (MetaBackend          *backend,
+                       META_VIRTUAL_CORE_POINTER_ID,
+                       clutter_x11_event_sequence_get_touch_detail (sequence),
+                       DefaultRootWindow (priv->xdisplay), event_mode);
++
++  if (state == META_SEQUENCE_REJECTED)
++    {
++      XClientMessageEvent ev;
++
++      ev = (XClientMessageEvent) {
++        .type = ClientMessage,
++        .window = meta_backend_x11_get_xwindow (x11),
++        .message_type = priv->touch_replay_sync_atom,
++        .format = 32,
++        .data.l[0] = ++priv->pending_touch_replay_sync_serial,
++      };
++      XSendEvent (priv->xdisplay, meta_backend_x11_get_xwindow (x11),
++                  False, 0, (XEvent *) &ev);
++    }
+ }
+ 
+ static void
+-- 
+2.23.0
+

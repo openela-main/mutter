@@ -1,0 +1,108 @@
+From d107b52939ca0acb1f8dacf1275278edba64eebe Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Tue, 1 Oct 2019 11:53:57 +0200
+Subject: [PATCH] renderer: Add API to check whether renderer is hardware
+ accelerated
+
+Also expose an introspected variant via the MetaBackend.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/838
+---
+ src/backends/meta-backend.c  | 15 +++++++++++++++
+ src/backends/meta-renderer.c | 27 +++++++++++++++++++++++++++
+ src/backends/meta-renderer.h |  2 ++
+ src/meta/meta-backend.h      |  3 +++
+ 4 files changed, 47 insertions(+)
+
+diff --git a/src/backends/meta-backend.c b/src/backends/meta-backend.c
+index 72cfbdaf3..e61181f9a 100644
+--- a/src/backends/meta-backend.c
++++ b/src/backends/meta-backend.c
+@@ -985,6 +985,21 @@ meta_backend_get_remote_access_controller (MetaBackend *backend)
+ #endif
+ }
+ 
++/**
++ * meta_backend_is_rendering_hardware_accelerated:
++ * @backend: A #MetaBackend
++ *
++ * Returns: %TRUE if the rendering is hardware accelerated, otherwise
++ * %FALSE.
++ */
++gboolean
++meta_backend_is_rendering_hardware_accelerated (MetaBackend *backend)
++{
++  MetaRenderer *renderer = meta_backend_get_renderer (backend);
++
++  return meta_renderer_is_hardware_accelerated (renderer);
++}
++
+ /**
+  * meta_backend_grab_device: (skip)
+  */
+diff --git a/src/backends/meta-renderer.c b/src/backends/meta-renderer.c
+index 87ba9f9f0..470220fc8 100644
+--- a/src/backends/meta-renderer.c
++++ b/src/backends/meta-renderer.c
+@@ -166,6 +166,33 @@ meta_renderer_get_view_from_logical_monitor (MetaRenderer       *renderer,
+   return NULL;
+ }
+ 
++gboolean
++meta_renderer_is_hardware_accelerated (MetaRenderer *renderer)
++{
++  MetaRendererPrivate *priv = meta_renderer_get_instance_private (renderer);
++  MetaBackend *backend = meta_get_backend ();
++  ClutterBackend *clutter_backend = meta_backend_get_clutter_backend (backend);
++  CoglContext *cogl_context =
++    clutter_backend_get_cogl_context (clutter_backend);
++  CoglGpuInfo *info = &cogl_context->gpu;
++
++  switch (info->architecture)
++    {
++    case COGL_GPU_INFO_ARCHITECTURE_UNKNOWN:
++    case COGL_GPU_INFO_ARCHITECTURE_SANDYBRIDGE:
++    case COGL_GPU_INFO_ARCHITECTURE_SGX:
++    case COGL_GPU_INFO_ARCHITECTURE_MALI:
++      return TRUE;
++    case COGL_GPU_INFO_ARCHITECTURE_LLVMPIPE:
++    case COGL_GPU_INFO_ARCHITECTURE_SOFTPIPE:
++    case COGL_GPU_INFO_ARCHITECTURE_SWRAST:
++      return FALSE;
++    }
++
++  g_assert_not_reached ();
++  return FALSE;
++}
++
+ static void
+ meta_renderer_finalize (GObject *object)
+ {
+diff --git a/src/backends/meta-renderer.h b/src/backends/meta-renderer.h
+index 478baee91..97bf36860 100644
+--- a/src/backends/meta-renderer.h
++++ b/src/backends/meta-renderer.h
+@@ -59,4 +59,6 @@ GList * meta_renderer_get_views (MetaRenderer *renderer);
+ MetaRendererView * meta_renderer_get_view_from_logical_monitor (MetaRenderer       *renderer,
+                                                                 MetaLogicalMonitor *logical_monitor);
+ 
++gboolean meta_renderer_is_hardware_accelerated (MetaRenderer *renderer);
++
+ #endif /* META_RENDERER_H */
+diff --git a/src/meta/meta-backend.h b/src/meta/meta-backend.h
+index aaa6aae97..8edc0bf2c 100644
+--- a/src/meta/meta-backend.h
++++ b/src/meta/meta-backend.h
+@@ -64,6 +64,9 @@ MetaSettings *meta_backend_get_settings (MetaBackend *backend);
+ META_EXPORT
+ MetaRemoteAccessController * meta_backend_get_remote_access_controller (MetaBackend *backend);
+ 
++META_EXPORT
++gboolean meta_backend_is_rendering_hardware_accelerated (MetaBackend *backend);
++
+ META_EXPORT
+ void meta_clutter_init (void);
+ 
+-- 
+2.26.2
+

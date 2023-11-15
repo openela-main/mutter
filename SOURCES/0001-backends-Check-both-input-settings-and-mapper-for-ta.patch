@@ -1,0 +1,205 @@
+From 20fcc3e045287c1ca591f3e795b19e120479a89a Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Wed, 12 Feb 2020 20:26:56 +0100
+Subject: [PATCH 1/2] backends/x11: Implement is_grouped for X11
+
+If the devices have a wacom description, compare those. Otherwise,
+look up the devices' VID:PID, if they match they should also be
+grouped.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/971
+---
+ .../clutter/x11/clutter-input-device-xi2.c    | 25 +++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+diff --git a/clutter/clutter/x11/clutter-input-device-xi2.c b/clutter/clutter/x11/clutter-input-device-xi2.c
+index ae2fa27..9eca34d 100644
+--- a/clutter/clutter/x11/clutter-input-device-xi2.c
++++ b/clutter/clutter/x11/clutter-input-device-xi2.c
+@@ -98,6 +98,31 @@ static gboolean
+ clutter_input_device_xi2_is_grouped (ClutterInputDevice *device,
+                                      ClutterInputDevice *other_device)
+ {
++#ifdef HAVE_LIBWACOM
++  ClutterInputDeviceXI2 *device_x11 = CLUTTER_INPUT_DEVICE_XI2 (device);
++  ClutterInputDeviceXI2 *other_device_x11 = CLUTTER_INPUT_DEVICE_XI2 (other_device);
++
++  if (device_x11->wacom_device &&
++      other_device_x11->wacom_device &&
++      libwacom_compare (device_x11->wacom_device,
++                        other_device_x11->wacom_device,
++                        WCOMPARE_NORMAL) == 0)
++    return TRUE;
++#endif
++
++  /* Devices with the same VID:PID get grouped together */
++  if (clutter_input_device_get_vendor_id (device) &&
++      clutter_input_device_get_product_id (device) &&
++      clutter_input_device_get_vendor_id (other_device) &&
++      clutter_input_device_get_product_id (other_device))
++    {
++      if (strcmp (clutter_input_device_get_vendor_id (device),
++                  clutter_input_device_get_vendor_id (other_device)) == 0 &&
++          strcmp (clutter_input_device_get_product_id (device),
++                  clutter_input_device_get_product_id (other_device)) == 0)
++        return TRUE;
++    }
++
+   return FALSE;
+ }
+ 
+-- 
+2.24.1
+
+
+From 5914ab9ac79ce42da054036c4a8f118a3a868cc0 Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Fri, 13 Dec 2019 15:26:05 +0100
+Subject: [PATCH 2/2] backends: Check both input settings and mapper for tablet
+ monitors
+
+The upper layers (OSDs basically) want to know the monitor that a
+tablet is currently assigned to, not the monitor just as configured
+through settings.
+
+This broke proper OSD positioning for display-attached tablets since
+commit 87858a4e01d9, as the MetaInputMapper kicks in precisely when
+there is no configured monitor for the given device.
+
+Consulting both about the assigned output will make OSDs pop up
+again in the right place.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/971
+---
+ src/backends/meta-input-mapper-private.h |  3 ++
+ src/backends/meta-input-mapper.c         | 26 ++++++++++++
+ src/backends/meta-input-settings.c       | 54 +++++++++++++++++++++++-
+ 3 files changed, 81 insertions(+), 2 deletions(-)
+
+diff --git a/src/backends/meta-input-mapper-private.h b/src/backends/meta-input-mapper-private.h
+index 3431457..cdfdccd 100644
+--- a/src/backends/meta-input-mapper-private.h
++++ b/src/backends/meta-input-mapper-private.h
+@@ -42,5 +42,8 @@ ClutterInputDevice *
+ meta_input_mapper_get_logical_monitor_device (MetaInputMapper        *mapper,
+                                               MetaLogicalMonitor     *logical_monitor,
+                                               ClutterInputDeviceType  device_type);
++MetaLogicalMonitor *
++meta_input_mapper_get_device_logical_monitor (MetaInputMapper *mapper,
++                                              ClutterInputDevice *device);
+ 
+ #endif /* META_INPUT_MAPPER_H */
+diff --git a/src/backends/meta-input-mapper.c b/src/backends/meta-input-mapper.c
+index fc4f3bd..fe02ab8 100644
+--- a/src/backends/meta-input-mapper.c
++++ b/src/backends/meta-input-mapper.c
+@@ -675,3 +675,29 @@ meta_input_mapper_get_logical_monitor_device (MetaInputMapper        *mapper,
+ 
+   return NULL;
+ }
++
++MetaLogicalMonitor *
++meta_input_mapper_get_device_logical_monitor (MetaInputMapper    *mapper,
++                                              ClutterInputDevice *device)
++{
++  MetaMapperOutputInfo *output;
++  MetaLogicalMonitor *logical_monitor;
++  GHashTableIter iter;
++  GList *l;
++
++  g_hash_table_iter_init (&iter, mapper->output_devices);
++
++  while (g_hash_table_iter_next (&iter, (gpointer *) &logical_monitor,
++                                 (gpointer *) &output))
++    {
++      for (l = output->input_devices; l; l = l->next)
++        {
++          MetaMapperInputInfo *input = l->data;
++
++          if (input->device == device)
++            return logical_monitor;
++        }
++    }
++
++  return NULL;
++}
+diff --git a/src/backends/meta-input-settings.c b/src/backends/meta-input-settings.c
+index b84595e..ab80bee 100644
+--- a/src/backends/meta-input-settings.c
++++ b/src/backends/meta-input-settings.c
+@@ -1937,6 +1937,42 @@ meta_input_settings_get_tablet_settings (MetaInputSettings  *settings,
+   return info ? g_object_ref (info->settings) : NULL;
+ }
+ 
++static ClutterInputDevice *
++find_grouped_pen (MetaInputSettings  *settings,
++                  ClutterInputDevice *device)
++{
++  MetaInputSettingsPrivate *priv;
++  GSList *l, *devices;
++  ClutterInputDeviceType device_type;
++  ClutterInputDevice *pen = NULL;
++
++  device_type = clutter_input_device_get_device_type (device);
++
++  if (device_type == CLUTTER_TABLET_DEVICE ||
++      device_type == CLUTTER_PEN_DEVICE)
++    return device;
++
++  priv = meta_input_settings_get_instance_private (settings);
++  devices = clutter_device_manager_peek_devices (priv->device_manager);
++
++  for (l = devices; l; l = l->next)
++    {
++      ClutterInputDevice *device = l->data;
++
++      device_type = clutter_input_device_get_device_type (l->data);
++
++      if ((device_type == CLUTTER_TABLET_DEVICE ||
++           device_type == CLUTTER_PEN_DEVICE) &&
++          clutter_input_device_is_grouped (device, l->data))
++        {
++          pen = l->data;
++          break;
++        }
++    }
++
++  return pen;
++}
++
+ MetaLogicalMonitor *
+ meta_input_settings_get_tablet_logical_monitor (MetaInputSettings  *settings,
+                                                 ClutterInputDevice *device)
+@@ -1948,13 +1984,27 @@ meta_input_settings_get_tablet_logical_monitor (MetaInputSettings  *settings,
+   g_return_val_if_fail (META_IS_INPUT_SETTINGS (settings), NULL);
+   g_return_val_if_fail (CLUTTER_IS_INPUT_DEVICE (device), NULL);
+ 
++  if (clutter_input_device_get_device_type (device) == CLUTTER_PAD_DEVICE)
++    {
++      device = find_grouped_pen (settings, device);
++      if (!device)
++        return NULL;
++    }
++
+   priv = meta_input_settings_get_instance_private (settings);
+   info = g_hash_table_lookup (priv->mappable_devices, device);
+   if (!info)
+     return NULL;
+ 
+-  meta_input_settings_find_monitor (settings, info->settings, device,
+-                                    NULL, &logical_monitor);
++  logical_monitor =
++    meta_input_mapper_get_device_logical_monitor (priv->input_mapper, device);
++
++  if (!logical_monitor)
++    {
++      meta_input_settings_find_monitor (settings, info->settings, device,
++                                        NULL, &logical_monitor);
++    }
++
+   return logical_monitor;
+ }
+ 
+-- 
+2.24.1
+

@@ -1,0 +1,1045 @@
+From 4232f2056cd31811d047104d1223f3e5ced4b107 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Thu, 16 Apr 2020 19:42:03 +0200
+Subject: [PATCH 1/5] clutter/stage: Make clutter_stage_schedule_update()
+ always schedule
+
+We could call clutter_stage_schedule_update() and it wouldn't actually
+schedule anything, as the master frame clock only tries to reschedule if
+1) there is an active timeline, 2) there are pending relayouts, 3) there
+are pending redraws, or 4) there are pending events. Thus, a call to
+clutter_stage_schedule_update() didn't have any effect if it was called
+at the wrong time.
+
+Fix this by adding a boolean state "needs_update" to the stage, set on
+clutter_stage_schedule_update() and cleared on
+_clutter_stage_do_update(), that will make the master clock reschedule
+an update if it is TRUE.
+
+https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/1218
+(cherry picked from commit b8003807b0772e97354302b5cc2825e0b22c6c83)
+---
+ clutter/clutter/clutter-stage.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/clutter/clutter/clutter-stage.c b/clutter/clutter/clutter-stage.c
+index aaa77d9ede..5a914a3d0b 100644
+--- a/clutter/clutter/clutter-stage.c
++++ b/clutter/clutter/clutter-stage.c
+@@ -152,6 +152,8 @@ struct _ClutterStagePrivate
+ 
+   int update_freeze_count;
+ 
++  gboolean needs_update;
++
+   guint relayout_pending       : 1;
+   guint redraw_pending         : 1;
+   guint is_fullscreen          : 1;
+@@ -1074,7 +1076,9 @@ _clutter_stage_needs_update (ClutterStage *stage)
+ 
+   priv = stage->priv;
+ 
+-  return priv->relayout_pending || priv->redraw_pending;
++  return priv->relayout_pending ||
++         priv->needs_update ||
++         priv->redraw_pending;
+ }
+ 
+ void
+@@ -1232,6 +1236,8 @@ _clutter_stage_do_update (ClutterStage *stage)
+ 
+   priv->stage_was_relayout = FALSE;
+ 
++  priv->needs_update = FALSE;
++
+   /* if the stage is being destroyed, or if the destruction already
+    * happened and we don't have an StageWindow any more, then we
+    * should bail out
+@@ -4080,6 +4086,8 @@ _clutter_stage_schedule_update (ClutterStage *stage)
+   if (stage_window == NULL)
+     return;
+ 
++  stage->priv->needs_update = TRUE;
++
+   return _clutter_stage_window_schedule_update (stage_window,
+                                                 stage->priv->sync_delay);
+ }
+-- 
+2.31.1
+
+
+From 2d4453cfdcaf0c6a9f492d2c2395dbfc8cf833db Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Thu, 16 Apr 2020 19:11:37 +0200
+Subject: [PATCH 2/5] clutter/stage: Make clutter_stage_schedule_update()
+ public API
+
+It's effectively used by mutter by abusing a ClutterTimeline to scedule
+updates.  Timelines are not really suited in places that is done, as it
+is really just about getting a single new update scheduled whenever
+suitable, so expose the API so we can use it directly.
+
+https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/1218
+(cherry picked from commit 99c9a14bc8058830232cd4e07c7bb897e84a8c9c)
+---
+ clutter/clutter/clutter-master-clock-default.c |  4 ++--
+ clutter/clutter/clutter-stage-private.h        |  1 -
+ clutter/clutter/clutter-stage.c                | 16 ++++++++--------
+ clutter/clutter/clutter-stage.h                |  3 +++
+ 4 files changed, 13 insertions(+), 11 deletions(-)
+
+diff --git a/clutter/clutter/clutter-master-clock-default.c b/clutter/clutter/clutter-master-clock-default.c
+index 0647c3a7fd..de7a1e2f4d 100644
+--- a/clutter/clutter/clutter-master-clock-default.c
++++ b/clutter/clutter/clutter-master-clock-default.c
+@@ -206,7 +206,7 @@ master_clock_schedule_stage_updates (ClutterMasterClockDefault *master_clock)
+   stages = clutter_stage_manager_peek_stages (stage_manager);
+ 
+   for (l = stages; l != NULL; l = l->next)
+-    _clutter_stage_schedule_update (l->data);
++    clutter_stage_schedule_update (l->data);
+ }
+ 
+ static GSList *
+@@ -259,7 +259,7 @@ master_clock_reschedule_stage_updates (ClutterMasterClockDefault *master_clock,
+       if (master_clock->timelines ||
+           _clutter_stage_has_queued_events (l->data) ||
+           _clutter_stage_needs_update (l->data))
+-        _clutter_stage_schedule_update (l->data);
++        clutter_stage_schedule_update (l->data);
+     }
+ }
+ 
+diff --git a/clutter/clutter/clutter-stage-private.h b/clutter/clutter/clutter-stage-private.h
+index 42474687ad..ea0ce5ec72 100644
+--- a/clutter/clutter/clutter-stage-private.h
++++ b/clutter/clutter/clutter-stage-private.h
+@@ -70,7 +70,6 @@ void     _clutter_stage_queue_event                       (ClutterStage *stage,
+ gboolean _clutter_stage_has_queued_events                 (ClutterStage *stage);
+ void     _clutter_stage_process_queued_events             (ClutterStage *stage);
+ void     _clutter_stage_update_input_devices              (ClutterStage *stage);
+-void     _clutter_stage_schedule_update                   (ClutterStage *stage);
+ gint64    _clutter_stage_get_update_time                  (ClutterStage *stage);
+ void     _clutter_stage_clear_update_time                 (ClutterStage *stage);
+ gboolean _clutter_stage_has_full_redraw_queued            (ClutterStage *stage);
+diff --git a/clutter/clutter/clutter-stage.c b/clutter/clutter/clutter-stage.c
+index 5a914a3d0b..74ff8b1337 100644
+--- a/clutter/clutter/clutter-stage.c
++++ b/clutter/clutter/clutter-stage.c
+@@ -921,7 +921,7 @@ _clutter_stage_queue_event (ClutterStage *stage,
+     {
+       ClutterMasterClock *master_clock = _clutter_master_clock_get_default ();
+       _clutter_master_clock_start_running (master_clock);
+-      _clutter_stage_schedule_update (stage);
++      clutter_stage_schedule_update (stage);
+     }
+ 
+   /* if needed, update the state of the input device of the event.
+@@ -1295,7 +1295,7 @@ clutter_stage_real_queue_relayout (ClutterActor *self)
+ 
+   if (!priv->relayout_pending)
+     {
+-      _clutter_stage_schedule_update (stage);
++      clutter_stage_schedule_update (stage);
+       priv->relayout_pending = TRUE;
+     }
+ 
+@@ -3788,7 +3788,7 @@ clutter_stage_ensure_redraw (ClutterStage *stage)
+   priv = stage->priv;
+ 
+   if (!priv->relayout_pending && !priv->redraw_pending)
+-    _clutter_stage_schedule_update (stage);
++    clutter_stage_schedule_update (stage);
+ 
+   priv->relayout_pending = TRUE;
+   priv->redraw_pending = TRUE;
+@@ -4069,13 +4069,13 @@ clutter_stage_get_minimum_size (ClutterStage *stage,
+ }
+ 
+ /**
+- * _clutter_stage_schedule_update:
+- * @window: a #ClutterStage actor
++ * clutter_stage_schedule_update:
++ * @stage: a #ClutterStage actor
+  *
+  * Schedules a redraw of the #ClutterStage at the next optimal timestamp.
+  */
+ void
+-_clutter_stage_schedule_update (ClutterStage *stage)
++clutter_stage_schedule_update (ClutterStage *stage)
+ {
+   ClutterStageWindow *stage_window;
+ 
+@@ -4097,7 +4097,7 @@ _clutter_stage_schedule_update (ClutterStage *stage)
+  * @stage: a #ClutterStage actor
+  *
+  * Returns the earliest time in which the stage is ready to update. The update
+- * time is set when _clutter_stage_schedule_update() is called. This can then
++ * time is set when clutter_stage_schedule_update() is called. This can then
+  * be used by e.g. the #ClutterMasterClock to know when the stage needs to be
+  * redrawn.
+  *
+@@ -4267,7 +4267,7 @@ _clutter_stage_queue_actor_redraw (ClutterStage                 *stage,
+ 
+       CLUTTER_NOTE (PAINT, "First redraw request");
+ 
+-      _clutter_stage_schedule_update (stage);
++      clutter_stage_schedule_update (stage);
+       priv->redraw_pending = TRUE;
+ 
+       master_clock = _clutter_master_clock_get_default ();
+diff --git a/clutter/clutter/clutter-stage.h b/clutter/clutter/clutter-stage.h
+index 9da63d211d..53e37ae3bc 100644
+--- a/clutter/clutter/clutter-stage.h
++++ b/clutter/clutter/clutter-stage.h
+@@ -265,6 +265,9 @@ CLUTTER_EXPORT
+ void            clutter_stage_skip_sync_delay                   (ClutterStage          *stage);
+ #endif
+ 
++CLUTTER_EXPORT
++void clutter_stage_schedule_update (ClutterStage *stage);
++
+ CLUTTER_EXPORT
+ gboolean clutter_stage_get_capture_final_size (ClutterStage          *stage,
+                                                cairo_rectangle_int_t *rect,
+-- 
+2.31.1
+
+
+From 1c4db591b6bb2ae9d649e8157eae24b875e7a22b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Mon, 28 Oct 2019 18:20:31 +0100
+Subject: [PATCH 3/5] wayland/actor-surface: Always store away frame callbacks
+ on commit
+
+We're expected by MetaWaylandSurface to always pick the frame callbacks
+out from the pending state when committing (applying) so that no frame
+callbacks are unaccounted for. We failed to do this if our actor for
+some reason (e.g. associated window was unmanaged) was destroyed. To
+handle this situation better, store away the frame callbacks until we
+some later point in time need to pass them on forward.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/893
+---
+ src/wayland/meta-wayland-actor-surface.c | 25 +++++++++++++++++++++++-
+ 1 file changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/src/wayland/meta-wayland-actor-surface.c b/src/wayland/meta-wayland-actor-surface.c
+index 2471de0a92..264565c575 100644
+--- a/src/wayland/meta-wayland-actor-surface.c
++++ b/src/wayland/meta-wayland-actor-surface.c
+@@ -35,6 +35,8 @@ typedef struct _MetaWaylandActorSurfacePrivate MetaWaylandActorSurfacePrivate;
+ struct _MetaWaylandActorSurfacePrivate
+ {
+   MetaSurfaceActor *actor;
++
++  struct wl_list frame_callback_list;
+ };
+ 
+ G_DEFINE_ABSTRACT_TYPE_WITH_PRIVATE (MetaWaylandActorSurface,
+@@ -56,6 +58,7 @@ meta_wayland_actor_surface_dispose (GObject *object)
+     meta_wayland_actor_surface_get_instance_private (META_WAYLAND_ACTOR_SURFACE (object));
+   MetaWaylandSurface *surface =
+     meta_wayland_surface_role_get_surface (META_WAYLAND_SURFACE_ROLE (object));
++  MetaWaylandFrameCallback *cb, *next;
+ 
+   if (priv->actor)
+     {
+@@ -66,6 +69,9 @@ meta_wayland_actor_surface_dispose (GObject *object)
+       g_clear_object (&priv->actor);
+     }
+ 
++  wl_list_for_each_safe (cb, next, &priv->frame_callback_list, link)
++    wl_resource_destroy (cb->resource);
++
+   G_OBJECT_CLASS (meta_wayland_actor_surface_parent_class)->dispose (object);
+ }
+ 
+@@ -99,6 +105,9 @@ meta_wayland_actor_surface_queue_frame_callbacks (MetaWaylandActorSurface *actor
+   MetaSurfaceActorWayland *surface_actor_wayland =
+     META_SURFACE_ACTOR_WAYLAND (priv->actor);
+ 
++  meta_surface_actor_wayland_add_frame_callbacks (surface_actor_wayland,
++                                                  &priv->frame_callback_list);
++  wl_list_init (&priv->frame_callback_list);
+   meta_surface_actor_wayland_add_frame_callbacks (surface_actor_wayland,
+                                                   &pending->frame_callback_list);
+   wl_list_init (&pending->frame_callback_list);
+@@ -253,10 +262,20 @@ meta_wayland_actor_surface_commit (MetaWaylandSurfaceRole  *surface_role,
+ {
+   MetaWaylandActorSurface *actor_surface =
+     META_WAYLAND_ACTOR_SURFACE (surface_role);
++  MetaWaylandActorSurfacePrivate *priv =
++    meta_wayland_actor_surface_get_instance_private (actor_surface);
+   MetaWaylandSurface *surface =
+     meta_wayland_surface_role_get_surface (surface_role);
+   MetaWaylandSurface *toplevel_surface;
+ 
++  if (!priv->actor)
++    {
++      wl_list_insert_list (&priv->frame_callback_list,
++                           &pending->frame_callback_list);
++      wl_list_init (&pending->frame_callback_list);
++      return;
++    }
++
+   meta_wayland_actor_surface_queue_frame_callbacks (actor_surface, pending);
+ 
+   toplevel_surface = meta_wayland_surface_get_toplevel (surface);
+@@ -307,8 +326,12 @@ meta_wayland_actor_surface_is_on_logical_monitor (MetaWaylandSurfaceRole *surfac
+ }
+ 
+ static void
+-meta_wayland_actor_surface_init (MetaWaylandActorSurface *role)
++meta_wayland_actor_surface_init (MetaWaylandActorSurface *actor_surface)
+ {
++  MetaWaylandActorSurfacePrivate *priv =
++    meta_wayland_actor_surface_get_instance_private (actor_surface);
++
++  wl_list_init (&priv->frame_callback_list);
+ }
+ 
+ static void
+-- 
+2.31.1
+
+
+From 54e5cee1a8d1a94fb19b438a3c80fe72179a3c80 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Fri, 6 Aug 2021 19:09:24 +0200
+Subject: [PATCH 4/5] wayland/actor-surface: Always store away frame callbacks
+ on commit
+
+We're expected by MetaWaylandSurface to always pick the frame callbacks
+out from the pending state when committing (applying) so that no frame
+callbacks are unaccounted for. We failed to do this if our actor for
+some reason (e.g. associated window was unmanaged) was destroyed. To
+handle this situation better, store away the frame callbacks until we
+some later point in time need to pass them on forward.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/893
+---
+ src/compositor/meta-surface-actor-wayland.c | 29 ---------
+ src/wayland/meta-wayland-actor-surface.c    | 65 ++++++++++++++++-----
+ src/wayland/meta-wayland-actor-surface.h    |  3 +
+ src/wayland/meta-wayland-cursor-surface.c   |  4 +-
+ src/wayland/meta-wayland-dnd-surface.c      | 11 +++-
+ src/wayland/meta-wayland-legacy-xdg-shell.c |  8 +--
+ src/wayland/meta-wayland-private.h          |  2 +-
+ src/wayland/meta-wayland-subsurface.c       |  2 -
+ src/wayland/meta-wayland-surface.c          | 38 +++---------
+ src/wayland/meta-wayland-surface.h          |  9 +--
+ src/wayland/meta-wayland-wl-shell.c         |  3 -
+ src/wayland/meta-wayland-xdg-shell.c        | 15 ++---
+ src/wayland/meta-wayland.c                  | 56 +++++++++++++-----
+ src/wayland/meta-wayland.h                  |  8 ++-
+ src/wayland/meta-xwayland.c                 | 45 --------------
+ 15 files changed, 127 insertions(+), 171 deletions(-)
+
+diff --git a/src/compositor/meta-surface-actor-wayland.c b/src/compositor/meta-surface-actor-wayland.c
+index a75c4dd096..480b51c61a 100644
+--- a/src/compositor/meta-surface-actor-wayland.c
++++ b/src/compositor/meta-surface-actor-wayland.c
+@@ -42,7 +42,6 @@ struct _MetaSurfaceActorWayland
+   MetaSurfaceActor parent;
+ 
+   MetaWaylandSurface *surface;
+-  struct wl_list frame_callback_list;
+ };
+ 
+ G_DEFINE_TYPE (MetaSurfaceActorWayland,
+@@ -91,13 +90,6 @@ meta_surface_actor_wayland_is_unredirected (MetaSurfaceActor *actor)
+   return FALSE;
+ }
+ 
+-void
+-meta_surface_actor_wayland_add_frame_callbacks (MetaSurfaceActorWayland *self,
+-                                                struct wl_list *frame_callbacks)
+-{
+-  wl_list_insert_list (&self->frame_callback_list, frame_callbacks);
+-}
+-
+ static MetaWindow *
+ meta_surface_actor_wayland_get_window (MetaSurfaceActor *actor)
+ {
+@@ -158,22 +150,6 @@ meta_surface_actor_wayland_get_preferred_height  (ClutterActor *actor,
+     *natural_height_p *= scale;
+ }
+ 
+-static void
+-meta_surface_actor_wayland_paint (ClutterActor *actor)
+-{
+-  MetaSurfaceActorWayland *self = META_SURFACE_ACTOR_WAYLAND (actor);
+-
+-  if (self->surface)
+-    {
+-      MetaWaylandCompositor *compositor = self->surface->compositor;
+-
+-      wl_list_insert_list (&compositor->frame_callbacks, &self->frame_callback_list);
+-      wl_list_init (&self->frame_callback_list);
+-    }
+-
+-  CLUTTER_ACTOR_CLASS (meta_surface_actor_wayland_parent_class)->paint (actor);
+-}
+-
+ static void
+ meta_surface_actor_wayland_dispose (GObject *object)
+ {
+@@ -190,9 +166,6 @@ meta_surface_actor_wayland_dispose (GObject *object)
+       self->surface = NULL;
+     }
+ 
+-  wl_list_for_each_safe (cb, next, &self->frame_callback_list, link)
+-    wl_resource_destroy (cb->resource);
+-
+   G_OBJECT_CLASS (meta_surface_actor_wayland_parent_class)->dispose (object);
+ }
+ 
+@@ -205,7 +178,6 @@ meta_surface_actor_wayland_class_init (MetaSurfaceActorWaylandClass *klass)
+ 
+   actor_class->get_preferred_width = meta_surface_actor_wayland_get_preferred_width;
+   actor_class->get_preferred_height = meta_surface_actor_wayland_get_preferred_height;
+-  actor_class->paint = meta_surface_actor_wayland_paint;
+ 
+   surface_actor_class->process_damage = meta_surface_actor_wayland_process_damage;
+   surface_actor_class->pre_paint = meta_surface_actor_wayland_pre_paint;
+@@ -232,7 +204,6 @@ meta_surface_actor_wayland_new (MetaWaylandSurface *surface)
+ 
+   g_assert (meta_is_wayland_compositor ());
+ 
+-  wl_list_init (&self->frame_callback_list);
+   self->surface = surface;
+   g_object_add_weak_pointer (G_OBJECT (self->surface),
+                              (gpointer *) &self->surface);
+diff --git a/src/wayland/meta-wayland-actor-surface.c b/src/wayland/meta-wayland-actor-surface.c
+index 264565c575..037dd901ab 100644
+--- a/src/wayland/meta-wayland-actor-surface.c
++++ b/src/wayland/meta-wayland-actor-surface.c
+@@ -84,16 +84,22 @@ meta_wayland_actor_surface_assigned (MetaWaylandSurfaceRole *surface_role)
+     meta_wayland_surface_role_get_surface (surface_role);
+   GList *l;
+ 
+-  meta_surface_actor_wayland_add_frame_callbacks (META_SURFACE_ACTOR_WAYLAND (priv->actor),
+-                                                  &surface->pending_frame_callback_list);
+-  wl_list_init (&surface->pending_frame_callback_list);
+-
+   for (l = surface->subsurfaces; l; l = l->next)
+     {
+       ClutterActor *subsurface_actor =
+         CLUTTER_ACTOR (meta_wayland_surface_get_actor (l->data));
+       clutter_actor_add_child (CLUTTER_ACTOR (priv->actor), subsurface_actor);
+     }
++
++  if (wl_list_empty (&surface->unassigned.pending_frame_callback_list))
++    return;
++
++  wl_list_insert_list (priv->frame_callback_list.prev,
++                       &surface->unassigned.pending_frame_callback_list);
++  wl_list_init (&surface->unassigned.pending_frame_callback_list);
++
++  meta_wayland_compositor_add_frame_callback_surface (surface->compositor,
++                                                      surface);
+ }
+ 
+ void
+@@ -102,15 +108,40 @@ meta_wayland_actor_surface_queue_frame_callbacks (MetaWaylandActorSurface *actor
+ {
+   MetaWaylandActorSurfacePrivate *priv =
+     meta_wayland_actor_surface_get_instance_private (actor_surface);
+-  MetaSurfaceActorWayland *surface_actor_wayland =
+-    META_SURFACE_ACTOR_WAYLAND (priv->actor);
++  MetaWaylandSurfaceRole *surface_role =
++    META_WAYLAND_SURFACE_ROLE (actor_surface);
++  MetaWaylandSurface *surface =
++    meta_wayland_surface_role_get_surface (surface_role);
+ 
+-  meta_surface_actor_wayland_add_frame_callbacks (surface_actor_wayland,
+-                                                  &priv->frame_callback_list);
+-  wl_list_init (&priv->frame_callback_list);
+-  meta_surface_actor_wayland_add_frame_callbacks (surface_actor_wayland,
+-                                                  &pending->frame_callback_list);
++  if (!priv->actor)
++    return;
++
++  if (wl_list_empty (&pending->frame_callback_list))
++    return;
++
++  wl_list_insert_list (priv->frame_callback_list.prev,
++                       &pending->frame_callback_list);
+   wl_list_init (&pending->frame_callback_list);
++
++  meta_wayland_compositor_add_frame_callback_surface (surface->compositor,
++                                                      surface);
++}
++
++void
++meta_wayland_actor_surface_emit_frame_callbacks (MetaWaylandActorSurface *actor_surface,
++                                                 uint32_t                 timestamp_ms)
++{
++  MetaWaylandActorSurfacePrivate *priv =
++    meta_wayland_actor_surface_get_instance_private (actor_surface);
++
++  while (!wl_list_empty (&priv->frame_callback_list))
++    {
++      MetaWaylandFrameCallback *callback =
++        wl_container_of (priv->frame_callback_list.next, callback, link);
++
++      wl_callback_send_done (callback->resource, timestamp_ms);
++      wl_resource_destroy (callback->resource);
++    }
+ }
+ 
+ static double
+@@ -268,12 +299,14 @@ meta_wayland_actor_surface_commit (MetaWaylandSurfaceRole  *surface_role,
+     meta_wayland_surface_role_get_surface (surface_role);
+   MetaWaylandSurface *toplevel_surface;
+ 
+-  if (!priv->actor)
++  if (!wl_list_empty (&pending->frame_callback_list) &&
++      priv->actor &&
++      !meta_surface_actor_is_obscured (priv->actor))
+     {
+-      wl_list_insert_list (&priv->frame_callback_list,
+-                           &pending->frame_callback_list);
+-      wl_list_init (&pending->frame_callback_list);
+-      return;
++      MetaBackend *backend = meta_get_backend ();
++      ClutterActor *stage = meta_backend_get_stage (backend);
++
++      clutter_stage_schedule_update (CLUTTER_STAGE (stage));
+     }
+ 
+   meta_wayland_actor_surface_queue_frame_callbacks (actor_surface, pending);
+diff --git a/src/wayland/meta-wayland-actor-surface.h b/src/wayland/meta-wayland-actor-surface.h
+index 444b3b1785..e79f1caff5 100644
+--- a/src/wayland/meta-wayland-actor-surface.h
++++ b/src/wayland/meta-wayland-actor-surface.h
+@@ -46,4 +46,7 @@ void meta_wayland_actor_surface_reset_actor (MetaWaylandActorSurface *actor_surf
+ void meta_wayland_actor_surface_queue_frame_callbacks (MetaWaylandActorSurface *actor_surface,
+                                                        MetaWaylandPendingState *pending);
+ 
++void meta_wayland_actor_surface_emit_frame_callbacks (MetaWaylandActorSurface *actor_surface,
++                                                      uint32_t                 timestamp_ms);
++
+ #endif /* META_WAYLAND_ACTOR_SURFACE_H */
+diff --git a/src/wayland/meta-wayland-cursor-surface.c b/src/wayland/meta-wayland-cursor-surface.c
+index d46b3511fa..6b791eb378 100644
+--- a/src/wayland/meta-wayland-cursor-surface.c
++++ b/src/wayland/meta-wayland-cursor-surface.c
+@@ -124,8 +124,8 @@ meta_wayland_cursor_surface_assigned (MetaWaylandSurfaceRole *surface_role)
+     meta_wayland_cursor_surface_get_instance_private (cursor_surface);
+ 
+   wl_list_insert_list (&priv->frame_callbacks,
+-                       &surface->pending_frame_callback_list);
+-  wl_list_init (&surface->pending_frame_callback_list);
++                       &surface->unassigned.pending_frame_callback_list);
++  wl_list_init (&surface->unassigned.pending_frame_callback_list);
+ }
+ 
+ static void
+diff --git a/src/wayland/meta-wayland-dnd-surface.c b/src/wayland/meta-wayland-dnd-surface.c
+index 2aad6dcd5d..8ddeb2a7bd 100644
+--- a/src/wayland/meta-wayland-dnd-surface.c
++++ b/src/wayland/meta-wayland-dnd-surface.c
+@@ -21,6 +21,8 @@
+ 
+ #include "wayland/meta-wayland-dnd-surface.h"
+ 
++#include "wayland/meta-wayland.h"
++
+ struct _MetaWaylandSurfaceRoleDND
+ {
+   MetaWaylandActorSurface parent;
+@@ -36,7 +38,11 @@ dnd_surface_assigned (MetaWaylandSurfaceRole *surface_role)
+   MetaWaylandSurface *surface =
+     meta_wayland_surface_role_get_surface (surface_role);
+ 
+-  meta_wayland_surface_queue_pending_frame_callbacks (surface);
++  if (wl_list_empty (&surface->unassigned.pending_frame_callback_list))
++    return;
++
++  meta_wayland_compositor_add_frame_callback_surface (surface->compositor,
++                                                      surface);
+ }
+ 
+ static void
+@@ -46,7 +52,8 @@ dnd_surface_commit (MetaWaylandSurfaceRole  *surface_role,
+   MetaWaylandSurface *surface =
+     meta_wayland_surface_role_get_surface (surface_role);
+ 
+-  meta_wayland_surface_queue_pending_state_frame_callbacks (surface, pending);
++  meta_wayland_compositor_add_frame_callback_surface (surface->compositor,
++                                                      surface);
+ }
+ 
+ static void
+diff --git a/src/wayland/meta-wayland-legacy-xdg-shell.c b/src/wayland/meta-wayland-legacy-xdg-shell.c
+index 8230641770..b78552f31b 100644
+--- a/src/wayland/meta-wayland-legacy-xdg-shell.c
++++ b/src/wayland/meta-wayland-legacy-xdg-shell.c
+@@ -659,6 +659,8 @@ meta_wayland_zxdg_toplevel_v6_commit (MetaWaylandSurfaceRole  *surface_role,
+     META_WAYLAND_ZXDG_SURFACE_V6 (xdg_toplevel);
+   MetaWaylandZxdgSurfaceV6Private *xdg_surface_priv =
+     meta_wayland_zxdg_surface_v6_get_instance_private (xdg_surface);
++  MetaWaylandActorSurface *actor_surface =
++    META_WAYLAND_ACTOR_SURFACE (xdg_surface);
+   MetaWaylandSurfaceRoleClass *surface_role_class;
+   MetaWaylandSurface *surface =
+     meta_wayland_surface_role_get_surface (surface_role);
+@@ -670,7 +672,7 @@ meta_wayland_zxdg_toplevel_v6_commit (MetaWaylandSurfaceRole  *surface_role,
+   window = surface->window;
+   if (!window)
+     {
+-      meta_wayland_surface_cache_pending_frame_callbacks (surface, pending);
++      meta_wayland_actor_surface_queue_frame_callbacks (actor_surface, pending);
+       return;
+     }
+ 
+@@ -1220,14 +1222,10 @@ meta_wayland_zxdg_surface_v6_send_configure (MetaWaylandZxdgSurfaceV6 *xdg_surfa
+ static void
+ zxdg_surface_v6_destructor (struct wl_resource *resource)
+ {
+-  MetaWaylandSurface *surface = surface_from_xdg_surface_resource (resource);
+   MetaWaylandZxdgSurfaceV6 *xdg_surface = wl_resource_get_user_data (resource);
+   MetaWaylandZxdgSurfaceV6Private *priv =
+     meta_wayland_zxdg_surface_v6_get_instance_private (xdg_surface);
+ 
+-  meta_wayland_compositor_destroy_frame_callbacks (surface->compositor,
+-                                                   surface);
+-
+   priv->shell_client->surfaces = g_list_remove (priv->shell_client->surfaces,
+                                                 xdg_surface);
+ 
+diff --git a/src/wayland/meta-wayland-private.h b/src/wayland/meta-wayland-private.h
+index 5bcb0ea4f9..215d0967f6 100644
+--- a/src/wayland/meta-wayland-private.h
++++ b/src/wayland/meta-wayland-private.h
+@@ -67,7 +67,7 @@ struct _MetaWaylandCompositor
+   struct wl_display *wayland_display;
+   char *display_name;
+   GHashTable *outputs;
+-  struct wl_list frame_callbacks;
++  GList *frame_callback_surfaces;
+ 
+   MetaXWaylandManager xwayland_manager;
+ 
+diff --git a/src/wayland/meta-wayland-subsurface.c b/src/wayland/meta-wayland-subsurface.c
+index e0fa0a48b2..c7059b99a2 100644
+--- a/src/wayland/meta-wayland-subsurface.c
++++ b/src/wayland/meta-wayland-subsurface.c
+@@ -239,8 +239,6 @@ wl_subsurface_destructor (struct wl_resource *resource)
+ {
+   MetaWaylandSurface *surface = wl_resource_get_user_data (resource);
+ 
+-  meta_wayland_compositor_destroy_frame_callbacks (surface->compositor,
+-                                                   surface);
+   if (surface->sub.parent)
+     {
+       wl_list_remove (&surface->sub.parent_destroy_listener.link);
+diff --git a/src/wayland/meta-wayland-surface.c b/src/wayland/meta-wayland-surface.c
+index 6ffcd6a7fb..a76ab28c24 100644
+--- a/src/wayland/meta-wayland-surface.c
++++ b/src/wayland/meta-wayland-surface.c
+@@ -358,15 +358,6 @@ surface_process_damage (MetaWaylandSurface *surface,
+   cairo_region_destroy (transformed_region);
+ }
+ 
+-void
+-meta_wayland_surface_queue_pending_state_frame_callbacks (MetaWaylandSurface      *surface,
+-                                                          MetaWaylandPendingState *pending)
+-{
+-  wl_list_insert_list (&surface->compositor->frame_callbacks,
+-                       &pending->frame_callback_list);
+-  wl_list_init (&pending->frame_callback_list);
+-}
+-
+ void
+ meta_wayland_surface_destroy_window (MetaWaylandSurface *surface)
+ {
+@@ -656,15 +647,6 @@ parent_surface_state_applied (gpointer data,
+   meta_wayland_subsurface_parent_state_applied (subsurface);
+ }
+ 
+-void
+-meta_wayland_surface_cache_pending_frame_callbacks (MetaWaylandSurface      *surface,
+-                                                    MetaWaylandPendingState *pending)
+-{
+-  wl_list_insert_list (&surface->pending_frame_callback_list,
+-                       &pending->frame_callback_list);
+-  wl_list_init (&pending->frame_callback_list);
+-}
+-
+ void
+ meta_wayland_surface_apply_pending_state (MetaWaylandSurface      *surface,
+                                           MetaWaylandPendingState *pending)
+@@ -810,7 +792,9 @@ meta_wayland_surface_apply_pending_state (MetaWaylandSurface      *surface,
+     }
+   else
+     {
+-      meta_wayland_surface_cache_pending_frame_callbacks (surface, pending);
++      wl_list_insert_list (surface->unassigned.pending_frame_callback_list.prev,
++                           &pending->frame_callback_list);
++      wl_list_init (&pending->frame_callback_list);
+ 
+       if (pending->newly_attached)
+         {
+@@ -1352,12 +1336,14 @@ wl_surface_destructor (struct wl_resource *resource)
+   if (surface->input_region)
+     cairo_region_destroy (surface->input_region);
+ 
+-  meta_wayland_compositor_destroy_frame_callbacks (compositor, surface);
++  meta_wayland_compositor_remove_frame_callback_surface (compositor, surface);
+ 
+   g_hash_table_foreach (surface->outputs_to_destroy_notify_id, surface_output_disconnect_signal, surface);
+   g_hash_table_unref (surface->outputs_to_destroy_notify_id);
+ 
+-  wl_list_for_each_safe (cb, next, &surface->pending_frame_callback_list, link)
++  wl_list_for_each_safe (cb, next,
++                         &surface->unassigned.pending_frame_callback_list,
++                         link)
+     wl_resource_destroy (cb->resource);
+ 
+   if (surface->resource)
+@@ -1401,7 +1387,7 @@ meta_wayland_surface_create (MetaWaylandCompositor *compositor,
+   surface->resource = wl_resource_create (client, &wl_surface_interface, wl_resource_get_version (compositor_resource), id);
+   wl_resource_set_implementation (surface->resource, &meta_wayland_wl_surface_interface, surface, wl_surface_destructor);
+ 
+-  wl_list_init (&surface->pending_frame_callback_list);
++  wl_list_init (&surface->unassigned.pending_frame_callback_list);
+ 
+   sync_drag_dest_funcs (surface);
+ 
+@@ -1809,14 +1795,6 @@ meta_wayland_surface_role_get_surface (MetaWaylandSurfaceRole *role)
+   return priv->surface;
+ }
+ 
+-void
+-meta_wayland_surface_queue_pending_frame_callbacks (MetaWaylandSurface *surface)
+-{
+-  wl_list_insert_list (&surface->compositor->frame_callbacks,
+-                       &surface->pending_frame_callback_list);
+-  wl_list_init (&surface->pending_frame_callback_list);
+-}
+-
+ cairo_region_t *
+ meta_wayland_surface_calculate_input_region (MetaWaylandSurface *surface)
+ {
+diff --git a/src/wayland/meta-wayland-surface.h b/src/wayland/meta-wayland-surface.h
+index e244a3fdf7..776431fca2 100644
+--- a/src/wayland/meta-wayland-surface.h
++++ b/src/wayland/meta-wayland-surface.h
+@@ -160,13 +160,9 @@ struct _MetaWaylandSurface
+   /* Buffer renderer state. */
+   gboolean buffer_held;
+ 
+-  /* List of pending frame callbacks that needs to stay queued longer than one
+-   * commit sequence, such as when it has not yet been assigned a role.
+-   */
+-  struct wl_list pending_frame_callback_list;
+-
+   /* Intermediate state for when no role has been assigned. */
+   struct {
++    struct wl_list pending_frame_callback_list;
+     MetaWaylandBuffer *buffer;
+   } unassigned;
+ 
+@@ -274,9 +270,6 @@ MetaWaylandSurface *meta_wayland_surface_get_toplevel (MetaWaylandSurface *surfa
+ 
+ MetaWindow *        meta_wayland_surface_get_toplevel_window (MetaWaylandSurface *surface);
+ 
+-void                meta_wayland_surface_cache_pending_frame_callbacks (MetaWaylandSurface      *surface,
+-                                                                        MetaWaylandPendingState *pending);
+-
+ void                meta_wayland_surface_queue_pending_frame_callbacks (MetaWaylandSurface *surface);
+ 
+ void                meta_wayland_surface_queue_pending_state_frame_callbacks (MetaWaylandSurface      *surface,
+diff --git a/src/wayland/meta-wayland-wl-shell.c b/src/wayland/meta-wayland-wl-shell.c
+index 539fb9858e..e80db17e78 100644
+--- a/src/wayland/meta-wayland-wl-shell.c
++++ b/src/wayland/meta-wayland-wl-shell.c
+@@ -100,9 +100,6 @@ wl_shell_surface_destructor (struct wl_resource *resource)
+     surface_from_wl_shell_surface_resource (resource);
+   GList *l;
+ 
+-  meta_wayland_compositor_destroy_frame_callbacks (surface->compositor,
+-                                                   surface);
+-
+   if (wl_shell_surface->popup)
+     meta_wayland_popup_dismiss (wl_shell_surface->popup);
+ 
+diff --git a/src/wayland/meta-wayland-xdg-shell.c b/src/wayland/meta-wayland-xdg-shell.c
+index fa0207a03c..4a4995c425 100644
+--- a/src/wayland/meta-wayland-xdg-shell.c
++++ b/src/wayland/meta-wayland-xdg-shell.c
+@@ -684,6 +684,8 @@ meta_wayland_xdg_toplevel_commit (MetaWaylandSurfaceRole  *surface_role,
+   MetaWaylandXdgSurface *xdg_surface = META_WAYLAND_XDG_SURFACE (xdg_toplevel);
+   MetaWaylandXdgSurfacePrivate *xdg_surface_priv =
+     meta_wayland_xdg_surface_get_instance_private (xdg_surface);
++  MetaWaylandActorSurface *actor_surface =
++    META_WAYLAND_ACTOR_SURFACE (xdg_toplevel);
+   MetaWaylandSurfaceRoleClass *surface_role_class;
+   MetaWaylandSurface *surface =
+     meta_wayland_surface_role_get_surface (surface_role);
+@@ -695,15 +697,12 @@ meta_wayland_xdg_toplevel_commit (MetaWaylandSurfaceRole  *surface_role,
+   window = surface->window;
+   if (!window)
+     {
+-      meta_wayland_surface_cache_pending_frame_callbacks (surface, pending);
++      meta_wayland_actor_surface_queue_frame_callbacks (actor_surface, pending);
+       return;
+     }
+ 
+   if (!surface->buffer_ref.buffer && xdg_surface_priv->first_buffer_attached)
+     {
+-      MetaWaylandActorSurface *actor_surface =
+-        META_WAYLAND_ACTOR_SURFACE (xdg_toplevel);
+-
+       meta_wayland_xdg_surface_reset (xdg_surface);
+       meta_wayland_actor_surface_queue_frame_callbacks (actor_surface,
+                                                         pending);
+@@ -1037,6 +1036,8 @@ meta_wayland_xdg_popup_commit (MetaWaylandSurfaceRole  *surface_role,
+   MetaWaylandXdgSurface *xdg_surface = META_WAYLAND_XDG_SURFACE (surface_role);
+   MetaWaylandXdgSurfacePrivate *xdg_surface_priv =
+     meta_wayland_xdg_surface_get_instance_private (xdg_surface);
++  MetaWaylandActorSurface *actor_surface =
++    META_WAYLAND_ACTOR_SURFACE (xdg_popup);
+   MetaWaylandSurfaceRoleClass *surface_role_class;
+   MetaWaylandSurface *surface =
+     meta_wayland_surface_role_get_surface (surface_role);
+@@ -1048,7 +1049,7 @@ meta_wayland_xdg_popup_commit (MetaWaylandSurfaceRole  *surface_role,
+   if (!surface->buffer_ref.buffer && xdg_surface_priv->first_buffer_attached)
+     {
+       meta_wayland_xdg_surface_reset (xdg_surface);
+-      meta_wayland_surface_cache_pending_frame_callbacks (surface, pending);
++      meta_wayland_actor_surface_queue_frame_callbacks (actor_surface, pending);
+       return;
+     }
+ 
+@@ -1313,14 +1314,10 @@ meta_wayland_xdg_surface_send_configure (MetaWaylandXdgSurface *xdg_surface)
+ static void
+ xdg_surface_destructor (struct wl_resource *resource)
+ {
+-  MetaWaylandSurface *surface = surface_from_xdg_surface_resource (resource);
+   MetaWaylandXdgSurface *xdg_surface = wl_resource_get_user_data (resource);
+   MetaWaylandXdgSurfacePrivate *priv =
+     meta_wayland_xdg_surface_get_instance_private (xdg_surface);
+ 
+-  meta_wayland_compositor_destroy_frame_callbacks (surface->compositor,
+-                                                   surface);
+-
+   priv->shell_client->surfaces = g_list_remove (priv->shell_client->surfaces,
+                                                 xdg_surface);
+ 
+diff --git a/src/wayland/meta-wayland.c b/src/wayland/meta-wayland.c
+index 129da8e20d..4cb9ca650d 100644
+--- a/src/wayland/meta-wayland.c
++++ b/src/wayland/meta-wayland.c
+@@ -194,15 +194,35 @@ meta_wayland_compositor_update (MetaWaylandCompositor *compositor,
+ void
+ meta_wayland_compositor_paint_finished (MetaWaylandCompositor *compositor)
+ {
+-  gint64 current_time = g_get_monotonic_time ();
++  GList *l;
++  int64_t now_us;
+ 
+-  while (!wl_list_empty (&compositor->frame_callbacks))
++  now_us = g_get_monotonic_time ();
++
++  l = compositor->frame_callback_surfaces;
++  while (l)
+     {
+-      MetaWaylandFrameCallback *callback =
+-        wl_container_of (compositor->frame_callbacks.next, callback, link);
++      GList *l_cur = l;
++      MetaWaylandSurface *surface = l->data;
++      MetaSurfaceActor *actor;
++      MetaWaylandActorSurface *actor_surface;
++
++      l = l->next;
++
++      actor = meta_wayland_surface_get_actor (surface);
++      if (!actor)
++        continue;
++
++      if (!clutter_actor_has_mapped_clones (CLUTTER_ACTOR (actor)) &&
++          meta_surface_actor_is_obscured (actor))
++        continue;
+ 
+-      wl_callback_send_done (callback->resource, current_time / 1000);
+-      wl_resource_destroy (callback->resource);
++      actor_surface = META_WAYLAND_ACTOR_SURFACE (surface->role);
++      meta_wayland_actor_surface_emit_frame_callbacks (actor_surface,
++                                                       now_us / 1000);
++
++      compositor->frame_callback_surfaces =
++        g_list_delete_link (compositor->frame_callback_surfaces, l_cur);
+     }
+ }
+ 
+@@ -249,16 +269,22 @@ meta_wayland_compositor_update_key_state (MetaWaylandCompositor *compositor,
+ }
+ 
+ void
+-meta_wayland_compositor_destroy_frame_callbacks (MetaWaylandCompositor *compositor,
+-                                                 MetaWaylandSurface    *surface)
++meta_wayland_compositor_add_frame_callback_surface (MetaWaylandCompositor *compositor,
++                                                    MetaWaylandSurface    *surface)
+ {
+-  MetaWaylandFrameCallback *callback, *next;
++  if (g_list_find (compositor->frame_callback_surfaces, surface))
++    return;
+ 
+-  wl_list_for_each_safe (callback, next, &compositor->frame_callbacks, link)
+-    {
+-      if (callback->surface == surface)
+-        wl_resource_destroy (callback->resource);
+-    }
++  compositor->frame_callback_surfaces =
++    g_list_prepend (compositor->frame_callback_surfaces, surface);
++}
++
++void
++meta_wayland_compositor_remove_frame_callback_surface (MetaWaylandCompositor *compositor,
++                                                       MetaWaylandSurface    *surface)
++{
++  compositor->frame_callback_surfaces =
++    g_list_remove (compositor->frame_callback_surfaces, surface);
+ }
+ 
+ static void
+@@ -309,8 +335,6 @@ meta_wayland_log_func (const char *fmt,
+ static void
+ meta_wayland_compositor_init (MetaWaylandCompositor *compositor)
+ {
+-  wl_list_init (&compositor->frame_callbacks);
+-
+   compositor->scheduled_surface_associations = g_hash_table_new (NULL, NULL);
+ 
+   wl_log_set_handler_server (meta_wayland_log_func);
+diff --git a/src/wayland/meta-wayland.h b/src/wayland/meta-wayland.h
+index 2a0aa11400..c5e5924891 100644
+--- a/src/wayland/meta-wayland.h
++++ b/src/wayland/meta-wayland.h
+@@ -64,9 +64,11 @@ void                    meta_wayland_compositor_set_input_focus (MetaWaylandComp
+ META_EXPORT_TEST
+ void                    meta_wayland_compositor_paint_finished  (MetaWaylandCompositor *compositor);
+ 
+-META_EXPORT_TEST
+-void                    meta_wayland_compositor_destroy_frame_callbacks (MetaWaylandCompositor *compositor,
+-                                                                         MetaWaylandSurface    *surface);
++void                    meta_wayland_compositor_add_frame_callback_surface (MetaWaylandCompositor *compositor,
++                                                                            MetaWaylandSurface    *surface);
++
++void                    meta_wayland_compositor_remove_frame_callback_surface (MetaWaylandCompositor *compositor,
++                                                                               MetaWaylandSurface    *surface);
+ 
+ META_EXPORT_TEST
+ const char             *meta_wayland_get_wayland_display_name   (MetaWaylandCompositor *compositor);
+diff --git a/src/wayland/meta-xwayland.c b/src/wayland/meta-xwayland.c
+index 275aeb78cb..6e4b9a8ffd 100644
+--- a/src/wayland/meta-xwayland.c
++++ b/src/wayland/meta-xwayland.c
+@@ -788,49 +788,6 @@ meta_xwayland_stop (MetaXWaylandManager *manager)
+     }
+ }
+ 
+-static void
+-xwayland_surface_assigned (MetaWaylandSurfaceRole *surface_role)
+-{
+-  MetaWaylandSurface *surface =
+-    meta_wayland_surface_role_get_surface (surface_role);
+-  MetaWaylandSurfaceRoleClass *surface_role_class =
+-    META_WAYLAND_SURFACE_ROLE_CLASS (meta_wayland_surface_role_xwayland_parent_class);
+-
+-  /* See comment in xwayland_surface_commit for why we reply even though the
+-   * surface may not be drawn the next frame.
+-   */
+-  wl_list_insert_list (&surface->compositor->frame_callbacks,
+-                       &surface->pending_frame_callback_list);
+-  wl_list_init (&surface->pending_frame_callback_list);
+-
+-  surface_role_class->assigned (surface_role);
+-}
+-
+-static void
+-xwayland_surface_commit (MetaWaylandSurfaceRole  *surface_role,
+-                         MetaWaylandPendingState *pending)
+-{
+-  MetaWaylandSurface *surface =
+-    meta_wayland_surface_role_get_surface (surface_role);
+-  MetaWaylandSurfaceRoleClass *surface_role_class =
+-    META_WAYLAND_SURFACE_ROLE_CLASS (meta_wayland_surface_role_xwayland_parent_class);
+-
+-  /* For Xwayland windows, throttling frames when the window isn't actually
+-   * drawn is less useful, because Xwayland still has to do the drawing sent
+-   * from the application - the throttling would only be of sending us damage
+-   * messages, so we simplify and send frame callbacks after the next paint of
+-   * the screen, whether the window was drawn or not.
+-   *
+-   * Currently it may take a few frames before we draw the window, for not
+-   * completely understood reasons, and in that case, not thottling frame
+-   * callbacks to drawing has the happy side effect that we avoid showing the
+-   * user the initial black frame from when the window is mapped empty.
+-   */
+-  meta_wayland_surface_queue_pending_state_frame_callbacks (surface, pending);
+-
+-  surface_role_class->commit (surface_role, pending);
+-}
+-
+ static MetaWaylandSurface *
+ xwayland_surface_get_toplevel (MetaWaylandSurfaceRole *surface_role)
+ {
+@@ -848,8 +805,6 @@ meta_wayland_surface_role_xwayland_class_init (MetaWaylandSurfaceRoleXWaylandCla
+   MetaWaylandSurfaceRoleClass *surface_role_class =
+     META_WAYLAND_SURFACE_ROLE_CLASS (klass);
+ 
+-  surface_role_class->assigned = xwayland_surface_assigned;
+-  surface_role_class->commit = xwayland_surface_commit;
+   surface_role_class->get_toplevel = xwayland_surface_get_toplevel;
+ 
+   xwayland_surface_signals[XWAYLAND_SURFACE_WINDOW_ASSOCIATED] =
+-- 
+2.31.1
+
+
+From 076ac20d34db128aea8ffe0dc3c2791918667c43 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Fri, 6 Aug 2021 19:46:06 +0200
+Subject: [PATCH 5/5] wayland: Respond to frame callbacks even if the paint was
+ empty
+
+---
+ src/compositor/compositor.c | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/src/compositor/compositor.c b/src/compositor/compositor.c
+index ce2c1b8a3b..8331737d1a 100644
+--- a/src/compositor/compositor.c
++++ b/src/compositor/compositor.c
+@@ -467,11 +467,6 @@ after_stage_paint (ClutterStage *stage,
+ 
+   for (l = compositor->windows; l; l = l->next)
+     meta_window_actor_post_paint (l->data);
+-
+-#ifdef HAVE_WAYLAND
+-  if (meta_is_wayland_compositor ())
+-    meta_wayland_compositor_paint_finished (meta_wayland_compositor_get_default ());
+-#endif
+ }
+ 
+ static void
+@@ -1404,6 +1399,11 @@ meta_post_paint_func (gpointer data)
+       break;
+     }
+ 
++#ifdef HAVE_WAYLAND
++  if (meta_is_wayland_compositor ())
++    meta_wayland_compositor_paint_finished (meta_wayland_compositor_get_default ());
++#endif
++
+   return TRUE;
+ }
+ 
+-- 
+2.31.1
+

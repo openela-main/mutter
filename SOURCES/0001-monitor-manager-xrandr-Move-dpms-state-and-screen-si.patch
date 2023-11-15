@@ -1,0 +1,114 @@
+From 078547521dd709d41ac3791322f711030ccc50e9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Wed, 27 Nov 2019 19:03:50 +0100
+Subject: [PATCH 1/2] monitor-manager-xrandr: Move dpms state and screen size
+ updating into helpers
+
+To be used by no-Xrandr fallback path.
+---
+ src/backends/x11/meta-gpu-xrandr.c            | 37 +++++++++++++------
+ .../x11/meta-monitor-manager-xrandr.c         | 18 ++++++---
+ 2 files changed, 38 insertions(+), 17 deletions(-)
+
+diff --git a/src/backends/x11/meta-gpu-xrandr.c b/src/backends/x11/meta-gpu-xrandr.c
+index 90b33d486..1884278ca 100644
+--- a/src/backends/x11/meta-gpu-xrandr.c
++++ b/src/backends/x11/meta-gpu-xrandr.c
+@@ -91,6 +91,30 @@ meta_gpu_xrandr_poll_hardware (MetaGpu *gpu)
+   gpu_xrandr->need_hardware_poll = TRUE;
+ }
+ 
++static void
++update_screen_size (MetaGpuXrandr *gpu_xrandr)
++{
++  MetaGpu *gpu = META_GPU (gpu_xrandr);
++  MetaMonitorManager *monitor_manager = meta_gpu_get_monitor_manager (gpu);
++  MetaMonitorManagerXrandr *monitor_manager_xrandr =
++    META_MONITOR_MANAGER_XRANDR (monitor_manager);
++  Display *xdisplay =
++    meta_monitor_manager_xrandr_get_xdisplay (monitor_manager_xrandr);
++  int min_width, min_height;
++  Screen *screen;
++
++  XRRGetScreenSizeRange (xdisplay, DefaultRootWindow (xdisplay),
++                         &min_width,
++                         &min_height,
++                         &gpu_xrandr->max_screen_width,
++                         &gpu_xrandr->max_screen_height);
++
++  screen = ScreenOfDisplay (xdisplay, DefaultScreen (xdisplay));
++  /* This is updated because we called XRRUpdateConfiguration. */
++  monitor_manager->screen_width = WidthOfScreen (screen);
++  monitor_manager->screen_height = HeightOfScreen (screen);
++}
++
+ static gboolean
+ meta_gpu_xrandr_read_current (MetaGpu  *gpu,
+                               GError  **error)
+@@ -105,8 +129,6 @@ meta_gpu_xrandr_read_current (MetaGpu  *gpu,
+   RROutput primary_output;
+   unsigned int i, j;
+   GList *l;
+-  int min_width, min_height;
+-  Screen *screen;
+   GList *outputs = NULL;
+   GList *modes = NULL;
+   GList *crtcs = NULL;
+@@ -115,16 +137,7 @@ meta_gpu_xrandr_read_current (MetaGpu  *gpu,
+     XRRFreeScreenResources (gpu_xrandr->resources);
+   gpu_xrandr->resources = NULL;
+ 
+-  XRRGetScreenSizeRange (xdisplay, DefaultRootWindow (xdisplay),
+-                         &min_width,
+-                         &min_height,
+-                         &gpu_xrandr->max_screen_width,
+-                         &gpu_xrandr->max_screen_height);
+-
+-  screen = ScreenOfDisplay (xdisplay, DefaultScreen (xdisplay));
+-  /* This is updated because we called XRRUpdateConfiguration. */
+-  monitor_manager->screen_width = WidthOfScreen (screen);
+-  monitor_manager->screen_height = HeightOfScreen (screen);
++  update_screen_size (gpu_xrandr);
+ 
+   if (gpu_xrandr->need_hardware_poll)
+     {
+diff --git a/src/backends/x11/meta-monitor-manager-xrandr.c b/src/backends/x11/meta-monitor-manager-xrandr.c
+index b8d6342b6..7a0b43ac4 100644
+--- a/src/backends/x11/meta-monitor-manager-xrandr.c
++++ b/src/backends/x11/meta-monitor-manager-xrandr.c
+@@ -146,12 +146,9 @@ x11_dpms_state_to_power_save (CARD16 dpms_state)
+ }
+ 
+ static void
+-meta_monitor_manager_xrandr_read_current_state (MetaMonitorManager *manager)
++meta_monitor_manager_xrandr_update_dpms_state (MetaMonitorManagerXrandr *manager_xrandr)
+ {
+-  MetaMonitorManagerXrandr *manager_xrandr =
+-    META_MONITOR_MANAGER_XRANDR (manager);
+-  MetaMonitorManagerClass *parent_class =
+-    META_MONITOR_MANAGER_CLASS (meta_monitor_manager_xrandr_parent_class);
++  MetaMonitorManager *manager = META_MONITOR_MANAGER (manager_xrandr);
+   Display *xdisplay = meta_monitor_manager_xrandr_get_xdisplay (manager_xrandr);
+   BOOL dpms_capable, dpms_enabled;
+   CARD16 dpms_state;
+@@ -167,6 +164,17 @@ meta_monitor_manager_xrandr_read_current_state (MetaMonitorManager *manager)
+     power_save_mode = META_POWER_SAVE_UNSUPPORTED;
+ 
+   meta_monitor_manager_power_save_mode_changed (manager, power_save_mode);
++}
++
++static void
++meta_monitor_manager_xrandr_read_current_state (MetaMonitorManager *manager)
++{
++  MetaMonitorManagerXrandr *manager_xrandr =
++    META_MONITOR_MANAGER_XRANDR (manager);
++  MetaMonitorManagerClass *parent_class =
++    META_MONITOR_MANAGER_CLASS (meta_monitor_manager_xrandr_parent_class);
++
++  meta_monitor_manager_xrandr_update_dpms_state (manager_xrandr);
+ 
+   parent_class->read_current_state (manager);
+ }
+-- 
+2.23.0
+

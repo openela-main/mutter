@@ -1,0 +1,26 @@
+From 65ffd7e4df42cd62633f93107644f87208881578 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Thu, 14 Apr 2022 18:07:41 +0200
+Subject: [PATCH] events: Pass CurrentTime to XIAllowEvents() when unfreezing
+ pointer
+
+---
+ src/core/events.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/core/events.c b/src/core/events.c
+index 0dc3a73222..dd9b4ec981 100644
+--- a/src/core/events.c
++++ b/src/core/events.c
+@@ -205,7 +205,7 @@ maybe_unfreeze_pointer_events (MetaBackend          *backend,
+     }
+ 
+   xdisplay = meta_backend_x11_get_xdisplay (META_BACKEND_X11 (backend));
+-  XIAllowEvents (xdisplay, device_id, event_mode, event->button.time);
++  XIAllowEvents (xdisplay, device_id, event_mode, CurrentTime);
+ }
+ 
+ static gboolean
+-- 
+2.34.1
+

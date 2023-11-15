@@ -1,0 +1,144 @@
+From 4ad8fd80355189ecbde6c38961335ae4be4db8b3 Mon Sep 17 00:00:00 2001
+From: rpm-build <rpm-build>
+Date: Tue, 11 Sep 2018 10:19:44 -0400
+Subject: [PATCH] monitor-manager: only reuse initial-config if monitor
+ topology matches startup
+
+Right now we try to apply the current monitor config when a new
+monitor is attached.  The current config obviously doesn't include the
+new monitor, so the new monitor isn't lit up.
+
+The only reason we apply the current config at all is to handle the
+startup case:  We want to reuse the config set in Xorg when first
+logging in.
+
+This commit changes the code to look at the *initial config* instead
+of the current config, and only if the new monitor topology matches
+the start up topology.
+---
+ src/backends/meta-monitor-config-manager.c | 20 +++++++++++++++-----
+ src/backends/meta-monitor-config-manager.h |  2 +-
+ src/backends/meta-monitor-manager.c        | 16 +++++++++++++++-
+ 3 files changed, 31 insertions(+), 7 deletions(-)
+
+diff --git a/src/backends/meta-monitor-config-manager.c b/src/backends/meta-monitor-config-manager.c
+index d64ca1f79..c09edbe00 100644
+--- a/src/backends/meta-monitor-config-manager.c
++++ b/src/backends/meta-monitor-config-manager.c
+@@ -42,6 +42,7 @@ struct _MetaMonitorConfigManager
+   MetaMonitorConfigStore *config_store;
+ 
+   MetaMonitorsConfig *current_config;
++  MetaMonitorsConfig *initial_config;
+   GQueue config_history;
+ };
+ 
+@@ -663,9 +664,10 @@ create_logical_monitor_config_from_output (MetaMonitorManager           *monitor
+ }
+ 
+ MetaMonitorsConfig *
+-meta_monitor_config_manager_create_current (MetaMonitorConfigManager *config_manager)
++meta_monitor_config_manager_create_initial (MetaMonitorConfigManager *config_manager)
+ {
+   MetaMonitorManager *monitor_manager = config_manager->monitor_manager;
++  MetaMonitorsConfig *initial_config;
+   GList *logical_monitor_configs;
+   MetaMonitor *primary_monitor;
+   MetaLogicalMonitorLayoutMode layout_mode;
+@@ -673,6 +675,9 @@ meta_monitor_config_manager_create_current (MetaMonitorConfigManager *config_man
+   GList *monitors;
+   GList *l;
+ 
++  if (config_manager->initial_config != NULL)
++    return g_object_ref (config_manager->initial_config);
++
+   if (meta_monitor_config_store_get_config_count (config_manager->config_store) > 0)
+     return NULL;
+ 
+@@ -714,10 +719,14 @@ meta_monitor_config_manager_create_current (MetaMonitorConfigManager *config_man
+                                                logical_monitor_config);
+     }
+ 
+-  return meta_monitors_config_new (monitor_manager,
+-                                   logical_monitor_configs,
+-                                   layout_mode,
+-                                   META_MONITORS_CONFIG_FLAG_NONE);
++  initial_config = meta_monitors_config_new (monitor_manager,
++                                             logical_monitor_configs,
++                                             layout_mode,
++                                             META_MONITORS_CONFIG_FLAG_NONE);
++
++  config_manager->initial_config = g_object_ref (initial_config);
++
++  return initial_config;
+ }
+ 
+ MetaMonitorsConfig *
+@@ -1256,6 +1265,7 @@ meta_monitor_config_manager_dispose (GObject *object)
+     META_MONITOR_CONFIG_MANAGER (object);
+ 
+   g_clear_object (&config_manager->current_config);
++  g_clear_object (&config_manager->initial_config);
+   meta_monitor_config_manager_clear_history (config_manager);
+ 
+   G_OBJECT_CLASS (meta_monitor_config_manager_parent_class)->dispose (object);
+diff --git a/src/backends/meta-monitor-config-manager.h b/src/backends/meta-monitor-config-manager.h
+index 364a2b36b..409611bb0 100644
+--- a/src/backends/meta-monitor-config-manager.h
++++ b/src/backends/meta-monitor-config-manager.h
+@@ -95,7 +95,7 @@ META_EXPORT_TEST
+ MetaMonitorsConfig * meta_monitor_config_manager_get_stored (MetaMonitorConfigManager *config_manager);
+ 
+ META_EXPORT_TEST
+-MetaMonitorsConfig * meta_monitor_config_manager_create_current (MetaMonitorConfigManager *config_manager);
++MetaMonitorsConfig * meta_monitor_config_manager_create_initial (MetaMonitorConfigManager *config_manager);
+ META_EXPORT_TEST
+ MetaMonitorsConfig * meta_monitor_config_manager_create_linear (MetaMonitorConfigManager *config_manager);
+ 
+diff --git a/src/backends/meta-monitor-manager.c b/src/backends/meta-monitor-manager.c
+index 05b27c6be..bb4b44188 100644
+--- a/src/backends/meta-monitor-manager.c
++++ b/src/backends/meta-monitor-manager.c
+@@ -534,9 +534,11 @@ should_use_stored_config (MetaMonitorManager *manager)
+ MetaMonitorsConfig *
+ meta_monitor_manager_ensure_configured (MetaMonitorManager *manager)
+ {
++  g_autoptr (MetaMonitorsConfig) initial_config = NULL;
+   MetaMonitorsConfig *config = NULL;
+   GError *error = NULL;
+   gboolean use_stored_config;
++  MetaMonitorsConfigKey *current_state_key;
+   MetaMonitorsConfigMethod method;
+   MetaMonitorsConfigMethod fallback_method =
+     META_MONITORS_CONFIG_METHOD_TEMPORARY;
+@@ -547,6 +549,18 @@ meta_monitor_manager_ensure_configured (MetaMonitorManager *manager)
+   else
+     method = META_MONITORS_CONFIG_METHOD_TEMPORARY;
+ 
++  initial_config = meta_monitor_config_manager_create_initial (manager->config_manager);
++
++  if (initial_config)
++    {
++      current_state_key = meta_create_monitors_config_key_for_current_state (manager);
++
++      /* don't ever reuse initial configuration, if the monitor topology changed
++       */
++      if (current_state_key && !meta_monitors_config_key_equal (current_state_key, initial_config->key))
++        g_clear_object (&initial_config);
++    }
++
+   if (use_stored_config)
+     {
+       config = meta_monitor_config_manager_get_stored (manager->config_manager);
+@@ -614,7 +628,7 @@ meta_monitor_manager_ensure_configured (MetaMonitorManager *manager)
+       g_clear_object (&config);
+     }
+ 
+-  config = meta_monitor_config_manager_create_current (manager->config_manager);
++  config = g_steal_pointer (&initial_config);
+   if (config)
+     {
+       if (!meta_monitor_manager_apply_monitors_config (manager,
+-- 
+2.21.0
+
