@@ -1,0 +1,68 @@
+diff --git a/src/backends/meta-screen-cast-stream-src.c b/src/backends/meta-screen-cast-stream-src.c
+index f39d348..c1abc9b 100644
+--- a/src/backends/meta-screen-cast-stream-src.c
++++ b/src/backends/meta-screen-cast-stream-src.c
+@@ -684,11 +684,18 @@ on_stream_param_changed (void                 *data,
+   MetaScreenCastStreamSrc *src = data;
+   MetaScreenCastStreamSrcPrivate *priv =
+     meta_screen_cast_stream_src_get_instance_private (src);
++  MetaScreenCastStream *stream = meta_screen_cast_stream_src_get_stream (src);
++  MetaScreenCastSession *session = meta_screen_cast_stream_get_session (stream);
++  MetaScreenCast *screen_cast =
++    meta_screen_cast_session_get_screen_cast (session);
++
+   uint8_t params_buffer[1024];
+   int32_t width, height, stride, size;
+   struct spa_pod_builder pod_builder;
+   const struct spa_pod *params[3];
+   const int bpp = 4;
++  int buffer_types;
++  CoglDmaBufHandle *dmabuf_handle;
+ 
+   if (!format || id != SPA_PARAM_Format)
+     return;
+@@ -705,6 +712,16 @@ on_stream_param_changed (void                 *data,
+ 
+   pod_builder = SPA_POD_BUILDER_INIT (params_buffer, sizeof (params_buffer));
+ 
++  buffer_types = 1 << SPA_DATA_MemFd;
++  dmabuf_handle = meta_screen_cast_create_dma_buf_handle (screen_cast,
++                                                          priv->stream_width,
++                                                          priv->stream_height);
++  if (dmabuf_handle)
++    {
++      buffer_types |= 1 << SPA_DATA_DmaBuf;
++      cogl_dma_buf_handle_free(dmabuf_handle);
++    }
++
+   params[0] = spa_pod_builder_add_object (
+     &pod_builder,
+     SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
+@@ -712,7 +729,8 @@ on_stream_param_changed (void                 *data,
+     SPA_PARAM_BUFFERS_blocks, SPA_POD_Int (1),
+     SPA_PARAM_BUFFERS_size, SPA_POD_Int (size),
+     SPA_PARAM_BUFFERS_stride, SPA_POD_Int (stride),
+-    SPA_PARAM_BUFFERS_align, SPA_POD_Int (16));
++    SPA_PARAM_BUFFERS_align, SPA_POD_Int (16),
++    SPA_PARAM_BUFFERS_dataType, SPA_POD_CHOICE_FLAGS_Int (buffer_types));
+ 
+   params[1] = spa_pod_builder_add_object (
+     &pod_builder,
+@@ -751,9 +769,16 @@ on_stream_add_buffer (void             *data,
+   spa_data[0].mapoffset = 0;
+   spa_data[0].maxsize = stride * priv->video_format.size.height;
+ 
+-  dmabuf_handle = meta_screen_cast_create_dma_buf_handle (screen_cast,
++  if (spa_data[0].type & (1 << SPA_DATA_DmaBuf))
++    {
++      dmabuf_handle = meta_screen_cast_create_dma_buf_handle (screen_cast,
+                                                           priv->stream_width,
+                                                           priv->stream_height);
++    }
++  else
++    {
++      dmabuf_handle = NULL;
++    }
+ 
+   if (dmabuf_handle)
+     {

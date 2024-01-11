@@ -8,7 +8,7 @@
 
 Name:          mutter
 Version:       3.32.2
-Release:       70%{?dist}
+Release:       71%{?dist}.1
 Summary:       Window and compositing manager based on Clutter
 
 License:       GPLv2+
@@ -148,6 +148,8 @@ Patch407: 0004-screen-cast-Disable-DMA-buffer-based-screen-casting-.patch
 # https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/1365
 Patch408: cursor-move-only-screen-cast-fixes.patch
 Patch409: mutter-bump-screencast-api-version.patch
+Patch410: mutter-screencast-dmabuf-i915-only.patch
+Patch411: mutter-screencast-negotiate-buffer-type.patch
 
 # Only treat WM_PROTOCOLS messages as WM_PROTOCOL messages (#1847203)
 Patch500: 0001-stage-x11-Check-that-message-is-WM_PROTOCOLS-before-.patch
@@ -356,13 +358,18 @@ desktop-file-validate %{buildroot}/%{_datadir}/applications/%{name}.desktop
 %{_datadir}/mutter-%{mutter_api_version}/tests
 
 %changelog
-* Thu Jun 08 2023 Carlos Garnacho <cgarnach@redhat.com> - 3.32.2-70
+* Mon Oct 02 2023 Jan Grulich <jgrulich@redhat.com> - 3.32.2-71.1
+- Do not use DMA buffers for screencast when the client doesn't support it
+- Use DMA buffers only for i195 drivers
+  Resolves: RHEL-11227
+
+* Thu Aug 17 2023 Carlos Garnacho <cgarnach@redhat.com> - 3.32.2-71
 - Fix ordering of keyboard modifiers relative to other keyboard events
   Resolves: #2170830
 
-* Tue May 23 2023 Jonas Ådahl <jadahl@redhat.com>) - 3.32.2-69
+* Thu Apr 06 2023 Jonas Ådahl <jadahl@redhat.com>) - 3.32.2-69
 - Queue fail safe page flip callbacks
-  Resolves: #2209025
+  Resolves: #2172057
 
 * Wed Dec 21 2022 Olivier Fourdan <ofourdan@redhat.com> - 3.32.2-68
 - Fix downstream synaptics patches breaking xdmcp
