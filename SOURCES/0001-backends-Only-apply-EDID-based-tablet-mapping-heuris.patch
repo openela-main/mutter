@@ -1,0 +1,34 @@
+From ba25271408a32a2a73a82acc6e094a611001c9f0 Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Fri, 16 Dec 2022 23:06:33 +0100
+Subject: [PATCH] backends: Only apply EDID-based tablet mapping heuristic on
+ integrated devices
+
+These are the ones attached to a display, thus they are the ones that may need
+help from this heuristic. Non-integrated tablets (e.g. Intuos) will default to
+the span of all monitors.
+
+Fixes mapping of opaque tablets if a display-integrated tablet of the same
+brand is also plugged in.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/2767>
+---
+ src/backends/meta-input-mapper.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/backends/meta-input-mapper.c b/src/backends/meta-input-mapper.c
+index cc75f14e8..71d193e5f 100644
+--- a/src/backends/meta-input-mapper.c
++++ b/src/backends/meta-input-mapper.c
+@@ -455,7 +455,7 @@ guess_candidates (MetaInputMapper     *mapper,
+ 
+       g_assert (META_IS_MONITOR (l->data));
+ 
+-      if (match_edid (input, l->data, &edid_match))
++      if (integrated && match_edid (input, l->data, &edid_match))
+         match.score |= 1 << edid_match;
+ 
+       if (integrated && match_size (input, l->data))
+-- 
+2.38.1
+

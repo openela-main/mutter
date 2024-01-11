@@ -1,0 +1,213 @@
+From d89c71ed2bdb18e9b01891d6b999c44f955778dc Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Florian=20M=C3=BCllner?= <fmuellner@gnome.org>
+Date: Wed, 1 Sep 2021 21:12:03 +0200
+Subject: [PATCH 1/2] context: Add :unsafe-mode property
+
+We are going to restrict several sensitive D-Bus APIs to a set
+of allowed callers (like Settings or portal implementations).
+
+Add an :unsafe-mode property to the context to allow turning off
+those restrictions temporarily, in order to not get in the way
+of development/debugging.
+
+https://gitlab.gnome.org/GNOME/gnome-shell/-/issues/3943
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/1983>
+---
+ src/backends/meta-backend-private.h |  4 ++
+ src/backends/meta-backend.c         | 83 +++++++++++++++++++++++++++++
+ 2 files changed, 87 insertions(+)
+
+diff --git a/src/backends/meta-backend-private.h b/src/backends/meta-backend-private.h
+index b930462b2..583d4e151 100644
+--- a/src/backends/meta-backend-private.h
++++ b/src/backends/meta-backend-private.h
+@@ -133,6 +133,10 @@ void meta_backend_foreach_device_monitor (MetaBackend *backend,
+                                           GFunc        func,
+                                           gpointer     user_data);
+ 
++gboolean meta_backend_get_unsafe_mode (MetaBackend *backend);
++void meta_backend_set_unsafe_mode (MetaBackend *backend,
++                                   gboolean     enable);
++
+ META_EXPORT_TEST
+ MetaMonitorManager * meta_backend_get_monitor_manager (MetaBackend *backend);
+ MetaOrientationManager * meta_backend_get_orientation_manager (MetaBackend *backend);
+diff --git a/src/backends/meta-backend.c b/src/backends/meta-backend.c
+index ff84bfe6a..18bee2484 100644
+--- a/src/backends/meta-backend.c
++++ b/src/backends/meta-backend.c
+@@ -88,6 +88,17 @@
+ #include "wayland/meta-wayland.h"
+ #endif
+ 
++enum
++{
++  PROP_0,
++
++  PROP_UNSAFE_MODE,
++
++  N_PROPS
++};
++
++static GParamSpec *obj_props[N_PROPS];
++
+ enum
+ {
+   KEYMAP_CHANGED,
+@@ -158,6 +169,8 @@ struct _MetaBackendPrivate
+ 
+   gboolean is_pointer_position_initialized;
+ 
++  gboolean unsafe_mode;
++
+   guint device_update_idle_id;
+ 
+   GHashTable *device_monitors;
+@@ -814,6 +827,64 @@ upower_vanished (GDBusConnection *connection,
+   g_clear_object (&priv->upower_proxy);
+ }
+ 
++gboolean
++meta_backend_get_unsafe_mode (MetaBackend *backend)
++{
++  MetaBackendPrivate *priv = meta_backend_get_instance_private (backend);
++
++  return priv->unsafe_mode;
++}
++
++void
++meta_backend_set_unsafe_mode (MetaBackend *backend,
++                              gboolean     enable)
++{
++  MetaBackendPrivate *priv = meta_backend_get_instance_private (backend);
++
++  if (priv->unsafe_mode == enable)
++    return;
++
++  priv->unsafe_mode = enable;
++  g_object_notify_by_pspec (G_OBJECT (backend), obj_props[PROP_UNSAFE_MODE]);
++}
++
++static void
++meta_backend_get_property (GObject    *object,
++                           guint       prop_id,
++                           GValue     *value,
++                           GParamSpec *pspec)
++{
++  MetaBackend *backend = META_BACKEND (object);
++  MetaBackendPrivate *priv = meta_backend_get_instance_private (backend);
++
++  switch (prop_id)
++    {
++    case PROP_UNSAFE_MODE:
++      g_value_set_boolean (value, priv->unsafe_mode);
++      break;
++    default:
++      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
++    }
++}
++
++static void
++meta_backend_set_property (GObject      *object,
++                           guint         prop_id,
++                           const GValue *value,
++                           GParamSpec   *pspec)
++{
++  MetaBackend *backend = META_BACKEND (object);
++
++  switch (prop_id)
++    {
++    case PROP_UNSAFE_MODE:
++      meta_backend_set_unsafe_mode (backend, g_value_get_boolean (value));
++      break;
++    default:
++      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
++    }
++}
++
+ static void
+ meta_backend_constructed (GObject *object)
+ {
+@@ -851,6 +922,8 @@ meta_backend_class_init (MetaBackendClass *klass)
+ 
+   object_class->dispose = meta_backend_dispose;
+   object_class->constructed = meta_backend_constructed;
++  object_class->get_property = meta_backend_get_property;
++  object_class->set_property = meta_backend_set_property;
+ 
+   klass->post_init = meta_backend_real_post_init;
+   klass->grab_device = meta_backend_real_grab_device;
+@@ -907,6 +980,16 @@ meta_backend_class_init (MetaBackendClass *klass)
+                   NULL, NULL, NULL,
+                   G_TYPE_NONE, 0);
+ 
++  obj_props[PROP_UNSAFE_MODE] =
++    g_param_spec_boolean ("unsafe-mode",
++                          "unsafe mode",
++                          "Unsafe mode",
++                          FALSE,
++                          G_PARAM_READWRITE |
++                          G_PARAM_EXPLICIT_NOTIFY |
++                          G_PARAM_STATIC_STRINGS);
++  g_object_class_install_properties (object_class, N_PROPS, obj_props);
++
+   mutter_stage_views = g_getenv ("MUTTER_STAGE_VIEWS");
+   stage_views_disabled = g_strcmp0 (mutter_stage_views, "0") == 0;
+ }
+-- 
+2.35.1
+
+
+From dc69aa57be79fa7f371788c852f6e23cf0d261cb Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Florian=20M=C3=BCllner?= <fmuellner@gnome.org>
+Date: Thu, 2 Sep 2021 18:41:16 +0200
+Subject: [PATCH 2/2] context: Add (hidden) --unsafe-mode option
+
+When running gnome-shell, it is possible to toggle unsafe-mode in
+looking glass. We'll eventually start using the property in mutter
+as well, so to make stand-alone debugging easier, also expose it
+as a hidden command line option.
+
+https://gitlab.gnome.org/GNOME/gnome-shell/-/issues/3943
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/1983>
+---
+ src/core/main.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/src/core/main.c b/src/core/main.c
+index 0d241f952..991d583a0 100644
+--- a/src/core/main.c
++++ b/src/core/main.c
+@@ -218,6 +218,7 @@ static char     *opt_wayland_display;
+ static gboolean  opt_display_server;
+ static gboolean  opt_headless;
+ #endif
++static gboolean  opt_unsafe_mode;
+ static gboolean  opt_x11;
+ 
+ #ifdef HAVE_NATIVE_BACKEND
+@@ -306,6 +307,11 @@ static GOptionEntry meta_options[] = {
+     N_("Add persistent virtual monitor (WxH or WxH@R)")
+   },
+ #endif
++  {
++    "unsafe-mode", 0, G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_NONE,
++    &opt_unsafe_mode,
++    "Run in unsafe mode"
++  },
+   {
+     "x11", 0, 0, G_OPTION_ARG_NONE,
+     &opt_x11,
+@@ -865,6 +871,7 @@ meta_init (void)
+   add_persistent_virtual_monitors ();
+ #endif
+ 
++  meta_backend_set_unsafe_mode (meta_get_backend(), opt_unsafe_mode);
+   meta_set_syncing (opt_sync || (g_getenv ("MUTTER_SYNC") != NULL));
+ 
+   if (opt_replace_wm)
+-- 
+2.35.1
+

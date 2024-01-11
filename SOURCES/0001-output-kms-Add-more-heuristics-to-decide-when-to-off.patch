@@ -1,0 +1,107 @@
+From 86000c32d64cea7be2e6ed911cb9ea5df1306c0e Mon Sep 17 00:00:00 2001
+From: Mario Limonciello <mario.limonciello@amd.com>
+Date: Thu, 18 Aug 2022 13:36:20 -0500
+Subject: [PATCH 1/2] output/kms: Add more heuristics to decide when to offer
+ fallback modes
+
+If the panel is connected via eDP and supports more than one mode
+at different resolutions don't try to add more.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/2586>
+(cherry picked from commit 96aa0fb8536eca579ceb1b17d83e19cf9e3e9e81)
+(cherry picked from commit 877cc3eb7d44e2886395151f763ec09bea350444)
+---
+ src/backends/native/meta-output-kms.c | 56 +++++++++++++++++++++------
+ 1 file changed, 44 insertions(+), 12 deletions(-)
+
+diff --git a/src/backends/native/meta-output-kms.c b/src/backends/native/meta-output-kms.c
+index f35cdf04e1..9adc20bfd9 100644
+--- a/src/backends/native/meta-output-kms.c
++++ b/src/backends/native/meta-output-kms.c
+@@ -224,6 +224,45 @@ compare_modes (const void *one,
+                     meta_crtc_mode_get_name (crtc_mode_two));
+ }
+ 
++static gboolean
++are_all_modes_equally_sized (MetaOutputInfo *output_info)
++{
++  const MetaCrtcModeInfo *base =
++    meta_crtc_mode_get_info (output_info->modes[0]);
++  int i;
++
++  for (i = 1; i < output_info->n_modes; i++)
++    {
++      const MetaCrtcModeInfo *mode_info =
++        meta_crtc_mode_get_info (output_info->modes[i]);
++
++      if (base->width != mode_info->width ||
++          base->height != mode_info->height)
++        return FALSE;
++    }
++
++  return TRUE;
++}
++
++static void
++maybe_add_fallback_modes (const MetaKmsConnectorState *connector_state,
++                          MetaOutputInfo              *output_info,
++                          MetaGpuKms                  *gpu_kms,
++                          MetaKmsConnector            *kms_connector)
++{
++  if (!connector_state->has_scaling)
++    return;
++
++  if (output_info->connector_type == DRM_MODE_CONNECTOR_eDP &&
++      !are_all_modes_equally_sized (output_info))
++    return;
++
++  meta_topic (META_DEBUG_KMS, "Adding common modes to connector %u on %s",
++              meta_kms_connector_get_id (kms_connector),
++              meta_gpu_kms_get_file_path (gpu_kms));
++  add_common_modes (output_info, gpu_kms);
++}
++
+ static gboolean
+ init_output_modes (MetaOutputInfo    *output_info,
+                    MetaGpuKms        *gpu_kms,
+@@ -252,14 +291,7 @@ init_output_modes (MetaOutputInfo    *output_info,
+         output_info->preferred_mode = output_info->modes[i];
+     }
+ 
+-  if (connector_state->has_scaling)
+-    {
+-      meta_topic (META_DEBUG_KMS, "Adding common modes to connector %u on %s",
+-                  meta_kms_connector_get_id (kms_connector),
+-                  meta_gpu_kms_get_file_path (gpu_kms));
+-      add_common_modes (output_info, gpu_kms);
+-    }
+-
++  maybe_add_fallback_modes (connector_state, output_info, gpu_kms, kms_connector);
+   if (!output_info->modes)
+     {
+       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+@@ -322,6 +354,10 @@ meta_output_kms_new (MetaGpuKms        *gpu_kms,
+       output_info->height_mm = connector_state->height_mm;
+     }
+ 
++  drm_connector_type = meta_kms_connector_get_connector_type (kms_connector);
++  output_info->connector_type =
++    meta_kms_connector_type_from_drm (drm_connector_type);
++
+   if (!init_output_modes (output_info, gpu_kms, kms_connector, error))
+     return NULL;
+ 
+@@ -349,10 +385,6 @@ meta_output_kms_new (MetaGpuKms        *gpu_kms,
+ 
+   meta_output_info_parse_edid (output_info, connector_state->edid_data);
+ 
+-  drm_connector_type = meta_kms_connector_get_connector_type (kms_connector);
+-  output_info->connector_type =
+-    meta_kms_connector_type_from_drm (drm_connector_type);
+-
+   output_info->tile_info = connector_state->tile_info;
+ 
+   output = g_object_new (META_TYPE_OUTPUT_KMS,
+-- 
+2.37.1
+

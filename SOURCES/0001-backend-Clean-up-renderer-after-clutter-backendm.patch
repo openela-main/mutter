@@ -1,0 +1,92 @@
+From ff4dc8cc8274dc5f6ed11515e05a341e4e2cec28 Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Thu, 12 Aug 2021 14:13:23 -0400
+Subject: [PATCH] backend: Clean up renderer after clutter backendm
+
+commit c4a73e795020722eda3e2bec0c16d96f9f37333b added
+code to cleanup the renderer when the meta backend is
+disposed. Unfortunately, this introduced a crash when
+the window manager is replaced.
+
+This is because cleaning up the renderer involves talking
+to the X server over a display connection that's closed
+two lines higher as part of the clutter_backend_destroy
+call.
+
+This commit fixes the crash by swapping their order.
+---
+ src/backends/meta-backend.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/backends/meta-backend.c b/src/backends/meta-backend.c
+index ff84bfe6a..7e8b4ee95 100644
+--- a/src/backends/meta-backend.c
++++ b/src/backends/meta-backend.c
+@@ -216,63 +216,63 @@ meta_backend_dispose (GObject *object)
+ 
+   if (priv->sleep_signal_id)
+     {
+       g_dbus_connection_signal_unsubscribe (priv->system_bus, priv->sleep_signal_id);
+       priv->sleep_signal_id = 0;
+     }
+ 
+   if (priv->upower_watch_id)
+     {
+       g_bus_unwatch_name (priv->upower_watch_id);
+       priv->upower_watch_id = 0;
+     }
+ 
+   g_cancellable_cancel (priv->cancellable);
+   g_clear_object (&priv->cancellable);
+   g_clear_object (&priv->system_bus);
+   g_clear_object (&priv->upower_proxy);
+ 
+   g_clear_handle_id (&priv->device_update_idle_id, g_source_remove);
+ 
+   g_clear_pointer (&priv->device_monitors, g_hash_table_destroy);
+ 
+   g_clear_object (&priv->settings);
+ 
+ #ifdef HAVE_PROFILER
+   g_clear_object (&priv->profiler);
+ #endif
+ 
+   g_clear_pointer (&priv->default_seat, clutter_seat_destroy);
+   g_clear_pointer (&priv->stage, clutter_actor_destroy);
+-  g_clear_pointer (&priv->clutter_backend, clutter_backend_destroy);
+   g_clear_object (&priv->renderer);
+   g_clear_list (&priv->gpus, g_object_unref);
++  g_clear_pointer (&priv->clutter_backend, clutter_backend_destroy);
+ 
+   G_OBJECT_CLASS (meta_backend_parent_class)->dispose (object);
+ }
+ 
+ static void
+ meta_backend_destroy (MetaBackend *backend)
+ {
+   g_object_run_dispose (G_OBJECT (backend));
+   g_object_unref (backend);
+ }
+ 
+ static void
+ meta_backend_sync_screen_size (MetaBackend *backend)
+ {
+   MetaBackendPrivate *priv = meta_backend_get_instance_private (backend);
+   int width, height;
+ 
+   meta_monitor_manager_get_screen_size (priv->monitor_manager, &width, &height);
+ 
+   META_BACKEND_GET_CLASS (backend)->update_screen_size (backend, width, height);
+ }
+ 
+ static void
+ reset_pointer_position (MetaBackend *backend)
+ {
+   MetaBackendPrivate *priv = meta_backend_get_instance_private (backend);
+   MetaMonitorManager *monitor_manager = priv->monitor_manager;
+   ClutterSeat *seat = clutter_backend_get_default_seat (priv->clutter_backend);
+   MetaLogicalMonitor *primary;
+ 
+-- 
+2.31.1
+

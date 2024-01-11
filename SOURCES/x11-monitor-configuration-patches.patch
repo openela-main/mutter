@@ -1,0 +1,1375 @@
+From 22c48221a3117a7a8ac5b983767d8de5ec5fd599 Mon Sep 17 00:00:00 2001
+From: Rui Matos <tiagomatos@gmail.com>
+Date: Tue, 6 Oct 2015 21:16:18 +0200
+Subject: [PATCH 1/9] monitor-manager-xrandr: Work around spurious hotplugs on
+ Xvnc
+
+Xvnc turns its outputs off/on on every mode set which makes us believe
+there was an hotplug when there actually wasn't. Work around this by
+requiring new randr configuration timestamps to be ahead of the last
+set timestamp by at least 100 ms for us to consider them an actual
+hotplug.
+---
+ .../x11/meta-monitor-manager-xrandr.c         | 21 ++++++++++++++++++-
+ 1 file changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/src/backends/x11/meta-monitor-manager-xrandr.c b/src/backends/x11/meta-monitor-manager-xrandr.c
+index 489a9b424..1ddc2a787 100644
+--- a/src/backends/x11/meta-monitor-manager-xrandr.c
++++ b/src/backends/x11/meta-monitor-manager-xrandr.c
+@@ -1100,6 +1100,20 @@ meta_monitor_manager_xrandr_class_init (MetaMonitorManagerXrandrClass *klass)
+     g_quark_from_static_string ("-meta-monitor-xrandr-data");
+ }
+ 
++static gboolean
++is_xvnc (MetaMonitorManager *manager)
++{
++  MetaMonitorManagerXrandr *manager_xrandr = META_MONITOR_MANAGER_XRANDR (manager);
++  MetaGpu *gpu = meta_monitor_manager_xrandr_get_gpu (manager_xrandr);
++  GList *l;
++
++  for (l = meta_gpu_get_outputs (gpu); l; l = l->next)
++    if (g_str_has_prefix (meta_output_get_name (l->data), "VNC-"))
++      return TRUE;
++
++  return FALSE;
++}
++
+ gboolean
+ meta_monitor_manager_xrandr_handle_xevent (MetaMonitorManagerXrandr *manager_xrandr,
+ 					   XEvent                   *event)
+@@ -1110,6 +1124,7 @@ meta_monitor_manager_xrandr_handle_xevent (MetaMonitorManagerXrandr *manager_xra
+   XRRScreenResources *resources;
+   gboolean is_hotplug;
+   gboolean is_our_configuration;
++  unsigned int timestamp;
+ 
+   if ((event->type - manager_xrandr->rr_event_base) != RRScreenChangeNotify)
+     return FALSE;
+@@ -1121,7 +1136,11 @@ meta_monitor_manager_xrandr_handle_xevent (MetaMonitorManagerXrandr *manager_xra
+   gpu_xrandr = META_GPU_XRANDR (gpu);
+   resources = meta_gpu_xrandr_get_resources (gpu_xrandr);
+ 
+-  is_hotplug = resources->timestamp < resources->configTimestamp;
++  timestamp = resources->timestamp;
++  if (is_xvnc (manager))
++    timestamp += 100;
++
++  is_hotplug = (timestamp < resources->configTimestamp);
+   is_our_configuration = (resources->timestamp ==
+                           manager_xrandr->last_xrandr_set_timestamp);
+   if (is_hotplug)
+-- 
+2.33.1
+
+
+From 1092dfec7b096e6ad3208dba362623faf26c564c Mon Sep 17 00:00:00 2001
+From: Rui Matos <tiagomatos@gmail.com>
+Date: Mon, 4 Jun 2018 16:35:04 -0400
+Subject: [PATCH 2/9] monitor-manager-xrandr: Force an update when resuming
+ from suspend
+
+The stack below us isn't as reliable as we'd like and in some cases
+doesn't generate RRScreenChangeNotify events when e.g. resuming a
+laptop on a dock, meaning that we'd miss newly attached outputs.
+---
+ src/backends/meta-gpu.c                       |  7 ++
+ src/backends/meta-gpu.h                       |  4 +
+ src/backends/x11/meta-gpu-xrandr.c            | 26 ++++-
+ .../x11/meta-monitor-manager-xrandr.c         | 98 +++++++++++++++++--
+ 4 files changed, 125 insertions(+), 10 deletions(-)
+
+diff --git a/src/backends/meta-gpu.c b/src/backends/meta-gpu.c
+index ce4353bf0..6b3086e74 100644
+--- a/src/backends/meta-gpu.c
++++ b/src/backends/meta-gpu.c
+@@ -66,6 +66,13 @@ meta_gpu_has_hotplug_mode_update (MetaGpu *gpu)
+   return FALSE;
+ }
+ 
++void
++meta_gpu_poll_hardware (MetaGpu *gpu)
++{
++  if (META_GPU_GET_CLASS (gpu)->poll_hardware)
++    META_GPU_GET_CLASS (gpu)->poll_hardware (gpu);
++}
++
+ gboolean
+ meta_gpu_read_current (MetaGpu  *gpu,
+                        GError  **error)
+diff --git a/src/backends/meta-gpu.h b/src/backends/meta-gpu.h
+index 9d12f95a7..37b76bd0f 100644
+--- a/src/backends/meta-gpu.h
++++ b/src/backends/meta-gpu.h
+@@ -36,8 +36,12 @@ struct _MetaGpuClass
+ 
+   gboolean (* read_current) (MetaGpu  *gpu,
+                              GError  **error);
++  void     (* poll_hardware) (MetaGpu *gpu);
+ };
+ 
++META_EXPORT_TEST
++void meta_gpu_poll_hardware (MetaGpu *gpu);
++
+ META_EXPORT_TEST
+ gboolean meta_gpu_read_current (MetaGpu  *gpu,
+                                 GError  **error);
+diff --git a/src/backends/x11/meta-gpu-xrandr.c b/src/backends/x11/meta-gpu-xrandr.c
+index 6c84be6ce..573df7a90 100644
+--- a/src/backends/x11/meta-gpu-xrandr.c
++++ b/src/backends/x11/meta-gpu-xrandr.c
+@@ -46,6 +46,8 @@ struct _MetaGpuXrandr
+ 
+   int max_screen_width;
+   int max_screen_height;
++
++  gboolean need_hardware_poll;
+ };
+ 
+ G_DEFINE_TYPE (MetaGpuXrandr, meta_gpu_xrandr, META_TYPE_GPU)
+@@ -104,6 +106,14 @@ calculate_xrandr_refresh_rate (XRRModeInfo *xmode)
+   return xmode->dotClock / (h_total * v_total);
+ }
+ 
++static void
++meta_gpu_xrandr_poll_hardware (MetaGpu *gpu)
++{
++  MetaGpuXrandr *gpu_xrandr = META_GPU_XRANDR (gpu);
++
++  gpu_xrandr->need_hardware_poll = TRUE;
++}
++
+ static gboolean
+ meta_gpu_xrandr_read_current (MetaGpu  *gpu,
+                               GError  **error)
+@@ -141,8 +151,18 @@ meta_gpu_xrandr_read_current (MetaGpu  *gpu,
+   monitor_manager->screen_width = WidthOfScreen (screen);
+   monitor_manager->screen_height = HeightOfScreen (screen);
+ 
+-  resources = XRRGetScreenResourcesCurrent (xdisplay,
+-                                            DefaultRootWindow (xdisplay));
++  if (gpu_xrandr->need_hardware_poll)
++    {
++      resources = XRRGetScreenResources (xdisplay,
++                                         DefaultRootWindow (xdisplay));
++      gpu_xrandr->need_hardware_poll = FALSE;
++    }
++  else
++    {
++      resources = XRRGetScreenResourcesCurrent (xdisplay,
++                                                DefaultRootWindow (xdisplay));
++    }
++
+   if (!resources)
+     {
+       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+@@ -280,6 +300,7 @@ meta_gpu_xrandr_finalize (GObject *object)
+ static void
+ meta_gpu_xrandr_init (MetaGpuXrandr *gpu_xrandr)
+ {
++  gpu_xrandr->need_hardware_poll = TRUE;
+ }
+ 
+ static void
+@@ -291,4 +312,5 @@ meta_gpu_xrandr_class_init (MetaGpuXrandrClass *klass)
+   object_class->finalize = meta_gpu_xrandr_finalize;
+ 
+   gpu_class->read_current = meta_gpu_xrandr_read_current;
++  gpu_class->poll_hardware = meta_gpu_xrandr_poll_hardware;
+ }
+diff --git a/src/backends/x11/meta-monitor-manager-xrandr.c b/src/backends/x11/meta-monitor-manager-xrandr.c
+index 1ddc2a787..61e13f459 100644
+--- a/src/backends/x11/meta-monitor-manager-xrandr.c
++++ b/src/backends/x11/meta-monitor-manager-xrandr.c
+@@ -72,6 +72,10 @@ struct _MetaMonitorManagerXrandr
+   Display *xdisplay;
+   int rr_event_base;
+   int rr_error_base;
++
++  guint logind_watch_id;
++  guint logind_signal_sub_id;
++
+   gboolean has_randr15;
+ 
+   xcb_timestamp_t last_xrandr_set_timestamp;
+@@ -96,6 +100,8 @@ typedef struct _MetaMonitorXrandrData
+ 
+ GQuark quark_meta_monitor_xrandr_data;
+ 
++static void meta_monitor_manager_xrandr_update (MetaMonitorManagerXrandr *manager_xrandr);
++
+ Display *
+ meta_monitor_manager_xrandr_get_xdisplay (MetaMonitorManagerXrandr *manager_xrandr)
+ {
+@@ -1009,6 +1015,64 @@ meta_monitor_manager_xrandr_set_output_ctm (MetaOutput          *output,
+   meta_output_xrandr_set_ctm (META_OUTPUT_XRANDR (output), ctm);
+ }
+ 
++static void
++logind_signal_handler (GDBusConnection *connection,
++                       const gchar     *sender_name,
++                       const gchar     *object_path,
++                       const gchar     *interface_name,
++                       const gchar     *signal_name,
++                       GVariant        *parameters,
++                       gpointer         user_data)
++{
++  MetaMonitorManagerXrandr *manager_xrandr = user_data;
++  gboolean suspending;
++
++  if (!g_str_equal (signal_name, "PrepareForSleep"))
++    return;
++
++  g_variant_get (parameters, "(b)", &suspending);
++  if (!suspending)
++    {
++      MetaGpu *gpu = meta_monitor_manager_xrandr_get_gpu (manager_xrandr);
++
++      meta_gpu_poll_hardware (gpu);
++      meta_monitor_manager_xrandr_update (manager_xrandr);
++    }
++}
++
++static void
++logind_appeared (GDBusConnection *connection,
++                 const gchar     *name,
++                 const gchar     *name_owner,
++                 gpointer         user_data)
++{
++  MetaMonitorManagerXrandr *manager_xrandr = user_data;
++
++  manager_xrandr->logind_signal_sub_id = g_dbus_connection_signal_subscribe (connection,
++                                                                             "org.freedesktop.login1",
++                                                                             "org.freedesktop.login1.Manager",
++                                                                             "PrepareForSleep",
++                                                                             "/org/freedesktop/login1",
++                                                                             NULL,
++                                                                             G_DBUS_SIGNAL_FLAGS_NONE,
++                                                                             logind_signal_handler,
++                                                                             manager_xrandr,
++                                                                             NULL);
++}
++
++static void
++logind_vanished (GDBusConnection *connection,
++                 const gchar     *name,
++                 gpointer         user_data)
++{
++  MetaMonitorManagerXrandr *manager_xrandr = user_data;
++
++  if (connection && manager_xrandr->logind_signal_sub_id > 0)
++    g_dbus_connection_signal_unsubscribe (connection, manager_xrandr->logind_signal_sub_id);
++
++  manager_xrandr->logind_signal_sub_id = 0;
++}
++
+ static void
+ meta_monitor_manager_xrandr_constructed (GObject *object)
+ {
+@@ -1061,12 +1125,23 @@ meta_monitor_manager_xrandr_finalize (GObject *object)
+   g_hash_table_destroy (manager_xrandr->tiled_monitor_atoms);
+   g_free (manager_xrandr->supported_scales);
+ 
++  if (manager_xrandr->logind_watch_id > 0)
++    g_bus_unwatch_name (manager_xrandr->logind_watch_id);
++  manager_xrandr->logind_watch_id = 0;
++
+   G_OBJECT_CLASS (meta_monitor_manager_xrandr_parent_class)->finalize (object);
+ }
+ 
+ static void
+ meta_monitor_manager_xrandr_init (MetaMonitorManagerXrandr *manager_xrandr)
+ {
++  manager_xrandr->logind_watch_id = g_bus_watch_name (G_BUS_TYPE_SYSTEM,
++                                                      "org.freedesktop.login1",
++                                                      G_BUS_NAME_WATCHER_FLAGS_NONE,
++                                                      logind_appeared,
++                                                      logind_vanished,
++                                                      manager_xrandr,
++                                                      NULL);
+ }
+ 
+ static void
+@@ -1114,9 +1189,8 @@ is_xvnc (MetaMonitorManager *manager)
+   return FALSE;
+ }
+ 
+-gboolean
+-meta_monitor_manager_xrandr_handle_xevent (MetaMonitorManagerXrandr *manager_xrandr,
+-					   XEvent                   *event)
++static void
++meta_monitor_manager_xrandr_update (MetaMonitorManagerXrandr *manager_xrandr)
+ {
+   MetaMonitorManager *manager = META_MONITOR_MANAGER (manager_xrandr);
+   MetaGpu *gpu = meta_monitor_manager_xrandr_get_gpu (manager_xrandr);
+@@ -1126,11 +1200,6 @@ meta_monitor_manager_xrandr_handle_xevent (MetaMonitorManagerXrandr *manager_xra
+   gboolean is_our_configuration;
+   unsigned int timestamp;
+ 
+-  if ((event->type - manager_xrandr->rr_event_base) != RRScreenChangeNotify)
+-    return FALSE;
+-
+-  XRRUpdateConfiguration (event);
+-
+   meta_monitor_manager_read_current_state (manager);
+ 
+   gpu_xrandr = META_GPU_XRANDR (gpu);
+@@ -1165,6 +1234,19 @@ meta_monitor_manager_xrandr_handle_xevent (MetaMonitorManagerXrandr *manager_xra
+ 
+       meta_monitor_manager_xrandr_rebuild_derived (manager, config);
+     }
++}
++
++gboolean
++meta_monitor_manager_xrandr_handle_xevent (MetaMonitorManagerXrandr *manager_xrandr,
++					   XEvent                   *event)
++{
++
++  if ((event->type - manager_xrandr->rr_event_base) != RRScreenChangeNotify)
++    return FALSE;
++
++  XRRUpdateConfiguration (event);
++
++  meta_monitor_manager_xrandr_update (manager_xrandr);
+ 
+   return TRUE;
+ }
+-- 
+2.33.1
+
+
+From a4e09fe21fc77188c99fb41650eb18c171e39f36 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Mon, 24 Feb 2020 16:09:59 +0100
+Subject: [PATCH 3/9] Revert "MetaMonitorManager: ignore hotplug_mode_update at
+ startup"
+
+This reverts commit 183f4b0c13f3dc9565bf5f693f2e5d61ca0199c9.
+---
+ src/backends/meta-monitor-manager.c | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/src/backends/meta-monitor-manager.c b/src/backends/meta-monitor-manager.c
+index a75da9329..c291ddb5d 100644
+--- a/src/backends/meta-monitor-manager.c
++++ b/src/backends/meta-monitor-manager.c
+@@ -609,8 +609,7 @@ meta_monitor_manager_has_hotplug_mode_update (MetaMonitorManager *manager)
+ static gboolean
+ should_use_stored_config (MetaMonitorManager *manager)
+ {
+-  return (manager->in_init ||
+-          !meta_monitor_manager_has_hotplug_mode_update (manager));
++  return !meta_monitor_manager_has_hotplug_mode_update (manager);
+ }
+ 
+ MetaMonitorsConfig *
+-- 
+2.33.1
+
+
+From 2dbf32b591c004fc996ff16d0b6622659185f2b3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Florian=20M=C3=BCllner?= <fmuellner@gnome.org>
+Date: Thu, 28 Jan 2016 15:26:33 +0100
+Subject: [PATCH 4/9] monitor-manager: Consider external layout before default
+ linear config
+
+In case of no existing configuration, we use a default layout of
+aligning attached displays horizontally. This sidesteps any layout
+configuration that is done externally, for instance via xorg.conf,
+which is not desirable. Instead, base the initial configuration on
+the existing layout if it passes some sanity checks before falling
+back to the default linear config.
+---
+ src/backends/meta-monitor-config-manager.c | 86 ++++++++++++++++++++++
+ src/backends/meta-monitor-config-manager.h |  2 +
+ src/backends/meta-monitor-manager.c        | 19 +++++
+ 3 files changed, 107 insertions(+)
+
+diff --git a/src/backends/meta-monitor-config-manager.c b/src/backends/meta-monitor-config-manager.c
+index 0253e072f..2f6cc3856 100644
+--- a/src/backends/meta-monitor-config-manager.c
++++ b/src/backends/meta-monitor-config-manager.c
+@@ -739,6 +739,92 @@ create_preferred_logical_monitor_config (MetaMonitorManager          *monitor_ma
+   return logical_monitor_config;
+ }
+ 
++static MetaLogicalMonitorConfig *
++create_logical_monitor_config_from_output (MetaMonitorManager           *monitor_manager,
++                                           MetaMonitor                  *monitor,
++                                           MetaLogicalMonitorConfig     *primary_logical_monitor_config,
++                                           MetaLogicalMonitorLayoutMode  layout_mode)
++{
++  MetaOutput *output;
++  MetaCrtc *crtc;
++  const MetaCrtcConfig *crtc_config;
++
++  output = meta_monitor_get_main_output (monitor);
++  crtc = meta_output_get_assigned_crtc (output);
++  crtc_config = meta_crtc_get_config (crtc);
++  if (!crtc_config)
++    return NULL;
++
++  return create_preferred_logical_monitor_config (monitor_manager,
++                                                  monitor,
++                                                  (int) crtc_config->layout.origin.x,
++                                                  (int) crtc_config->layout.origin.y,
++                                                  primary_logical_monitor_config,
++                                                  layout_mode);
++}
++
++MetaMonitorsConfig *
++meta_monitor_config_manager_create_current (MetaMonitorConfigManager *config_manager)
++{
++  MetaMonitorManager *monitor_manager = config_manager->monitor_manager;
++  GList *logical_monitor_configs;
++  MetaMonitor *primary_monitor;
++  MetaLogicalMonitorLayoutMode layout_mode;
++  MetaLogicalMonitorConfig *primary_logical_monitor_config;
++  GList *monitors;
++  GList *l;
++
++  if (meta_monitor_config_store_get_config_count (config_manager->config_store) > 0)
++    return NULL;
++
++  primary_monitor = find_primary_monitor (monitor_manager);
++  if (!primary_monitor || !meta_monitor_is_active (primary_monitor))
++    return NULL;
++
++  layout_mode = meta_monitor_manager_get_default_layout_mode (monitor_manager);
++
++  primary_logical_monitor_config =
++    create_logical_monitor_config_from_output (monitor_manager,
++                                               primary_monitor,
++                                               NULL,
++                                               layout_mode);
++  if (!primary_logical_monitor_config)
++    return NULL;
++
++  primary_logical_monitor_config->is_primary = TRUE;
++  logical_monitor_configs = g_list_append (NULL,
++                                           primary_logical_monitor_config);
++
++  monitors = meta_monitor_manager_get_monitors (monitor_manager);
++  for (l = monitors; l; l = l->next)
++    {
++      MetaMonitor *monitor = l->data;
++      MetaLogicalMonitorConfig *logical_monitor_config;
++
++      if (monitor == primary_monitor)
++        continue;
++
++      if (!meta_monitor_is_active (monitor))
++        continue;
++
++      logical_monitor_config =
++        create_logical_monitor_config_from_output (monitor_manager,
++                                                   monitor,
++                                                   primary_logical_monitor_config,
++                                                   layout_mode);
++      if (!logical_monitor_config)
++        continue;
++
++      logical_monitor_configs = g_list_append (logical_monitor_configs,
++                                               logical_monitor_config);
++    }
++
++  return meta_monitors_config_new (monitor_manager,
++                                   logical_monitor_configs,
++                                   layout_mode,
++                                   META_MONITORS_CONFIG_FLAG_NONE);
++}
++
+ MetaMonitorsConfig *
+ meta_monitor_config_manager_create_linear (MetaMonitorConfigManager *config_manager)
+ {
+diff --git a/src/backends/meta-monitor-config-manager.h b/src/backends/meta-monitor-config-manager.h
+index 86756a7e3..961d604bd 100644
+--- a/src/backends/meta-monitor-config-manager.h
++++ b/src/backends/meta-monitor-config-manager.h
+@@ -94,6 +94,8 @@ gboolean meta_monitor_config_manager_assign (MetaMonitorManager *manager,
+ META_EXPORT_TEST
+ MetaMonitorsConfig * meta_monitor_config_manager_get_stored (MetaMonitorConfigManager *config_manager);
+ 
++META_EXPORT_TEST
++MetaMonitorsConfig * meta_monitor_config_manager_create_current (MetaMonitorConfigManager *config_manager);
+ META_EXPORT_TEST
+ MetaMonitorsConfig * meta_monitor_config_manager_create_linear (MetaMonitorConfigManager *config_manager);
+ 
+diff --git a/src/backends/meta-monitor-manager.c b/src/backends/meta-monitor-manager.c
+index c291ddb5d..96f0d6b84 100644
+--- a/src/backends/meta-monitor-manager.c
++++ b/src/backends/meta-monitor-manager.c
+@@ -695,6 +695,25 @@ meta_monitor_manager_ensure_configured (MetaMonitorManager *manager)
+       g_clear_object (&config);
+     }
+ 
++  config = meta_monitor_config_manager_create_current (manager->config_manager);
++  if (config)
++    {
++      if (!meta_monitor_manager_apply_monitors_config (manager,
++                                                       config,
++                                                       method,
++                                                       &error))
++        {
++          g_clear_object (&config);
++          g_warning ("Failed to use current monitor configuration: %s",
++                     error->message);
++          g_clear_error (&error);
++        }
++      else
++        {
++          goto done;
++        }
++    }
++
+   config = meta_monitor_config_manager_create_linear (manager->config_manager);
+   if (config)
+     {
+-- 
+2.33.1
+
+
+From 7a55398c0d108921af8d4fecdf9034ca94ef783c Mon Sep 17 00:00:00 2001
+From: rpm-build <rpm-build>
+Date: Tue, 11 Sep 2018 10:19:44 -0400
+Subject: [PATCH 5/9] monitor-manager: only reuse initial-config if monitor
+ topology matches startup
+
+Right now we try to apply the current monitor config when a new
+monitor is attached.  The current config obviously doesn't include the
+new monitor, so the new monitor isn't lit up.
+
+The only reason we apply the current config at all is to handle the
+startup case:  We want to reuse the config set in Xorg when first
+logging in.
+
+This commit changes the code to look at the *initial config* instead
+of the current config, and only if the new monitor topology matches
+the start up topology.
+---
+ src/backends/meta-monitor-config-manager.c | 20 +++++++++++++++-----
+ src/backends/meta-monitor-config-manager.h |  2 +-
+ src/backends/meta-monitor-manager.c        | 16 +++++++++++++++-
+ 3 files changed, 31 insertions(+), 7 deletions(-)
+
+diff --git a/src/backends/meta-monitor-config-manager.c b/src/backends/meta-monitor-config-manager.c
+index 2f6cc3856..46249755b 100644
+--- a/src/backends/meta-monitor-config-manager.c
++++ b/src/backends/meta-monitor-config-manager.c
+@@ -42,6 +42,7 @@ struct _MetaMonitorConfigManager
+   MetaMonitorConfigStore *config_store;
+ 
+   MetaMonitorsConfig *current_config;
++  MetaMonitorsConfig *initial_config;
+   GQueue config_history;
+ };
+ 
+@@ -764,9 +765,10 @@ create_logical_monitor_config_from_output (MetaMonitorManager           *monitor
+ }
+ 
+ MetaMonitorsConfig *
+-meta_monitor_config_manager_create_current (MetaMonitorConfigManager *config_manager)
++meta_monitor_config_manager_create_initial (MetaMonitorConfigManager *config_manager)
+ {
+   MetaMonitorManager *monitor_manager = config_manager->monitor_manager;
++  MetaMonitorsConfig *initial_config;
+   GList *logical_monitor_configs;
+   MetaMonitor *primary_monitor;
+   MetaLogicalMonitorLayoutMode layout_mode;
+@@ -774,6 +776,9 @@ meta_monitor_config_manager_create_current (MetaMonitorConfigManager *config_man
+   GList *monitors;
+   GList *l;
+ 
++  if (config_manager->initial_config != NULL)
++    return g_object_ref (config_manager->initial_config);
++
+   if (meta_monitor_config_store_get_config_count (config_manager->config_store) > 0)
+     return NULL;
+ 
+@@ -819,10 +824,14 @@ meta_monitor_config_manager_create_current (MetaMonitorConfigManager *config_man
+                                                logical_monitor_config);
+     }
+ 
+-  return meta_monitors_config_new (monitor_manager,
+-                                   logical_monitor_configs,
+-                                   layout_mode,
+-                                   META_MONITORS_CONFIG_FLAG_NONE);
++  initial_config = meta_monitors_config_new (monitor_manager,
++                                             logical_monitor_configs,
++                                             layout_mode,
++                                             META_MONITORS_CONFIG_FLAG_NONE);
++
++  config_manager->initial_config = g_object_ref (initial_config);
++
++  return initial_config;
+ }
+ 
+ MetaMonitorsConfig *
+@@ -1453,6 +1462,7 @@ meta_monitor_config_manager_dispose (GObject *object)
+     META_MONITOR_CONFIG_MANAGER (object);
+ 
+   g_clear_object (&config_manager->current_config);
++  g_clear_object (&config_manager->initial_config);
+   meta_monitor_config_manager_clear_history (config_manager);
+ 
+   G_OBJECT_CLASS (meta_monitor_config_manager_parent_class)->dispose (object);
+diff --git a/src/backends/meta-monitor-config-manager.h b/src/backends/meta-monitor-config-manager.h
+index 961d604bd..dc273c961 100644
+--- a/src/backends/meta-monitor-config-manager.h
++++ b/src/backends/meta-monitor-config-manager.h
+@@ -95,7 +95,7 @@ META_EXPORT_TEST
+ MetaMonitorsConfig * meta_monitor_config_manager_get_stored (MetaMonitorConfigManager *config_manager);
+ 
+ META_EXPORT_TEST
+-MetaMonitorsConfig * meta_monitor_config_manager_create_current (MetaMonitorConfigManager *config_manager);
++MetaMonitorsConfig * meta_monitor_config_manager_create_initial (MetaMonitorConfigManager *config_manager);
+ META_EXPORT_TEST
+ MetaMonitorsConfig * meta_monitor_config_manager_create_linear (MetaMonitorConfigManager *config_manager);
+ 
+diff --git a/src/backends/meta-monitor-manager.c b/src/backends/meta-monitor-manager.c
+index 96f0d6b84..baf5bf2f9 100644
+--- a/src/backends/meta-monitor-manager.c
++++ b/src/backends/meta-monitor-manager.c
+@@ -615,9 +615,11 @@ should_use_stored_config (MetaMonitorManager *manager)
+ MetaMonitorsConfig *
+ meta_monitor_manager_ensure_configured (MetaMonitorManager *manager)
+ {
++  g_autoptr (MetaMonitorsConfig) initial_config = NULL;
+   MetaMonitorsConfig *config = NULL;
+   GError *error = NULL;
+   gboolean use_stored_config;
++  MetaMonitorsConfigKey *current_state_key;
+   MetaMonitorsConfigMethod method;
+   MetaMonitorsConfigMethod fallback_method =
+     META_MONITORS_CONFIG_METHOD_TEMPORARY;
+@@ -628,6 +630,18 @@ meta_monitor_manager_ensure_configured (MetaMonitorManager *manager)
+   else
+     method = META_MONITORS_CONFIG_METHOD_TEMPORARY;
+ 
++  initial_config = meta_monitor_config_manager_create_initial (manager->config_manager);
++
++  if (initial_config)
++    {
++      current_state_key = meta_create_monitors_config_key_for_current_state (manager);
++
++      /* don't ever reuse initial configuration, if the monitor topology changed
++       */
++      if (current_state_key && !meta_monitors_config_key_equal (current_state_key, initial_config->key))
++        g_clear_object (&initial_config);
++    }
++
+   if (use_stored_config)
+     {
+       config = meta_monitor_config_manager_get_stored (manager->config_manager);
+@@ -695,7 +709,7 @@ meta_monitor_manager_ensure_configured (MetaMonitorManager *manager)
+       g_clear_object (&config);
+     }
+ 
+-  config = meta_monitor_config_manager_create_current (manager->config_manager);
++  config = g_steal_pointer (&initial_config);
+   if (config)
+     {
+       if (!meta_monitor_manager_apply_monitors_config (manager,
+-- 
+2.33.1
+
+
+From 26ef9d3b2f407ec87388789b04f553d13289e6e0 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Mon, 18 Mar 2019 17:08:11 +0100
+Subject: [PATCH 6/9] monitor-config-manager: Use current mode when deriving
+ current config
+
+Instead of overriding the existing mode with the preferred mode of the monitor,
+use the one already configured. Also use the MetaMonitor API for deriving the
+position of the monitor in the screen coordinate space.
+---
+ src/backends/meta-monitor-config-manager.c | 80 +++++++++++++---------
+ 1 file changed, 46 insertions(+), 34 deletions(-)
+
+diff --git a/src/backends/meta-monitor-config-manager.c b/src/backends/meta-monitor-config-manager.c
+index 46249755b..f355879c3 100644
+--- a/src/backends/meta-monitor-config-manager.c
++++ b/src/backends/meta-monitor-config-manager.c
+@@ -678,21 +678,20 @@ get_monitor_transform (MetaMonitorManager *monitor_manager,
+ }
+ 
+ static MetaLogicalMonitorConfig *
+-create_preferred_logical_monitor_config (MetaMonitorManager          *monitor_manager,
+-                                         MetaMonitor                 *monitor,
+-                                         int                          x,
+-                                         int                          y,
+-                                         MetaLogicalMonitorConfig    *primary_logical_monitor_config,
+-                                         MetaLogicalMonitorLayoutMode layout_mode)
++create_logical_monitor_config (MetaMonitorManager           *monitor_manager,
++                               MetaMonitor                  *monitor,
++                               MetaMonitorMode              *mode,
++                               int                           x,
++                               int                           y,
++                               MetaLogicalMonitorConfig     *primary_logical_monitor_config,
++                               MetaLogicalMonitorLayoutMode  layout_mode)
+ {
+-  MetaMonitorMode *mode;
+   int width, height;
+   float scale;
+   MetaMonitorTransform transform;
+   MetaMonitorConfig *monitor_config;
+   MetaLogicalMonitorConfig *logical_monitor_config;
+ 
+-  mode = meta_monitor_get_preferred_mode (monitor);
+   meta_monitor_mode_get_resolution (mode, &width, &height);
+ 
+   if ((meta_monitor_manager_get_capabilities (monitor_manager) &
+@@ -741,27 +740,40 @@ create_preferred_logical_monitor_config (MetaMonitorManager          *monitor_ma
+ }
+ 
+ static MetaLogicalMonitorConfig *
+-create_logical_monitor_config_from_output (MetaMonitorManager           *monitor_manager,
+-                                           MetaMonitor                  *monitor,
+-                                           MetaLogicalMonitorConfig     *primary_logical_monitor_config,
+-                                           MetaLogicalMonitorLayoutMode  layout_mode)
++create_preferred_logical_monitor_config (MetaMonitorManager           *monitor_manager,
++                                         MetaMonitor                  *monitor,
++                                         int                           x,
++                                         int                           y,
++                                         MetaLogicalMonitorConfig     *primary_logical_monitor_config,
++                                         MetaLogicalMonitorLayoutMode  layout_mode)
+ {
+-  MetaOutput *output;
+-  MetaCrtc *crtc;
+-  const MetaCrtcConfig *crtc_config;
++  return create_logical_monitor_config (monitor_manager,
++                                        monitor,
++                                        meta_monitor_get_preferred_mode (monitor),
++                                        x, y,
++                                        primary_logical_monitor_config,
++                                        layout_mode);
++}
+ 
+-  output = meta_monitor_get_main_output (monitor);
+-  crtc = meta_output_get_assigned_crtc (output);
+-  crtc_config = meta_crtc_get_config (crtc);
+-  if (!crtc_config)
+-    return NULL;
++static MetaLogicalMonitorConfig *
++create_logical_monitor_config_from_monitor (MetaMonitorManager           *monitor_manager,
++                                            MetaMonitor                  *monitor,
++                                            MetaLogicalMonitorConfig     *primary_logical_monitor_config,
++                                            MetaLogicalMonitorLayoutMode  layout_mode)
++{
++  MetaRectangle monitor_layout;
++  MetaMonitorMode *mode;
++
++  meta_monitor_derive_layout (monitor, &monitor_layout);
++  mode = meta_monitor_get_current_mode (monitor);
+ 
+-  return create_preferred_logical_monitor_config (monitor_manager,
+-                                                  monitor,
+-                                                  (int) crtc_config->layout.origin.x,
+-                                                  (int) crtc_config->layout.origin.y,
+-                                                  primary_logical_monitor_config,
+-                                                  layout_mode);
++  return create_logical_monitor_config (monitor_manager,
++                                        monitor,
++                                        mode,
++                                        monitor_layout.x,
++                                        monitor_layout.y,
++                                        primary_logical_monitor_config,
++                                        layout_mode);
+ }
+ 
+ MetaMonitorsConfig *
+@@ -789,10 +801,10 @@ meta_monitor_config_manager_create_initial (MetaMonitorConfigManager *config_man
+   layout_mode = meta_monitor_manager_get_default_layout_mode (monitor_manager);
+ 
+   primary_logical_monitor_config =
+-    create_logical_monitor_config_from_output (monitor_manager,
+-                                               primary_monitor,
+-                                               NULL,
+-                                               layout_mode);
++    create_logical_monitor_config_from_monitor (monitor_manager,
++                                                primary_monitor,
++                                                NULL,
++                                                layout_mode);
+   if (!primary_logical_monitor_config)
+     return NULL;
+ 
+@@ -813,10 +825,10 @@ meta_monitor_config_manager_create_initial (MetaMonitorConfigManager *config_man
+         continue;
+ 
+       logical_monitor_config =
+-        create_logical_monitor_config_from_output (monitor_manager,
+-                                                   monitor,
+-                                                   primary_logical_monitor_config,
+-                                                   layout_mode);
++        create_logical_monitor_config_from_monitor (monitor_manager,
++                                                    monitor,
++                                                    primary_logical_monitor_config,
++                                                    layout_mode);
+       if (!logical_monitor_config)
+         continue;
+ 
+-- 
+2.33.1
+
+
+From e64a5c73f06c14371304c978e10584a211f704f1 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Mon, 18 Mar 2019 17:10:37 +0100
+Subject: [PATCH 7/9] monitor-manager: Don't try to derive current config on
+ non-X11
+
+This commit also reworks the initial config state reading some. Appart from
+avoiding trying to inherit from backends where it doesn't make sense, it does
+the following changes:
+
+ * Replace the name "initial" with "inherited", as the initial config in the
+   context of monitor management is the one used initialization. E.g. if there is
+   a applicable configuration in monitors.xml, the initial config is taken from
+   there.
+
+ * Don't make "_create_()" functions have side effects. Previously
+   meta_monitor_config_manager_create_initial() also set state on the config
+   manager object. Instead, add a meta_monitor_config_manager_ensure_inherited()
+   and meta_monitor_manager_get_inherited_config() function to make things more
+   explicit.
+
+ * Don't recreate "is-applicable" logic, just use the existing helper.
+---
+ src/backends/meta-monitor-config-manager.c    | 39 +++++++++++--------
+ src/backends/meta-monitor-config-manager.h    |  5 +++
+ src/backends/meta-monitor-manager-private.h   |  4 +-
+ src/backends/meta-monitor-manager.c           | 32 ++++++++-------
+ .../x11/meta-monitor-manager-xrandr.c         |  3 +-
+ 5 files changed, 49 insertions(+), 34 deletions(-)
+
+diff --git a/src/backends/meta-monitor-config-manager.c b/src/backends/meta-monitor-config-manager.c
+index f355879c3..4b37657d3 100644
+--- a/src/backends/meta-monitor-config-manager.c
++++ b/src/backends/meta-monitor-config-manager.c
+@@ -42,7 +42,7 @@ struct _MetaMonitorConfigManager
+   MetaMonitorConfigStore *config_store;
+ 
+   MetaMonitorsConfig *current_config;
+-  MetaMonitorsConfig *initial_config;
++  MetaMonitorsConfig *inherited_config;
+   GQueue config_history;
+ };
+ 
+@@ -776,11 +776,10 @@ create_logical_monitor_config_from_monitor (MetaMonitorManager           *monito
+                                         layout_mode);
+ }
+ 
+-MetaMonitorsConfig *
+-meta_monitor_config_manager_create_initial (MetaMonitorConfigManager *config_manager)
++static MetaMonitorsConfig *
++meta_monitor_config_manager_derive_current (MetaMonitorConfigManager *config_manager)
+ {
+   MetaMonitorManager *monitor_manager = config_manager->monitor_manager;
+-  MetaMonitorsConfig *initial_config;
+   GList *logical_monitor_configs;
+   MetaMonitor *primary_monitor;
+   MetaLogicalMonitorLayoutMode layout_mode;
+@@ -788,12 +787,6 @@ meta_monitor_config_manager_create_initial (MetaMonitorConfigManager *config_man
+   GList *monitors;
+   GList *l;
+ 
+-  if (config_manager->initial_config != NULL)
+-    return g_object_ref (config_manager->initial_config);
+-
+-  if (meta_monitor_config_store_get_config_count (config_manager->config_store) > 0)
+-    return NULL;
+-
+   primary_monitor = find_primary_monitor (monitor_manager);
+   if (!primary_monitor || !meta_monitor_is_active (primary_monitor))
+     return NULL;
+@@ -836,14 +829,26 @@ meta_monitor_config_manager_create_initial (MetaMonitorConfigManager *config_man
+                                                logical_monitor_config);
+     }
+ 
+-  initial_config = meta_monitors_config_new (monitor_manager,
+-                                             logical_monitor_configs,
+-                                             layout_mode,
+-                                             META_MONITORS_CONFIG_FLAG_NONE);
++  return meta_monitors_config_new (monitor_manager,
++                                   logical_monitor_configs,
++                                   layout_mode,
++                                   META_MONITORS_CONFIG_FLAG_NONE);
++}
++
++void
++meta_monitor_config_manager_ensure_inherited_config (MetaMonitorConfigManager *config_manager)
++{
++  if (config_manager->inherited_config)
++    return;
+ 
+-  config_manager->initial_config = g_object_ref (initial_config);
++  config_manager->inherited_config =
++    meta_monitor_config_manager_derive_current (config_manager);
++}
+ 
+-  return initial_config;
++MetaMonitorsConfig *
++meta_monitor_config_manager_get_inherited_config (MetaMonitorConfigManager *config_manager)
++{
++  return config_manager->inherited_config;
+ }
+ 
+ MetaMonitorsConfig *
+@@ -1474,7 +1479,7 @@ meta_monitor_config_manager_dispose (GObject *object)
+     META_MONITOR_CONFIG_MANAGER (object);
+ 
+   g_clear_object (&config_manager->current_config);
+-  g_clear_object (&config_manager->initial_config);
++  g_clear_object (&config_manager->inherited_config);
+   meta_monitor_config_manager_clear_history (config_manager);
+ 
+   G_OBJECT_CLASS (meta_monitor_config_manager_parent_class)->dispose (object);
+diff --git a/src/backends/meta-monitor-config-manager.h b/src/backends/meta-monitor-config-manager.h
+index dc273c961..641ed1bc1 100644
+--- a/src/backends/meta-monitor-config-manager.h
++++ b/src/backends/meta-monitor-config-manager.h
+@@ -96,6 +96,11 @@ MetaMonitorsConfig * meta_monitor_config_manager_get_stored (MetaMonitorConfigMa
+ 
+ META_EXPORT_TEST
+ MetaMonitorsConfig * meta_monitor_config_manager_create_initial (MetaMonitorConfigManager *config_manager);
++
++void meta_monitor_config_manager_ensure_inherited_config (MetaMonitorConfigManager *config_manager);
++
++MetaMonitorsConfig * meta_monitor_config_manager_get_inherited_config (MetaMonitorConfigManager *config_manager);
++
+ META_EXPORT_TEST
+ MetaMonitorsConfig * meta_monitor_config_manager_create_linear (MetaMonitorConfigManager *config_manager);
+ 
+diff --git a/src/backends/meta-monitor-manager-private.h b/src/backends/meta-monitor-manager-private.h
+index 60c1e9082..571b9000d 100644
+--- a/src/backends/meta-monitor-manager-private.h
++++ b/src/backends/meta-monitor-manager-private.h
+@@ -44,7 +44,8 @@ typedef enum _MetaMonitorManagerCapability
+ {
+   META_MONITOR_MANAGER_CAPABILITY_NONE = 0,
+   META_MONITOR_MANAGER_CAPABILITY_LAYOUT_MODE = (1 << 0),
+-  META_MONITOR_MANAGER_CAPABILITY_GLOBAL_SCALE_REQUIRED = (1 << 1)
++  META_MONITOR_MANAGER_CAPABILITY_GLOBAL_SCALE_REQUIRED = (1 << 1),
++  META_MONITOR_MANAGER_CAPABILITY_CAN_DERIVE_CURRENT = (1 << 2),
+ } MetaMonitorManagerCapability;
+ 
+ /* Equivalent to the 'method' enum in org.gnome.Mutter.DisplayConfig */
+@@ -145,6 +146,7 @@ struct _MetaMonitorManager
+   guint panel_orientation_managed : 1;
+ 
+   MetaMonitorConfigManager *config_manager;
++  MetaMonitorsConfig *initial_config;
+ 
+   GnomePnpIds *pnp_ids;
+ 
+diff --git a/src/backends/meta-monitor-manager.c b/src/backends/meta-monitor-manager.c
+index baf5bf2f9..9e57db94c 100644
+--- a/src/backends/meta-monitor-manager.c
++++ b/src/backends/meta-monitor-manager.c
+@@ -612,14 +612,21 @@ should_use_stored_config (MetaMonitorManager *manager)
+   return !meta_monitor_manager_has_hotplug_mode_update (manager);
+ }
+ 
++static gboolean
++can_derive_current_config (MetaMonitorManager *manager)
++{
++  MetaMonitorManagerCapability capabilities;
++
++  capabilities = meta_monitor_manager_get_capabilities (manager);
++  return !!(capabilities & META_MONITOR_MANAGER_CAPABILITY_CAN_DERIVE_CURRENT);
++}
++
+ MetaMonitorsConfig *
+ meta_monitor_manager_ensure_configured (MetaMonitorManager *manager)
+ {
+-  g_autoptr (MetaMonitorsConfig) initial_config = NULL;
+   MetaMonitorsConfig *config = NULL;
+   GError *error = NULL;
+   gboolean use_stored_config;
+-  MetaMonitorsConfigKey *current_state_key;
+   MetaMonitorsConfigMethod method;
+   MetaMonitorsConfigMethod fallback_method =
+     META_MONITORS_CONFIG_METHOD_TEMPORARY;
+@@ -630,17 +637,8 @@ meta_monitor_manager_ensure_configured (MetaMonitorManager *manager)
+   else
+     method = META_MONITORS_CONFIG_METHOD_TEMPORARY;
+ 
+-  initial_config = meta_monitor_config_manager_create_initial (manager->config_manager);
+-
+-  if (initial_config)
+-    {
+-      current_state_key = meta_create_monitors_config_key_for_current_state (manager);
+-
+-      /* don't ever reuse initial configuration, if the monitor topology changed
+-       */
+-      if (current_state_key && !meta_monitors_config_key_equal (current_state_key, initial_config->key))
+-        g_clear_object (&initial_config);
+-    }
++  if (can_derive_current_config (manager))
++    meta_monitor_config_manager_ensure_inherited_config (manager->config_manager);
+ 
+   if (use_stored_config)
+     {
+@@ -709,9 +707,13 @@ meta_monitor_manager_ensure_configured (MetaMonitorManager *manager)
+       g_clear_object (&config);
+     }
+ 
+-  config = g_steal_pointer (&initial_config);
+-  if (config)
++  config =
++    meta_monitor_config_manager_get_inherited_config (manager->config_manager);
++  if (config &&
++      meta_monitor_manager_is_config_complete (manager, config))
+     {
++      config = g_object_ref (config);
++
+       if (!meta_monitor_manager_apply_monitors_config (manager,
+                                                        config,
+                                                        method,
+diff --git a/src/backends/x11/meta-monitor-manager-xrandr.c b/src/backends/x11/meta-monitor-manager-xrandr.c
+index 61e13f459..90ccb7405 100644
+--- a/src/backends/x11/meta-monitor-manager-xrandr.c
++++ b/src/backends/x11/meta-monitor-manager-xrandr.c
+@@ -984,7 +984,8 @@ meta_monitor_manager_xrandr_calculate_supported_scales (MetaMonitorManager
+ static MetaMonitorManagerCapability
+ meta_monitor_manager_xrandr_get_capabilities (MetaMonitorManager *manager)
+ {
+-  return META_MONITOR_MANAGER_CAPABILITY_GLOBAL_SCALE_REQUIRED;
++  return (META_MONITOR_MANAGER_CAPABILITY_GLOBAL_SCALE_REQUIRED |
++          META_MONITOR_MANAGER_CAPABILITY_CAN_DERIVE_CURRENT);
+ }
+ 
+ static gboolean
+-- 
+2.33.1
+
+
+From c4038b08d265f9de55087fe629a43382649656a4 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Wed, 27 Nov 2019 19:03:50 +0100
+Subject: [PATCH 8/9] monitor-manager-xrandr: Move dpms state and screen size
+ updating into helpers
+
+To be used by no-Xrandr fallback path.
+---
+ src/backends/x11/meta-gpu-xrandr.c            | 39 +++++++++++++------
+ .../x11/meta-monitor-manager-xrandr.c         | 18 ++++++---
+ 2 files changed, 40 insertions(+), 17 deletions(-)
+
+diff --git a/src/backends/x11/meta-gpu-xrandr.c b/src/backends/x11/meta-gpu-xrandr.c
+index 573df7a90..368ac9402 100644
+--- a/src/backends/x11/meta-gpu-xrandr.c
++++ b/src/backends/x11/meta-gpu-xrandr.c
+@@ -114,6 +114,32 @@ meta_gpu_xrandr_poll_hardware (MetaGpu *gpu)
+   gpu_xrandr->need_hardware_poll = TRUE;
+ }
+ 
++static void
++update_screen_size (MetaGpuXrandr *gpu_xrandr)
++{
++  MetaGpu *gpu = META_GPU (gpu_xrandr);
++  MetaBackend *backend = meta_gpu_get_backend (gpu);
++  MetaMonitorManager *monitor_manager =
++    meta_backend_get_monitor_manager (backend);
++  MetaMonitorManagerXrandr *monitor_manager_xrandr =
++    META_MONITOR_MANAGER_XRANDR (monitor_manager);
++  Display *xdisplay =
++    meta_monitor_manager_xrandr_get_xdisplay (monitor_manager_xrandr);
++  int min_width, min_height;
++  Screen *screen;
++
++  XRRGetScreenSizeRange (xdisplay, DefaultRootWindow (xdisplay),
++                         &min_width,
++                         &min_height,
++                         &gpu_xrandr->max_screen_width,
++                         &gpu_xrandr->max_screen_height);
++
++  screen = ScreenOfDisplay (xdisplay, DefaultScreen (xdisplay));
++  /* This is updated because we called XRRUpdateConfiguration. */
++  monitor_manager->screen_width = WidthOfScreen (screen);
++  monitor_manager->screen_height = HeightOfScreen (screen);
++}
++
+ static gboolean
+ meta_gpu_xrandr_read_current (MetaGpu  *gpu,
+                               GError  **error)
+@@ -130,8 +156,6 @@ meta_gpu_xrandr_read_current (MetaGpu  *gpu,
+   RROutput primary_output;
+   unsigned int i, j;
+   GList *l;
+-  int min_width, min_height;
+-  Screen *screen;
+   GList *outputs = NULL;
+   GList *modes = NULL;
+   GList *crtcs = NULL;
+@@ -140,16 +164,7 @@ meta_gpu_xrandr_read_current (MetaGpu  *gpu,
+     XRRFreeScreenResources (gpu_xrandr->resources);
+   gpu_xrandr->resources = NULL;
+ 
+-  XRRGetScreenSizeRange (xdisplay, DefaultRootWindow (xdisplay),
+-                         &min_width,
+-                         &min_height,
+-                         &gpu_xrandr->max_screen_width,
+-                         &gpu_xrandr->max_screen_height);
+-
+-  screen = ScreenOfDisplay (xdisplay, DefaultScreen (xdisplay));
+-  /* This is updated because we called XRRUpdateConfiguration. */
+-  monitor_manager->screen_width = WidthOfScreen (screen);
+-  monitor_manager->screen_height = HeightOfScreen (screen);
++  update_screen_size (gpu_xrandr);
+ 
+   if (gpu_xrandr->need_hardware_poll)
+     {
+diff --git a/src/backends/x11/meta-monitor-manager-xrandr.c b/src/backends/x11/meta-monitor-manager-xrandr.c
+index 90ccb7405..1b35545a0 100644
+--- a/src/backends/x11/meta-monitor-manager-xrandr.c
++++ b/src/backends/x11/meta-monitor-manager-xrandr.c
+@@ -140,12 +140,9 @@ x11_dpms_state_to_power_save (CARD16 dpms_state)
+ }
+ 
+ static void
+-meta_monitor_manager_xrandr_read_current_state (MetaMonitorManager *manager)
++meta_monitor_manager_xrandr_update_dpms_state (MetaMonitorManagerXrandr *manager_xrandr)
+ {
+-  MetaMonitorManagerXrandr *manager_xrandr =
+-    META_MONITOR_MANAGER_XRANDR (manager);
+-  MetaMonitorManagerClass *parent_class =
+-    META_MONITOR_MANAGER_CLASS (meta_monitor_manager_xrandr_parent_class);
++  MetaMonitorManager *manager = META_MONITOR_MANAGER (manager_xrandr);
+   Display *xdisplay = meta_monitor_manager_xrandr_get_xdisplay (manager_xrandr);
+   BOOL dpms_capable, dpms_enabled;
+   CARD16 dpms_state;
+@@ -161,6 +158,17 @@ meta_monitor_manager_xrandr_read_current_state (MetaMonitorManager *manager)
+     power_save_mode = META_POWER_SAVE_UNSUPPORTED;
+ 
+   meta_monitor_manager_power_save_mode_changed (manager, power_save_mode);
++}
++
++static void
++meta_monitor_manager_xrandr_read_current_state (MetaMonitorManager *manager)
++{
++  MetaMonitorManagerXrandr *manager_xrandr =
++    META_MONITOR_MANAGER_XRANDR (manager);
++  MetaMonitorManagerClass *parent_class =
++    META_MONITOR_MANAGER_CLASS (meta_monitor_manager_xrandr_parent_class);
++
++  meta_monitor_manager_xrandr_update_dpms_state (manager_xrandr);
+ 
+   parent_class->read_current_state (manager);
+ }
+-- 
+2.33.1
+
+
+From 5553d415b2b826764e24f53398ee78fa1b169ba4 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Wed, 3 Oct 2018 10:50:47 +0200
+Subject: [PATCH 9/9] monitor-manager/xrandr: Create dummy screen sized monitor
+ if no RANDR
+
+When there is no RANDR support enabled in the X server, we wont get
+notified of any monitors, resulting in mutter believing we're being
+headless. To get at least something working, although with no way
+configuration ability, lets pretend the whole screen is just a single
+monitor with a single output, crtc and mode.
+---
+ src/backends/x11/meta-gpu-xrandr.c            | 86 +++++++++++++++++++
+ .../x11/meta-monitor-manager-xrandr.c         | 22 ++++-
+ .../x11/meta-monitor-manager-xrandr.h         |  4 +
+ 3 files changed, 111 insertions(+), 1 deletion(-)
+
+diff --git a/src/backends/x11/meta-gpu-xrandr.c b/src/backends/x11/meta-gpu-xrandr.c
+index 368ac9402..48c729b5d 100644
+--- a/src/backends/x11/meta-gpu-xrandr.c
++++ b/src/backends/x11/meta-gpu-xrandr.c
+@@ -140,6 +140,89 @@ update_screen_size (MetaGpuXrandr *gpu_xrandr)
+   monitor_manager->screen_height = HeightOfScreen (screen);
+ }
+ 
++static gboolean
++read_current_fallback (MetaGpuXrandr            *gpu_xrandr,
++                       MetaMonitorManagerXrandr *monitor_manager_xrandr)
++{
++  MetaGpu *gpu = META_GPU (gpu_xrandr);
++  MetaMonitorManager *monitor_manager =
++    META_MONITOR_MANAGER (monitor_manager_xrandr);
++  g_autoptr (MetaCrtcModeInfo) crtc_mode_info = NULL;
++  g_autofree char *mode_name = NULL;
++  MetaCrtcMode *mode;
++  MetaCrtc *crtc;
++  g_autoptr (MetaOutputInfo) output_info = NULL;
++  MetaOutputAssignment output_assignment;
++  MetaOutput *output;
++
++  meta_monitor_manager_xrandr_update_dpms_state (monitor_manager_xrandr);
++  update_screen_size (gpu_xrandr);
++
++  crtc_mode_info = meta_crtc_mode_info_new ();
++  crtc_mode_info->width = monitor_manager->screen_width;
++  crtc_mode_info->height = monitor_manager->screen_height;
++  crtc_mode_info->refresh_rate = 60.0;
++
++  mode_name = g_strdup_printf ("%dx%d",
++                               crtc_mode_info->width,
++                               crtc_mode_info->height);
++  mode = g_object_new (META_TYPE_CRTC_MODE,
++                       "id", 0,
++                       "name", mode_name,
++                       "info", crtc_mode_info,
++                       NULL);
++
++  meta_gpu_take_modes (gpu, g_list_prepend (NULL, mode));
++
++  crtc = g_object_new (META_TYPE_CRTC_XRANDR,
++                       "id", 0,
++                       "gpu", gpu,
++                       NULL);
++  meta_crtc_set_config (crtc,
++                        &(graphene_rect_t) {
++                          .size = {
++                            .width = crtc_mode_info->width, 
++                            .height = crtc_mode_info->width, 
++                          },
++                        },
++                        mode,
++                        META_MONITOR_TRANSFORM_NORMAL);
++
++  meta_gpu_take_crtcs (gpu, g_list_prepend (NULL, crtc));
++
++  output_info = meta_output_info_new ();
++  output_info->name = g_strdup ("X11 Screen");
++  output_info->vendor = g_strdup ("unknown");
++  output_info->product = g_strdup ("unknown");
++  output_info->serial = g_strdup ("unknown");
++  output_info->hotplug_mode_update = TRUE;
++  output_info->suggested_x = -1;
++  output_info->suggested_y = -1;
++  output_info->connector_type = META_CONNECTOR_TYPE_Unknown;
++  output_info->modes = g_new0 (MetaCrtcMode *, 1);
++  output_info->modes[0] = mode;
++  output_info->n_modes = 1;
++  output_info->preferred_mode = mode;
++  output_info->possible_crtcs = g_new0 (MetaCrtc *, 1);
++  output_info->possible_crtcs[0] = crtc;
++  output_info->n_possible_crtcs = 1;
++
++  output = g_object_new (META_TYPE_OUTPUT_XRANDR,
++                         "id", (uint64_t) 0,
++                         "gpu", gpu,
++                         "info", output_info,
++                         NULL);
++
++  output_assignment = (MetaOutputAssignment) {
++    .output = output,
++    .is_primary = TRUE,
++  };
++  meta_output_assign_crtc (output, crtc, &output_assignment);
++  meta_gpu_take_outputs (gpu, g_list_prepend (NULL, output));
++
++  return TRUE;
++}
++
+ static gboolean
+ meta_gpu_xrandr_read_current (MetaGpu  *gpu,
+                               GError  **error)
+@@ -160,6 +243,9 @@ meta_gpu_xrandr_read_current (MetaGpu  *gpu,
+   GList *modes = NULL;
+   GList *crtcs = NULL;
+ 
++  if (!meta_monitor_manager_xrandr_has_randr (monitor_manager_xrandr))
++    return read_current_fallback (gpu_xrandr, monitor_manager_xrandr);
++
+   if (gpu_xrandr->resources)
+     XRRFreeScreenResources (gpu_xrandr->resources);
+   gpu_xrandr->resources = NULL;
+diff --git a/src/backends/x11/meta-monitor-manager-xrandr.c b/src/backends/x11/meta-monitor-manager-xrandr.c
+index 1b35545a0..98eb080b6 100644
+--- a/src/backends/x11/meta-monitor-manager-xrandr.c
++++ b/src/backends/x11/meta-monitor-manager-xrandr.c
+@@ -76,6 +76,7 @@ struct _MetaMonitorManagerXrandr
+   guint logind_watch_id;
+   guint logind_signal_sub_id;
+ 
++  gboolean has_randr;
+   gboolean has_randr15;
+ 
+   xcb_timestamp_t last_xrandr_set_timestamp;
+@@ -108,6 +109,12 @@ meta_monitor_manager_xrandr_get_xdisplay (MetaMonitorManagerXrandr *manager_xran
+   return manager_xrandr->xdisplay;
+ }
+ 
++gboolean
++meta_monitor_manager_xrandr_has_randr (MetaMonitorManagerXrandr *manager_xrandr)
++{
++  return manager_xrandr->has_randr;
++}
++
+ gboolean
+ meta_monitor_manager_xrandr_has_randr15 (MetaMonitorManagerXrandr *manager_xrandr)
+ {
+@@ -139,7 +146,7 @@ x11_dpms_state_to_power_save (CARD16 dpms_state)
+     }
+ }
+ 
+-static void
++void
+ meta_monitor_manager_xrandr_update_dpms_state (MetaMonitorManagerXrandr *manager_xrandr)
+ {
+   MetaMonitorManager *manager = META_MONITOR_MANAGER (manager_xrandr);
+@@ -615,9 +622,18 @@ meta_monitor_manager_xrandr_apply_monitors_config (MetaMonitorManager      *mana
+                                                    MetaMonitorsConfigMethod method,
+                                                    GError                 **error)
+ {
++  MetaMonitorManagerXrandr *manager_xrandr =
++  META_MONITOR_MANAGER_XRANDR (manager);
+   GPtrArray *crtc_assignments;
+   GPtrArray *output_assignments;
+ 
++  if (!manager_xrandr->has_randr)
++    {
++      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
++                   "Tried to change configuration without XRANDR support");
++      return FALSE;
++    }
++
+   if (!config)
+     {
+       if (!manager->in_init)
+@@ -1097,11 +1113,15 @@ meta_monitor_manager_xrandr_constructed (GObject *object)
+ 			  &manager_xrandr->rr_event_base,
+ 			  &manager_xrandr->rr_error_base))
+     {
++      g_warning ("No RANDR support, monitor configuration disabled");
+       return;
+     }
+   else
+     {
+       int major_version, minor_version;
++
++      manager_xrandr->has_randr = TRUE;
++
+       /* We only use ScreenChangeNotify, but GDK uses the others,
+ 	 and we don't want to step on its toes */
+       XRRSelectInput (manager_xrandr->xdisplay,
+diff --git a/src/backends/x11/meta-monitor-manager-xrandr.h b/src/backends/x11/meta-monitor-manager-xrandr.h
+index d55b3d2b8..dc75134a5 100644
+--- a/src/backends/x11/meta-monitor-manager-xrandr.h
++++ b/src/backends/x11/meta-monitor-manager-xrandr.h
+@@ -33,9 +33,13 @@ G_DECLARE_FINAL_TYPE (MetaMonitorManagerXrandr, meta_monitor_manager_xrandr,
+ 
+ Display * meta_monitor_manager_xrandr_get_xdisplay (MetaMonitorManagerXrandr *manager_xrandr);
+ 
++gboolean meta_monitor_manager_xrandr_has_randr (MetaMonitorManagerXrandr *manager_xrandr);
++
+ gboolean meta_monitor_manager_xrandr_has_randr15 (MetaMonitorManagerXrandr *manager_xrandr);
+ 
+ gboolean meta_monitor_manager_xrandr_handle_xevent (MetaMonitorManagerXrandr *manager,
+                                                     XEvent                   *event);
+ 
++void meta_monitor_manager_xrandr_update_dpms_state (MetaMonitorManagerXrandr *manager_xrandr);
++
+ #endif /* META_MONITOR_MANAGER_XRANDR_H */
+-- 
+2.33.1
+

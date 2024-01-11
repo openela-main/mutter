@@ -1,0 +1,260 @@
+From a1f33bdac95ba4fd0599f164ef893c05d8be123b Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Wed, 6 Oct 2021 15:31:30 -0400
+Subject: [PATCH] backends/x11: Fix key repeat of on-screen keyboard for second
+ level keysyms
+
+Certains keys (such as ~ and |) are in the keyboard map behind the
+second shift level. This means in order for them to be input, the
+shift key needs to be held down by the user.
+
+The GNOME Shell on-screen keyboard presents these keys separately on
+a page of keys that has no shift key. Instead, it relies on mutter
+to set a shift latch before the key event is emitted. A shift latch
+is a virtual press of the shift key that automatically gets released
+after the next key press (in our case the ~ or | key).
+
+The problem is using a shift latch doesn't work very well in the face
+of key repeat. The latch is automatically released after the first
+press, and subsequent repeats of that press no longer have shift
+latched to them.
+
+This commit fixes the problem by using a shift lock instead of a shift
+latch. A shift lock is never implicitly released, so it remains
+in place for the duration of key repeat.
+---
+ src/backends/x11/meta-keymap-x11.c               | 12 ++++++------
+ src/backends/x11/meta-keymap-x11.h               |  6 +++---
+ src/backends/x11/meta-virtual-input-device-x11.c |  4 ++--
+ 3 files changed, 11 insertions(+), 11 deletions(-)
+
+diff --git a/src/backends/x11/meta-keymap-x11.c b/src/backends/x11/meta-keymap-x11.c
+index da5d064e7..1192cc387 100644
+--- a/src/backends/x11/meta-keymap-x11.c
++++ b/src/backends/x11/meta-keymap-x11.c
+@@ -829,85 +829,85 @@ meta_keymap_x11_reserve_keycode (MetaKeymapX11 *keymap_x11,
+       g_warning ("Cannot reserve a keycode for keyval %d: no available keycode", keyval);
+       return FALSE;
+     }
+ 
+   if (!meta_keymap_x11_replace_keycode (keymap_x11, *keycode_out, keyval))
+     {
+       g_warning ("Failed to remap keycode %d to keyval %d", *keycode_out, keyval);
+       return FALSE;
+     }
+ 
+   g_hash_table_insert (keymap_x11->reserved_keycodes, GUINT_TO_POINTER (*keycode_out), GUINT_TO_POINTER (keyval));
+   g_queue_remove (keymap_x11->available_keycodes, GUINT_TO_POINTER (*keycode_out));
+ 
+   return TRUE;
+ }
+ 
+ void
+ meta_keymap_x11_release_keycode_if_needed (MetaKeymapX11 *keymap_x11,
+                                            uint32_t       keycode)
+ {
+   g_return_if_fail (META_IS_KEYMAP_X11 (keymap_x11));
+ 
+   if (!g_hash_table_contains (keymap_x11->reserved_keycodes, GUINT_TO_POINTER (keycode)) ||
+       g_queue_index (keymap_x11->available_keycodes, GUINT_TO_POINTER (keycode)) != -1)
+     return;
+ 
+   g_queue_push_tail (keymap_x11->available_keycodes, GUINT_TO_POINTER (keycode));
+ }
+ 
+ void
+-meta_keymap_x11_latch_modifiers (MetaKeymapX11 *keymap_x11,
+-                                 uint32_t       level,
+-                                 gboolean       enable)
++meta_keymap_x11_lock_modifiers (MetaKeymapX11 *keymap_x11,
++                                uint32_t       level,
++                                gboolean       enable)
+ {
+   uint32_t modifiers[] = {
+     0,
+     ShiftMask,
+     keymap_x11->level3_shift_mask,
+     keymap_x11->level3_shift_mask | ShiftMask,
+   };
+   uint32_t value = 0;
+ 
+   if (!keymap_x11->use_xkb)
+     return;
+ 
+   level = CLAMP (level, 0, G_N_ELEMENTS (modifiers) - 1);
+ 
+   if (enable)
+     value = modifiers[level];
+   else
+     value = 0;
+ 
+-  XkbLatchModifiers (clutter_x11_get_default_display (),
+-                     XkbUseCoreKbd, modifiers[level],
+-                     value);
++  XkbLockModifiers (clutter_x11_get_default_display (),
++                    XkbUseCoreKbd, modifiers[level],
++                    value);
+ }
+ 
+ static uint32_t
+ meta_keymap_x11_get_current_group (MetaKeymapX11 *keymap_x11)
+ {
+   XkbStateRec state_rec;
+ 
+   if (keymap_x11->current_group >= 0)
+     return keymap_x11->current_group;
+ 
+   XkbGetState (clutter_x11_get_default_display (),
+                XkbUseCoreKbd, &state_rec);
+   return XkbStateGroup (&state_rec);
+ }
+ 
+ gboolean
+ meta_keymap_x11_keycode_for_keyval (MetaKeymapX11 *keymap_x11,
+                                     uint32_t       keyval,
+                                     uint32_t      *keycode_out,
+                                     uint32_t      *level_out)
+ {
+   ClutterKeymapKey *keys;
+   int i, n_keys, group;
+   gboolean found = FALSE;
+ 
+   g_return_val_if_fail (keycode_out != NULL, FALSE);
+   g_return_val_if_fail (level_out != NULL, FALSE);
+ 
+   group = meta_keymap_x11_get_current_group (keymap_x11);
+ 
+diff --git a/src/backends/x11/meta-keymap-x11.h b/src/backends/x11/meta-keymap-x11.h
+index 67a5f8eb9..2f93acdbc 100644
+--- a/src/backends/x11/meta-keymap-x11.h
++++ b/src/backends/x11/meta-keymap-x11.h
+@@ -17,45 +17,45 @@
+  * Author: Emmanuele Bassi <ebassi@linux.intel.com>
+  */
+ 
+ #ifndef META_KEYMAP_X11_H
+ #define META_KEYMAP_X11_H
+ 
+ #include <glib-object.h>
+ #include <pango/pango.h>
+ 
+ #include "clutter/clutter.h"
+ 
+ G_BEGIN_DECLS
+ 
+ #define META_TYPE_KEYMAP_X11 (meta_keymap_x11_get_type ())
+ G_DECLARE_FINAL_TYPE (MetaKeymapX11, meta_keymap_x11,
+                       META, KEYMAP_X11, ClutterKeymap)
+ 
+ int      meta_keymap_x11_get_key_group       (MetaKeymapX11       *keymap,
+                                               ClutterModifierType  state);
+ int      meta_keymap_x11_translate_key_state (MetaKeymapX11       *keymap,
+                                               guint                hardware_keycode,
+                                               ClutterModifierType *modifier_state_p,
+                                               ClutterModifierType *mods_p);
+ gboolean meta_keymap_x11_get_is_modifier     (MetaKeymapX11       *keymap,
+                                               int                  keycode);
+ 
+ gboolean meta_keymap_x11_keycode_for_keyval       (MetaKeymapX11    *keymap_x11,
+                                                    guint             keyval,
+                                                    guint            *keycode_out,
+                                                    guint            *level_out);
+-void     meta_keymap_x11_latch_modifiers          (MetaKeymapX11 *keymap_x11,
+-                                                   uint32_t          level,
+-                                                   gboolean          enable);
++void     meta_keymap_x11_lock_modifiers           (MetaKeymapX11 *keymap_x11,
++                                                   uint32_t       level,
++                                                   gboolean       enable);
+ gboolean meta_keymap_x11_reserve_keycode           (MetaKeymapX11 *keymap_x11,
+                                                     guint             keyval,
+                                                     guint            *keycode_out);
+ void     meta_keymap_x11_release_keycode_if_needed (MetaKeymapX11 *keymap_x11,
+                                                     guint             keycode);
+ 
+ gboolean meta_keymap_x11_handle_event        (MetaKeymapX11 *keymap_x11,
+                                               XEvent        *xevent);
+ 
+ G_END_DECLS
+ 
+ #endif /* META_KEYMAP_X11_H */
+diff --git a/src/backends/x11/meta-virtual-input-device-x11.c b/src/backends/x11/meta-virtual-input-device-x11.c
+index fe6040859..1a5cdfc2e 100644
+--- a/src/backends/x11/meta-virtual-input-device-x11.c
++++ b/src/backends/x11/meta-virtual-input-device-x11.c
+@@ -159,71 +159,71 @@ meta_virtual_input_device_x11_notify_key (ClutterVirtualInputDevice *virtual_dev
+                                           ClutterKeyState            key_state)
+ {
+   XTestFakeKeyEvent (clutter_x11_get_default_display (),
+                      key + 8, key_state == CLUTTER_KEY_STATE_PRESSED, 0);
+ }
+ 
+ static void
+ meta_virtual_input_device_x11_notify_keyval (ClutterVirtualInputDevice *virtual_device,
+                                              uint64_t                   time_us,
+                                              uint32_t                   keyval,
+                                              ClutterKeyState            key_state)
+ {
+   ClutterBackend *backend = clutter_get_default_backend ();
+   ClutterSeat *seat = clutter_backend_get_default_seat (backend);
+   MetaKeymapX11 *keymap = META_KEYMAP_X11 (clutter_seat_get_keymap (seat));
+   uint32_t keycode, level;
+ 
+   if (!meta_keymap_x11_keycode_for_keyval (keymap, keyval, &keycode, &level))
+     {
+       level = 0;
+ 
+       if (!meta_keymap_x11_reserve_keycode (keymap, keyval, &keycode))
+         {
+           g_warning ("No keycode found for keyval %x in current group", keyval);
+           return;
+         }
+     }
+ 
+   if (!meta_keymap_x11_get_is_modifier (keymap, keycode) &&
+       key_state == CLUTTER_KEY_STATE_PRESSED)
+-    meta_keymap_x11_latch_modifiers (keymap, level, TRUE);
++    meta_keymap_x11_lock_modifiers (keymap, level, TRUE);
+ 
+   XTestFakeKeyEvent (clutter_x11_get_default_display (),
+                      (KeyCode) keycode,
+                      key_state == CLUTTER_KEY_STATE_PRESSED, 0);
+ 
+ 
+   if (key_state == CLUTTER_KEY_STATE_RELEASED)
+     {
+       if (!meta_keymap_x11_get_is_modifier (keymap, keycode))
+-        meta_keymap_x11_latch_modifiers (keymap, level, FALSE);
++        meta_keymap_x11_lock_modifiers (keymap, level, FALSE);
+       meta_keymap_x11_release_keycode_if_needed (keymap, keycode);
+     }
+ }
+ 
+ static void
+ meta_virtual_input_device_x11_notify_touch_down (ClutterVirtualInputDevice *virtual_device,
+                                                  uint64_t                   time_us,
+                                                  int                        device_slot,
+                                                  double                     x,
+                                                  double                     y)
+ {
+   g_warning ("Virtual touch motion not implemented under X11");
+ }
+ 
+ static void
+ meta_virtual_input_device_x11_notify_touch_motion (ClutterVirtualInputDevice *virtual_device,
+                                                    uint64_t                   time_us,
+                                                    int                        device_slot,
+                                                    double                     x,
+                                                    double                     y)
+ {
+   g_warning ("Virtual touch motion not implemented under X11");
+ }
+ 
+ static void
+ meta_virtual_input_device_x11_notify_touch_up (ClutterVirtualInputDevice *virtual_device,
+                                                uint64_t                   time_us,
+                                                int                        device_slot)
+ {
+   g_warning ("Virtual touch motion not implemented under X11");
+-- 
+2.33.1
+
