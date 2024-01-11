@@ -10,7 +10,7 @@
 
 Name:          mutter
 Version:       40.9
-Release:       14%{?dist}
+Release:       15%{?dist}
 Summary:       Window and compositing manager based on Clutter
 
 License:       GPLv2+
@@ -110,6 +110,8 @@ Patch44: 0001-backends-Only-apply-EDID-based-tablet-mapping-heuris.patch
 # Allow starting headless again (#2116363)
 Patch45: 0001-gpu-kms-Report-that-we-can-have-outputs-if-we-have-c.patch
 Patch46: 0001-clutter-text-Don-t-query-preferred-size-without-allo.patch
+
+Patch47: 0001-core-Change-MetaWaylandTextInput-event-forwarding-to.patch
 
 BuildRequires: chrpath
 BuildRequires: pango-devel
@@ -258,6 +260,10 @@ desktop-file-validate %{buildroot}/%{_datadir}/applications/%{name}.desktop
 %{_datadir}/mutter-%{mutter_api_version}/tests
 
 %changelog
+* Mon Jul 10 2023 Carlos Garnacho <cgarnach@redhat.com> - 40.9-15
+- Fix ordering of keyboard modifiers relative to other keyboard events
+  Resolves: #2218146
+
 * Wed Feb 01 2023 Jonas Ådahl <jadahl@redhat.com>) - 40.9-14
 - Allow starting headless again
   Resolves: #2116363
