@@ -1,0 +1,304 @@
+From d366b2bc4e89ed5807f0221afc25e66cb3d289ed Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Wed, 9 Dec 2020 11:23:37 +0100
+Subject: [PATCH 1/2] xwayland: Don't spew warnings when looking for X11
+ displays
+
+It's not important, so only show it when doing MUTTER_DEBUG=wayland.
+Instead report what display numbers were eventually found.
+---
+ src/wayland/meta-xwayland.c | 123 +++++++++++++++++++++++++++---------
+ 1 file changed, 92 insertions(+), 31 deletions(-)
+
+diff --git a/src/wayland/meta-xwayland.c b/src/wayland/meta-xwayland.c
+index 15c85df69..699d5561c 100644
+--- a/src/wayland/meta-xwayland.c
++++ b/src/wayland/meta-xwayland.c
+@@ -146,9 +146,10 @@ meta_xwayland_is_xwayland_surface (MetaWaylandSurface *surface)
+ }
+ 
+ static gboolean
+-try_display (int    display,
+-             char **filename_out,
+-             int   *fd_out)
++try_display (int      display,
++             char   **filename_out,
++             int     *fd_out,
++             GError **error)
+ {
+   gboolean ret = FALSE;
+   char *filename;
+@@ -164,11 +165,32 @@ try_display (int    display,
+       char pid[11];
+       char *end;
+       pid_t other;
++      int read_bytes;
+ 
+       fd = open (filename, O_CLOEXEC, O_RDONLY);
+-      if (fd < 0 || read (fd, pid, 11) != 11)
++      if (fd < 0)
+         {
+-          g_warning ("can't read lock file %s: %m", filename);
++          g_set_error (error, G_IO_ERROR, g_io_error_from_errno (errno),
++                       "Failed to open lock file %s: %s",
++                       filename, g_strerror (errno));
++          goto out;
++        }
++
++      read_bytes = read (fd, pid, 11);
++      if (read_bytes != 11)
++        {
++          if (read_bytes < 0)
++            {
++              g_set_error (error, G_IO_ERROR, g_io_error_from_errno (errno),
++                           "Failed to read lock file %s: %s",
++                           filename, g_strerror (errno));
++            }
++          else
++            {
++              g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
++                           "Failed to read lock file %s",
++                           filename);
++            }
+           goto out;
+         }
+       close (fd);
+@@ -178,7 +200,8 @@ try_display (int    display,
+       other = strtol (pid, &end, 0);
+       if (end != pid + 10)
+         {
+-          g_warning ("can't parse lock file %s", filename);
++          g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
++                       "Can't parse lock file %s", filename);
+           goto out;
+         }
+ 
+@@ -187,18 +210,23 @@ try_display (int    display,
+           /* Process is dead. Try unlinking the lock file and trying again. */
+           if (unlink (filename) < 0)
+             {
+-              g_warning ("failed to unlink stale lock file %s: %m", filename);
++              g_set_error (error, G_IO_ERROR, g_io_error_from_errno (errno),
++                           "Failed to unlink stale lock file %s: %m", filename);
+               goto out;
+             }
+ 
+           goto again;
+         }
+ 
++      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
++                   "Lock file %s already occupied", filename);
+       goto out;
+     }
+   else if (fd < 0)
+     {
+-      g_warning ("failed to create lock file %s: %m", filename);
++      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
++                   "Failed to create lock file %s: %s",
++                   filename, g_strerror (errno));
+       goto out;
+     }
+ 
+@@ -223,24 +251,34 @@ try_display (int    display,
+ }
+ 
+ static char *
+-create_lock_file (int display, int *display_out)
++create_lock_file (int      display,
++                  int     *display_out,
++                  GError **error)
+ {
++  g_autoptr (GError) local_error = NULL;
+   char *filename;
+   int fd;
+-
+   char pid[12];
+   int size;
+   int number_of_tries = 0;
+ 
+-  while (!try_display (display, &filename, &fd))
++  while (!try_display (display, &filename, &fd, &local_error))
+     {
++      meta_verbose ("Failed to open display %d: %s\n",
++                    display, local_error->message);
++      g_clear_error (&local_error);
++
+       display++;
+       number_of_tries++;
+ 
+       /* If we can't get a display after 50 times, then something's wrong. Just
+        * abort in this case. */
+       if (number_of_tries >= 50)
+-        return NULL;
++        {
++          g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
++                       "Tried to bind 50 display numbers, giving up");
++          return NULL;
++        }
+     }
+ 
+   /* Subtle detail: we use the pid of the wayland compositor, not the xserver
+@@ -248,11 +286,22 @@ create_lock_file (int display, int *display_out)
+    * it _would've_ written without either the NUL or the size clamping, hence
+    * the disparity in size. */
+   size = snprintf (pid, 12, "%10d\n", getpid ());
++  errno = 0;
+   if (size != 11 || write (fd, pid, 11) != 11)
+     {
++      if (errno != 0)
++        {
++          g_set_error (error, G_IO_ERROR, g_io_error_from_errno (errno),
++                       "Failed to write pid to lock file: %s",
++                       g_strerror (errno));
++        }
++      else
++        {
++          g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
++                       "Failed to write pid to lock file");
++        }
+       unlink (filename);
+       close (fd);
+-      g_warning ("failed to write pid to lock file %s", filename);
+       g_free (filename);
+       return NULL;
+     }
+@@ -264,8 +313,8 @@ create_lock_file (int display, int *display_out)
+ }
+ 
+ static int
+-bind_to_abstract_socket (int       display,
+-                         gboolean *fatal)
++bind_to_abstract_socket (int        display,
++                         GError   **error)
+ {
+   struct sockaddr_un addr;
+   socklen_t size, name_size;
+@@ -274,8 +323,8 @@ bind_to_abstract_socket (int       display,
+   fd = socket (PF_LOCAL, SOCK_STREAM | SOCK_CLOEXEC, 0);
+   if (fd < 0)
+     {
+-      *fatal = TRUE;
+-      g_warning ("Failed to create socket: %m");
++      g_set_error (error, G_IO_ERROR, g_io_error_from_errno (errno),
++                   "Failed to create socket: %s", g_strerror (errno));
+       return -1;
+     }
+ 
+@@ -285,17 +334,18 @@ bind_to_abstract_socket (int       display,
+   size = offsetof (struct sockaddr_un, sun_path) + name_size;
+   if (bind (fd, (struct sockaddr *) &addr, size) < 0)
+     {
+-      *fatal = errno != EADDRINUSE;
+-      g_warning ("failed to bind to @%s: %m", addr.sun_path + 1);
++      g_set_error (error, G_IO_ERROR, g_io_error_from_errno (errno),
++                   "Failed to bind to @%s: %s",
++                   addr.sun_path + 1, g_strerror (errno));
+       close (fd);
+       return -1;
+     }
+ 
+   if (listen (fd, 1) < 0)
+     {
+-      *fatal = errno != EADDRINUSE;
+-      g_warning ("Failed to listen on abstract socket @%s: %m",
+-                 addr.sun_path + 1);
++      g_set_error (error, G_IO_ERROR, g_io_error_from_errno (errno),
++                   "Failed to listen on abstract socket @%s: %s",
++                   addr.sun_path + 1, g_strerror (errno));
+       close (fd);
+       return -1;
+     }
+@@ -304,7 +354,8 @@ bind_to_abstract_socket (int       display,
+ }
+ 
+ static int
+-bind_to_unix_socket (int display)
++bind_to_unix_socket (int      display,
++                     GError **error)
+ {
+   struct sockaddr_un addr;
+   socklen_t size, name_size;
+@@ -321,13 +372,18 @@ bind_to_unix_socket (int display)
+   unlink (addr.sun_path);
+   if (bind (fd, (struct sockaddr *) &addr, size) < 0)
+     {
+-      g_warning ("failed to bind to %s: %m\n", addr.sun_path);
++      g_set_error (error, G_IO_ERROR, g_io_error_from_errno (errno),
++                   "Failed to bind to %s: %s",
++                   addr.sun_path, g_strerror (errno));
+       close (fd);
+       return -1;
+     }
+ 
+   if (listen (fd, 1) < 0)
+     {
++      g_set_error (error, G_IO_ERROR, g_io_error_from_errno (errno),
++                   "Failed to listen on %s: %s",
++                   addr.sun_path, g_strerror (errno));
+       unlink (addr.sun_path);
+       close (fd);
+       return -1;
+@@ -385,7 +441,6 @@ choose_xdisplay (MetaXWaylandManager *manager)
+ {
+   int display = 0;
+   char *lock_file = NULL;
+-  gboolean fatal = FALSE;
+ 
+   if (display_number_override != -1)
+     display = display_number_override;
+@@ -394,33 +449,37 @@ choose_xdisplay (MetaXWaylandManager *manager)
+ 
+   do
+     {
+-      lock_file = create_lock_file (display, &display);
++      g_autoptr (GError) error = NULL;
++
++      lock_file = create_lock_file (display, &display, &error);
+       if (!lock_file)
+         {
+-          g_warning ("Failed to create an X lock file");
++          g_warning ("Failed to create an X lock file: %s", error->message);
+           return FALSE;
+         }
+ 
+-      manager->abstract_fd = bind_to_abstract_socket (display, &fatal);
++      manager->abstract_fd = bind_to_abstract_socket (display, &error);
+       if (manager->abstract_fd < 0)
+         {
+           unlink (lock_file);
+ 
+-          if (!fatal)
++          if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_ADDRESS_IN_USE))
+             {
++              meta_verbose ("Failed to bind abstract socket: %s\n", error->message);
+               display++;
+               continue;
+             }
+           else
+             {
+-              g_warning ("Failed to bind abstract socket");
++              g_warning ("Failed to bind abstract socket: %s", error->message);
+               return FALSE;
+             }
+         }
+ 
+-      manager->unix_fd = bind_to_unix_socket (display);
++      manager->unix_fd = bind_to_unix_socket (display, &error);
+       if (manager->unix_fd < 0)
+         {
++          meta_verbose ("Failed to bind unix socket: %s\n", error->message);
+           unlink (lock_file);
+           close (manager->abstract_fd);
+           display++;
+@@ -435,6 +494,8 @@ choose_xdisplay (MetaXWaylandManager *manager)
+   manager->display_name = g_strdup_printf (":%d", manager->display_index);
+   manager->lock_file = lock_file;
+ 
++  g_message ("Using X11 display %s for Xwayland", manager->display_name);
++
+   return TRUE;
+ }
+ 
+-- 
+2.29.2
+

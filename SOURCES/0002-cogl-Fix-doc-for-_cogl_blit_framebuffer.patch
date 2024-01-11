@@ -1,0 +1,42 @@
+From 801da0dab1d2928578e9b191ee1684bcc7154081 Mon Sep 17 00:00:00 2001
+From: Pekka Paalanen <pekka.paalanen@collabora.com>
+Date: Tue, 30 Apr 2019 17:01:04 +0300
+Subject: [PATCH 02/12] cogl: Fix doc for _cogl_blit_framebuffer
+
+Commit 38921701e533b7fda38a236cc45aec2ed3afef8a added explicit source and
+destination parameters. Fix the documentation to match.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/615
+
+(cherry picked from commit fc0ce11fcd997af12fc2253eeb37e03cebb5964f)
+---
+ cogl/cogl/cogl-framebuffer-private.h | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/cogl/cogl/cogl-framebuffer-private.h b/cogl/cogl/cogl-framebuffer-private.h
+index 296788c2b..de886b64f 100644
+--- a/cogl/cogl/cogl-framebuffer-private.h
++++ b/cogl/cogl/cogl-framebuffer-private.h
+@@ -4,6 +4,7 @@
+  * A Low Level GPU Graphics and Utilities API
+  *
+  * Copyright (C) 2007,2008,2009 Intel Corporation.
++ * Copyright (C) 2019 DisplayLink (UK) Ltd.
+  *
+  * Permission is hereby granted, free of charge, to any person
+  * obtaining a copy of this software and associated documentation
+@@ -377,9 +378,8 @@ _cogl_push_framebuffers (CoglFramebuffer *draw_buffer,
+  * @width: Width of region to copy
+  * @height: Height of region to copy
+  *
+- * This blits a region of the color buffer of the current draw buffer
+- * to the current read buffer. The draw and read buffers can be set up
+- * using _cogl_push_framebuffers(). This function should only be
++ * This blits a region of the color buffer of the source buffer
++ * to the destination buffer. This function should only be
+  * called if the COGL_PRIVATE_FEATURE_OFFSCREEN_BLIT feature is
+  * advertised. The two buffers must both be offscreen and have the
+  * same format.
+-- 
+2.21.0
+

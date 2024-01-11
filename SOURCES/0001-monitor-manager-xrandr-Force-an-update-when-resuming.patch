@@ -1,0 +1,272 @@
+From 849902beff553de41dd3940b17672ef98f687be5 Mon Sep 17 00:00:00 2001
+From: Rui Matos <tiagomatos@gmail.com>
+Date: Mon, 4 Jun 2018 16:35:04 -0400
+Subject: [PATCH] monitor-manager-xrandr: Force an update when resuming from
+ suspend
+
+The stack below us isn't as reliable as we'd like and in some cases
+doesn't generate RRScreenChangeNotify events when e.g. resuming a
+laptop on a dock, meaning that we'd miss newly attached outputs.
+---
+ src/backends/meta-gpu.c                       |  7 ++
+ src/backends/meta-gpu.h                       |  4 +
+ src/backends/x11/meta-gpu-xrandr.c            | 26 ++++-
+ .../x11/meta-monitor-manager-xrandr.c         | 96 +++++++++++++++++--
+ 4 files changed, 123 insertions(+), 10 deletions(-)
+
+diff --git a/src/backends/meta-gpu.c b/src/backends/meta-gpu.c
+index 3577391e5..946f72387 100644
+--- a/src/backends/meta-gpu.c
++++ b/src/backends/meta-gpu.c
+@@ -64,6 +64,13 @@ meta_gpu_has_hotplug_mode_update (MetaGpu *gpu)
+   return FALSE;
+ }
+ 
++void
++meta_gpu_poll_hardware (MetaGpu *gpu)
++{
++  if (META_GPU_GET_CLASS (gpu)->poll_hardware)
++    META_GPU_GET_CLASS (gpu)->poll_hardware (gpu);
++}
++
+ gboolean
+ meta_gpu_read_current (MetaGpu  *gpu,
+                        GError  **error)
+diff --git a/src/backends/meta-gpu.h b/src/backends/meta-gpu.h
+index 701acdc97..a2fd061f7 100644
+--- a/src/backends/meta-gpu.h
++++ b/src/backends/meta-gpu.h
+@@ -36,8 +36,12 @@ struct _MetaGpuClass
+ 
+   gboolean (* read_current) (MetaGpu  *gpu,
+                              GError  **error);
++  void     (* poll_hardware) (MetaGpu *gpu);
+ };
+ 
++META_EXPORT_TEST
++void meta_gpu_poll_hardware (MetaGpu *gpu);
++
+ META_EXPORT_TEST
+ gboolean meta_gpu_read_current (MetaGpu  *gpu,
+                                 GError  **error);
+diff --git a/src/backends/x11/meta-gpu-xrandr.c b/src/backends/x11/meta-gpu-xrandr.c
+index 3e8a7318d..90b33d486 100644
+--- a/src/backends/x11/meta-gpu-xrandr.c
++++ b/src/backends/x11/meta-gpu-xrandr.c
+@@ -44,6 +44,8 @@ struct _MetaGpuXrandr
+ 
+   int max_screen_width;
+   int max_screen_height;
++
++  gboolean need_hardware_poll;
+ };
+ 
+ G_DEFINE_TYPE (MetaGpuXrandr, meta_gpu_xrandr, META_TYPE_GPU)
+@@ -81,6 +83,14 @@ get_xmode_name (XRRModeInfo *xmode)
+   return g_strdup_printf ("%dx%d", width, height);
+ }
+ 
++static void
++meta_gpu_xrandr_poll_hardware (MetaGpu *gpu)
++{
++  MetaGpuXrandr *gpu_xrandr = META_GPU_XRANDR (gpu);
++
++  gpu_xrandr->need_hardware_poll = TRUE;
++}
++
+ static gboolean
+ meta_gpu_xrandr_read_current (MetaGpu  *gpu,
+                               GError  **error)
+@@ -116,8 +126,18 @@ meta_gpu_xrandr_read_current (MetaGpu  *gpu,
+   monitor_manager->screen_width = WidthOfScreen (screen);
+   monitor_manager->screen_height = HeightOfScreen (screen);
+ 
+-  resources = XRRGetScreenResourcesCurrent (xdisplay,
+-                                            DefaultRootWindow (xdisplay));
++  if (gpu_xrandr->need_hardware_poll)
++    {
++      resources = XRRGetScreenResources (xdisplay,
++                                         DefaultRootWindow (xdisplay));
++      gpu_xrandr->need_hardware_poll = FALSE;
++    }
++  else
++    {
++      resources = XRRGetScreenResourcesCurrent (xdisplay,
++                                                DefaultRootWindow (xdisplay));
++    }
++
+   if (!resources)
+     {
+       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+@@ -250,6 +270,7 @@ meta_gpu_xrandr_finalize (GObject *object)
+ static void
+ meta_gpu_xrandr_init (MetaGpuXrandr *gpu_xrandr)
+ {
++  gpu_xrandr->need_hardware_poll = TRUE;
+ }
+ 
+ static void
+@@ -261,4 +282,5 @@ meta_gpu_xrandr_class_init (MetaGpuXrandrClass *klass)
+   object_class->finalize = meta_gpu_xrandr_finalize;
+ 
+   gpu_class->read_current = meta_gpu_xrandr_read_current;
++  gpu_class->poll_hardware = meta_gpu_xrandr_poll_hardware;
+ }
+diff --git a/src/backends/x11/meta-monitor-manager-xrandr.c b/src/backends/x11/meta-monitor-manager-xrandr.c
+index 448e51fae..d60f00325 100644
+--- a/src/backends/x11/meta-monitor-manager-xrandr.c
++++ b/src/backends/x11/meta-monitor-manager-xrandr.c
+@@ -71,6 +71,10 @@ struct _MetaMonitorManagerXrandr
+   Display *xdisplay;
+   int rr_event_base;
+   int rr_error_base;
++
++  guint logind_watch_id;
++  guint logind_signal_sub_id;
++
+   gboolean has_randr15;
+ 
+   /*
+@@ -102,6 +106,8 @@ typedef struct _MetaMonitorXrandrData
+ 
+ GQuark quark_meta_monitor_xrandr_data;
+ 
++static void meta_monitor_manager_xrandr_update (MetaMonitorManagerXrandr *manager_xrandr);
++
+ Display *
+ meta_monitor_manager_xrandr_get_xdisplay (MetaMonitorManagerXrandr *manager_xrandr)
+ {
+@@ -1016,6 +1022,62 @@ meta_monitor_manager_xrandr_get_default_layout_mode (MetaMonitorManager *manager
+   return META_LOGICAL_MONITOR_LAYOUT_MODE_PHYSICAL;
+ }
+ 
++static void
++logind_signal_handler (GDBusConnection *connection,
++                       const gchar     *sender_name,
++                       const gchar     *object_path,
++                       const gchar     *interface_name,
++                       const gchar     *signal_name,
++                       GVariant        *parameters,
++                       gpointer         user_data)
++{
++  MetaMonitorManagerXrandr *manager_xrandr = user_data;
++  gboolean suspending;
++
++  if (!g_str_equal (signal_name, "PrepareForSleep"))
++    return;
++
++  g_variant_get (parameters, "(b)", &suspending);
++  if (!suspending)
++    {
++      meta_gpu_poll_hardware (manager_xrandr->gpu);
++      meta_monitor_manager_xrandr_update (manager_xrandr);
++    }
++}
++
++static void
++logind_appeared (GDBusConnection *connection,
++                 const gchar     *name,
++                 const gchar     *name_owner,
++                 gpointer         user_data)
++{
++  MetaMonitorManagerXrandr *manager_xrandr = user_data;
++
++  manager_xrandr->logind_signal_sub_id = g_dbus_connection_signal_subscribe (connection,
++                                                                             "org.freedesktop.login1",
++                                                                             "org.freedesktop.login1.Manager",
++                                                                             "PrepareForSleep",
++                                                                             "/org/freedesktop/login1",
++                                                                             NULL,
++                                                                             G_DBUS_SIGNAL_FLAGS_NONE,
++                                                                             logind_signal_handler,
++                                                                             manager_xrandr,
++                                                                             NULL);
++}
++
++static void
++logind_vanished (GDBusConnection *connection,
++                 const gchar     *name,
++                 gpointer         user_data)
++{
++  MetaMonitorManagerXrandr *manager_xrandr = user_data;
++
++  if (connection && manager_xrandr->logind_signal_sub_id > 0)
++    g_dbus_connection_signal_unsubscribe (connection, manager_xrandr->logind_signal_sub_id);
++
++  manager_xrandr->logind_signal_sub_id = 0;
++}
++
+ static void
+ meta_monitor_manager_xrandr_constructed (GObject *object)
+ {
+@@ -1072,12 +1134,23 @@ meta_monitor_manager_xrandr_finalize (GObject *object)
+   g_hash_table_destroy (manager_xrandr->tiled_monitor_atoms);
+   g_free (manager_xrandr->supported_scales);
+ 
++  if (manager_xrandr->logind_watch_id > 0)
++    g_bus_unwatch_name (manager_xrandr->logind_watch_id);
++  manager_xrandr->logind_watch_id = 0;
++
+   G_OBJECT_CLASS (meta_monitor_manager_xrandr_parent_class)->finalize (object);
+ }
+ 
+ static void
+ meta_monitor_manager_xrandr_init (MetaMonitorManagerXrandr *manager_xrandr)
+ {
++  manager_xrandr->logind_watch_id = g_bus_watch_name (G_BUS_TYPE_SYSTEM,
++                                                      "org.freedesktop.login1",
++                                                      G_BUS_NAME_WATCHER_FLAGS_NONE,
++                                                      logind_appeared,
++                                                      logind_vanished,
++                                                      manager_xrandr,
++                                                      NULL);
+ }
+ 
+ static void
+@@ -1123,9 +1196,8 @@ is_xvnc (MetaMonitorManager *manager)
+   return FALSE;
+ }
+ 
+-gboolean
+-meta_monitor_manager_xrandr_handle_xevent (MetaMonitorManagerXrandr *manager_xrandr,
+-					   XEvent                   *event)
++static void
++meta_monitor_manager_xrandr_update (MetaMonitorManagerXrandr *manager_xrandr)
+ {
+   MetaMonitorManager *manager = META_MONITOR_MANAGER (manager_xrandr);
+   MetaGpuXrandr *gpu_xrandr;
+@@ -1134,11 +1206,6 @@ meta_monitor_manager_xrandr_handle_xevent (MetaMonitorManagerXrandr *manager_xra
+   gboolean is_our_configuration;
+   unsigned int timestamp;
+ 
+-  if ((event->type - manager_xrandr->rr_event_base) != RRScreenChangeNotify)
+-    return FALSE;
+-
+-  XRRUpdateConfiguration (event);
+-
+   meta_monitor_manager_read_current_state (manager);
+ 
+   gpu_xrandr = META_GPU_XRANDR (manager_xrandr->gpu);
+@@ -1173,6 +1240,19 @@ meta_monitor_manager_xrandr_handle_xevent (MetaMonitorManagerXrandr *manager_xra
+ 
+       meta_monitor_manager_xrandr_rebuild_derived (manager, config);
+     }
++}
++
++gboolean
++meta_monitor_manager_xrandr_handle_xevent (MetaMonitorManagerXrandr *manager_xrandr,
++					   XEvent                   *event)
++{
++
++  if ((event->type - manager_xrandr->rr_event_base) != RRScreenChangeNotify)
++    return FALSE;
++
++  XRRUpdateConfiguration (event);
++
++  meta_monitor_manager_xrandr_update (manager_xrandr);
+ 
+   return TRUE;
+ }
+-- 
+2.21.0
+

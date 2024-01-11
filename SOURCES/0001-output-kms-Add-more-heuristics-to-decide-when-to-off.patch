@@ -1,0 +1,81 @@
+From cf16c0d16b42215f35dcede6163235ad5ec1734b Mon Sep 17 00:00:00 2001
+From: Mario Limonciello <mario.limonciello@amd.com>
+Date: Thu, 18 Aug 2022 13:36:20 -0500
+Subject: [PATCH] output/kms: Add more heuristics to decide when to offer
+ fallback modes
+
+If the panel is connected via eDP and supports more than one mode
+at different resolutions don't try to add more.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/2586>
+(cherry picked from commit 96aa0fb8536eca579ceb1b17d83e19cf9e3e9e81)
+---
+ src/backends/native/meta-output-kms.c | 45 ++++++++++++++++++++++-----
+ 1 file changed, 38 insertions(+), 7 deletions(-)
+
+diff --git a/src/backends/native/meta-output-kms.c b/src/backends/native/meta-output-kms.c
+index f3cc543c4d..44c25c5648 100644
+--- a/src/backends/native/meta-output-kms.c
++++ b/src/backends/native/meta-output-kms.c
+@@ -505,6 +505,43 @@ compare_modes (const void *one,
+   return g_strcmp0 (b->name, a->name);
+ }
+ 
++static gboolean
++are_all_modes_equally_sized (MetaOutput *output)
++{
++  MetaCrtcMode *base = output->modes[0];
++  int i;
++
++  for (i = 1; i < output->n_modes; i++)
++    {
++      MetaCrtcMode *crtc_mode = output->modes[i];
++
++      if (base->width != crtc_mode->width ||
++          base->height != crtc_mode->height)
++        return FALSE;
++    }
++
++  return TRUE;
++}
++
++static void
++maybe_add_fallback_modes (MetaOutput *output,
++                          MetaGpuKms *gpu_kms)
++{
++  MetaOutputKms *output_kms = output->driver_private;
++
++  if (!output_kms->has_scaling)
++    return;
++
++  if (output->n_modes == 0)
++    return;
++
++  if (output_kms->connector->connector_type == DRM_MODE_CONNECTOR_eDP &&
++      !are_all_modes_equally_sized (output))
++    return;
++
++  add_common_modes (output, gpu_kms);
++}
++
+ static gboolean
+ init_output_modes (MetaOutput  *output,
+                    MetaGpuKms  *gpu_kms,
+@@ -528,13 +565,7 @@ init_output_modes (MetaOutput  *output,
+         output->preferred_mode = output->modes[i];
+     }
+ 
+-  /* FIXME: MSC feature bit? */
+-  /* Presume that if the output supports scaling, then we have
+-   * a panel fitter capable of adjusting any mode to suit.
+-   */
+-  if (output_kms->has_scaling)
+-    add_common_modes (output, gpu_kms);
+-
++  maybe_add_fallback_modes (output, gpu_kms);
+   if (!output->modes)
+     {
+       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+-- 
+2.37.1
+

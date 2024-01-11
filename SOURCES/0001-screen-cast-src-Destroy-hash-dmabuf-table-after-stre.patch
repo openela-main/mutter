@@ -1,0 +1,40 @@
+From b32ae04c122f4f76ffad296c15ba00a13800db57 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Tue, 2 Jun 2020 16:33:05 +0000
+Subject: [PATCH 1/2] screen-cast-src: Destroy hash dmabuf table after stream
+
+The stream will clean up the buffers, so let it do that before we
+destroy them under its feet. Note that it'll only do this after the
+following PipeWire commit:
+
+    commit fbaa4ddedd84afdffca16f090dcc4b0db8ccfc29
+    Author: Wim Taymans <wtaymans@redhat.com>
+    Date:   Mon Jun 1 15:36:09 2020 +0200
+
+        stream: allow NULL param and 0 buffers in disconnect
+
+https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/1283
+
+
+(cherry picked from commit 97175f8fa14171606ecb95d0bf107ef8b2d71b74)
+---
+ src/backends/meta-screen-cast-stream-src.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/backends/meta-screen-cast-stream-src.c b/src/backends/meta-screen-cast-stream-src.c
+index 0500bfec5..ff4af440c 100644
+--- a/src/backends/meta-screen-cast-stream-src.c
++++ b/src/backends/meta-screen-cast-stream-src.c
+@@ -988,8 +988,8 @@ meta_screen_cast_stream_src_finalize (GObject *object)
+   if (meta_screen_cast_stream_src_is_enabled (src))
+     meta_screen_cast_stream_src_disable (src);
+ 
+-  g_clear_pointer (&priv->dmabuf_handles, g_hash_table_destroy);
+   g_clear_pointer (&priv->pipewire_stream, pw_stream_destroy);
++  g_clear_pointer (&priv->dmabuf_handles, g_hash_table_destroy);
+   g_clear_pointer (&priv->pipewire_core, pw_core_disconnect);
+   g_clear_pointer (&priv->pipewire_context, pw_context_destroy);
+   g_source_destroy (&priv->pipewire_source->base);
+-- 
+2.26.2
+

@@ -1,0 +1,115 @@
+From 579c85d17b17fc7ad3d6c88af39932ce8faeaabe Mon Sep 17 00:00:00 2001
+From: Pekka Paalanen <pekka.paalanen@collabora.com>
+Date: Mon, 6 May 2019 15:58:33 +0300
+Subject: [PATCH 06/12] cogl: Rename feature OFFSCREEN_BLIT to BLIT_FRAMEBUFFER
+
+The feature is not limited to offscreen framebuffer blits anymore since
+"cogl: Allow glBlitFramebuffer between onscreen/offscreen".
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/615
+
+(cherry picked from commit 55c084e6e1059d8f94c699b01c408523ed504196)
+---
+ cogl/cogl/cogl-blit.c                       | 2 +-
+ cogl/cogl/cogl-framebuffer-private.h        | 2 +-
+ cogl/cogl/cogl-framebuffer.c                | 2 +-
+ cogl/cogl/cogl-private.h                    | 2 +-
+ cogl/cogl/driver/gl/cogl-framebuffer-gl.c   | 2 +-
+ cogl/cogl/driver/gl/gl/cogl-driver-gl.c     | 2 +-
+ cogl/cogl/driver/gl/gles/cogl-driver-gles.c | 2 +-
+ 7 files changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/cogl/cogl/cogl-blit.c b/cogl/cogl/cogl-blit.c
+index a61eb66d2..c561b2e45 100644
+--- a/cogl/cogl/cogl-blit.c
++++ b/cogl/cogl/cogl-blit.c
+@@ -158,7 +158,7 @@ _cogl_blit_framebuffer_begin (CoglBlitData *data)
+      supported. */
+   if ((_cogl_texture_get_format (data->src_tex) & COGL_PREMULT_BIT) !=
+       (_cogl_texture_get_format (data->dst_tex) & COGL_PREMULT_BIT) ||
+-      !_cogl_has_private_feature (ctx, COGL_PRIVATE_FEATURE_OFFSCREEN_BLIT))
++      !_cogl_has_private_feature (ctx, COGL_PRIVATE_FEATURE_BLIT_FRAMEBUFFER))
+     return FALSE;
+ 
+   dst_offscreen = _cogl_offscreen_new_with_texture_full
+diff --git a/cogl/cogl/cogl-framebuffer-private.h b/cogl/cogl/cogl-framebuffer-private.h
+index f68153d8b..cb1f87354 100644
+--- a/cogl/cogl/cogl-framebuffer-private.h
++++ b/cogl/cogl/cogl-framebuffer-private.h
+@@ -380,7 +380,7 @@ _cogl_push_framebuffers (CoglFramebuffer *draw_buffer,
+  *
+  * This blits a region of the color buffer of the source buffer
+  * to the destination buffer. This function should only be
+- * called if the COGL_PRIVATE_FEATURE_OFFSCREEN_BLIT feature is
++ * called if the COGL_PRIVATE_FEATURE_BLIT_FRAMEBUFFER feature is
+  * advertised.
+  *
+  * The source and destination rectangles are defined in offscreen
+diff --git a/cogl/cogl/cogl-framebuffer.c b/cogl/cogl/cogl-framebuffer.c
+index 90976a611..5cc4eada4 100644
+--- a/cogl/cogl/cogl-framebuffer.c
++++ b/cogl/cogl/cogl-framebuffer.c
+@@ -1464,7 +1464,7 @@ _cogl_blit_framebuffer (CoglFramebuffer *src,
+   int dst_x1, dst_y1, dst_x2, dst_y2;
+ 
+   _COGL_RETURN_IF_FAIL (_cogl_has_private_feature
+-                        (ctx, COGL_PRIVATE_FEATURE_OFFSCREEN_BLIT));
++                        (ctx, COGL_PRIVATE_FEATURE_BLIT_FRAMEBUFFER));
+ 
+   /* The buffers must use the same premult convention */
+   _COGL_RETURN_IF_FAIL ((src->internal_format & COGL_PREMULT_BIT) ==
+diff --git a/cogl/cogl/cogl-private.h b/cogl/cogl/cogl-private.h
+index 9f918b851..d9fbe68c7 100644
+--- a/cogl/cogl/cogl-private.h
++++ b/cogl/cogl/cogl-private.h
+@@ -42,7 +42,7 @@ typedef enum
+ {
+   COGL_PRIVATE_FEATURE_TEXTURE_2D_FROM_EGL_IMAGE,
+   COGL_PRIVATE_FEATURE_MESA_PACK_INVERT,
+-  COGL_PRIVATE_FEATURE_OFFSCREEN_BLIT,
++  COGL_PRIVATE_FEATURE_BLIT_FRAMEBUFFER,
+   COGL_PRIVATE_FEATURE_FOUR_CLIP_PLANES,
+   COGL_PRIVATE_FEATURE_PBOS,
+   COGL_PRIVATE_FEATURE_VBOS,
+diff --git a/cogl/cogl/driver/gl/cogl-framebuffer-gl.c b/cogl/cogl/driver/gl/cogl-framebuffer-gl.c
+index 83e1d263a..90d08954d 100644
+--- a/cogl/cogl/driver/gl/cogl-framebuffer-gl.c
++++ b/cogl/cogl/driver/gl/cogl-framebuffer-gl.c
+@@ -402,7 +402,7 @@ _cogl_framebuffer_gl_flush_state (CoglFramebuffer *draw_buffer,
+           /* NB: Currently we only take advantage of binding separate
+            * read/write buffers for framebuffer blit purposes. */
+           _COGL_RETURN_IF_FAIL (_cogl_has_private_feature
+-                                (ctx, COGL_PRIVATE_FEATURE_OFFSCREEN_BLIT));
++                                (ctx, COGL_PRIVATE_FEATURE_BLIT_FRAMEBUFFER));
+ 
+           _cogl_framebuffer_gl_bind (draw_buffer, GL_DRAW_FRAMEBUFFER);
+           _cogl_framebuffer_gl_bind (read_buffer, GL_READ_FRAMEBUFFER);
+diff --git a/cogl/cogl/driver/gl/gl/cogl-driver-gl.c b/cogl/cogl/driver/gl/gl/cogl-driver-gl.c
+index 4d46844d5..e06e27961 100644
+--- a/cogl/cogl/driver/gl/gl/cogl-driver-gl.c
++++ b/cogl/cogl/driver/gl/gl/cogl-driver-gl.c
+@@ -467,7 +467,7 @@ _cogl_driver_update_features (CoglContext *ctx,
+ 
+   if (ctx->glBlitFramebuffer)
+     COGL_FLAGS_SET (private_features,
+-                    COGL_PRIVATE_FEATURE_OFFSCREEN_BLIT, TRUE);
++                    COGL_PRIVATE_FEATURE_BLIT_FRAMEBUFFER, TRUE);
+ 
+   if (ctx->glRenderbufferStorageMultisampleIMG)
+     {
+diff --git a/cogl/cogl/driver/gl/gles/cogl-driver-gles.c b/cogl/cogl/driver/gl/gles/cogl-driver-gles.c
+index 23158d5c7..bcb0bdf07 100644
+--- a/cogl/cogl/driver/gl/gles/cogl-driver-gles.c
++++ b/cogl/cogl/driver/gl/gles/cogl-driver-gles.c
+@@ -326,7 +326,7 @@ _cogl_driver_update_features (CoglContext *context,
+ 
+   if (context->glBlitFramebuffer)
+     COGL_FLAGS_SET (private_features,
+-                    COGL_PRIVATE_FEATURE_OFFSCREEN_BLIT, TRUE);
++                    COGL_PRIVATE_FEATURE_BLIT_FRAMEBUFFER, TRUE);
+ 
+   if (_cogl_check_extension ("GL_OES_element_index_uint", gl_extensions))
+     {
+-- 
+2.21.0
+

@@ -1,0 +1,53 @@
+From 4c1c3541efa37acf3a03822289a8ab8705cbbc4e Mon Sep 17 00:00:00 2001
+From: Christian Hergert <chergert@redhat.com>
+Date: Sun, 23 Feb 2020 17:27:08 -0800
+Subject: [PATCH 1/3] clutter: avoid redundant _clutter_paint_node_init_types()
+
+This only needs to be initialized once but is in the hot path of creating
+new paint nodes (for which we create many). Instead, do this as part of
+the clutter_init() workflow to keep it out of the hot path.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/1087
+---
+ clutter/clutter/clutter-main.c       | 4 ++++
+ clutter/clutter/clutter-paint-node.c | 2 --
+ 2 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/clutter/clutter/clutter-main.c b/clutter/clutter/clutter-main.c
+index 71ec0d80c..645c8bceb 100644
+--- a/clutter/clutter/clutter-main.c
++++ b/clutter/clutter/clutter-main.c
+@@ -61,6 +61,7 @@
+ #include "clutter-main.h"
+ #include "clutter-master-clock.h"
+ #include "clutter-mutter.h"
++#include "clutter-paint-node-private.h"
+ #include "clutter-private.h"
+ #include "clutter-settings-private.h"
+ #include "clutter-stage-manager.h"
+@@ -1366,6 +1367,9 @@ clutter_init_real (GError **error)
+   if (clutter_enable_accessibility)
+     cally_accessibility_init ();
+ 
++  /* Initialize types required for paint nodes */
++  _clutter_paint_node_init_types ();
++
+   return CLUTTER_INIT_SUCCESS;
+ }
+ 
+diff --git a/clutter/clutter/clutter-paint-node.c b/clutter/clutter/clutter-paint-node.c
+index e731ca60a..73765a4e9 100644
+--- a/clutter/clutter/clutter-paint-node.c
++++ b/clutter/clutter/clutter-paint-node.c
+@@ -1177,8 +1177,6 @@ _clutter_paint_node_create (GType gtype)
+ {
+   g_return_val_if_fail (g_type_is_a (gtype, CLUTTER_TYPE_PAINT_NODE), NULL);
+ 
+-  _clutter_paint_node_init_types ();
+-
+   return (gpointer) g_type_create_instance (gtype);
+ }
+ 
+-- 
+2.26.0
+

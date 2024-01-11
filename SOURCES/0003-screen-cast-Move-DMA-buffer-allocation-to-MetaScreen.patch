@@ -1,0 +1,108 @@
+From 914fd2bec65c2e9928b03d5bc94930bc0151f998 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Wed, 17 Jun 2020 17:48:05 +0200
+Subject: [PATCH 3/4] screen-cast: Move DMA buffer allocation to MetaScreenCast
+
+The aim with centralizing it is to be able to apply global policy to DMA
+buffer allocations, e.g. disabling due to various hueristics.
+
+https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/1318
+---
+ src/backends/meta-screen-cast-stream-src.c | 18 ++++++--------
+ src/backends/meta-screen-cast.c            | 28 ++++++++++++++++++++++
+ src/backends/meta-screen-cast.h            |  4 ++++
+ 3 files changed, 39 insertions(+), 11 deletions(-)
+
+diff --git a/src/backends/meta-screen-cast-stream-src.c b/src/backends/meta-screen-cast-stream-src.c
+index ff4af440c1..b77186415f 100644
+--- a/src/backends/meta-screen-cast-stream-src.c
++++ b/src/backends/meta-screen-cast-stream-src.c
+@@ -649,10 +649,10 @@ on_stream_add_buffer (void             *data,
+   MetaScreenCastStreamSrc *src = data;
+   MetaScreenCastStreamSrcPrivate *priv =
+     meta_screen_cast_stream_src_get_instance_private (src);
+-  CoglContext *context =
+-    clutter_backend_get_cogl_context (clutter_get_default_backend ());
+-  CoglRenderer *renderer = cogl_context_get_renderer (context);
+-  g_autoptr (GError) error = NULL;
++  MetaScreenCastStream *stream = meta_screen_cast_stream_src_get_stream (src);
++  MetaScreenCastSession *session = meta_screen_cast_stream_get_session (stream);
++  MetaScreenCast *screen_cast =
++    meta_screen_cast_session_get_screen_cast (session);
+   CoglDmaBufHandle *dmabuf_handle;
+   struct spa_buffer *spa_buffer = buffer->buffer;
+   struct spa_data *spa_data = spa_buffer->datas;
+@@ -664,13 +664,9 @@ on_stream_add_buffer (void             *data,
+   spa_data[0].mapoffset = 0;
+   spa_data[0].maxsize = stride * priv->video_format.size.height;
+ 
+-  dmabuf_handle = cogl_renderer_create_dma_buf (renderer,
+-                                                priv->stream_width,
+-                                                priv->stream_height,
+-                                                &error);
+-
+-  if (error)
+-    g_debug ("Error exporting DMA buffer handle: %s", error->message);
++  dmabuf_handle = meta_screen_cast_create_dma_buf_handle (screen_cast,
++                                                          priv->stream_width,
++                                                          priv->stream_height);
+ 
+   if (dmabuf_handle)
+     {
+diff --git a/src/backends/meta-screen-cast.c b/src/backends/meta-screen-cast.c
+index 46bc268389..5f1ca8b5ca 100644
+--- a/src/backends/meta-screen-cast.c
++++ b/src/backends/meta-screen-cast.c
+@@ -94,6 +94,34 @@ meta_screen_cast_get_backend (MetaScreenCast *screen_cast)
+   return screen_cast->backend;
+ }
+ 
++CoglDmaBufHandle *
++meta_screen_cast_create_dma_buf_handle (MetaScreenCast *screen_cast,
++                                        int             width,
++                                        int             height)
++{
++  ClutterBackend *clutter_backend =
++    meta_backend_get_clutter_backend (screen_cast->backend);
++  CoglContext *cogl_context =
++    clutter_backend_get_cogl_context (clutter_backend);
++  CoglRenderer *cogl_renderer = cogl_context_get_renderer (cogl_context);
++  g_autoptr (GError) error = NULL;
++  CoglDmaBufHandle *dmabuf_handle;
++
++  dmabuf_handle = cogl_renderer_create_dma_buf (cogl_renderer,
++                                                width, height,
++                                                &error);
++  if (!dmabuf_handle)
++    {
++      g_warning ("Failed to allocate DMA buffer, "
++                 "disabling DMA buffer based screen casting: %s",
++                 error->message);
++      screen_cast->disable_dma_bufs = TRUE;
++      return NULL;
++    }
++
++  return dmabuf_handle;
++}
++
+ static gboolean
+ register_remote_desktop_screen_cast_session (MetaScreenCastSession  *session,
+                                              const char             *remote_desktop_session_id,
+diff --git a/src/backends/meta-screen-cast.h b/src/backends/meta-screen-cast.h
+index a3b650cd80..fb5a38f34f 100644
+--- a/src/backends/meta-screen-cast.h
++++ b/src/backends/meta-screen-cast.h
+@@ -50,6 +50,10 @@ GDBusConnection * meta_screen_cast_get_connection (MetaScreenCast *screen_cast);
+ 
+ MetaBackend * meta_screen_cast_get_backend (MetaScreenCast *screen_cast);
+ 
++CoglDmaBufHandle * meta_screen_cast_create_dma_buf_handle (MetaScreenCast *screen_cast,
++                                                           int             width,
++                                                           int             height);
++
+ MetaScreenCast * meta_screen_cast_new (MetaBackend            *backend,
+                                        MetaDbusSessionWatcher *session_watcher);
+ 
+-- 
+2.26.2
+

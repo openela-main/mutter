@@ -1,0 +1,28 @@
+From d9d355bfd8ecfb7dcf65a3810ec30e12f12673ab Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Mon, 24 Feb 2020 16:09:59 +0100
+Subject: [PATCH] Revert "MetaMonitorManager: ignore hotplug_mode_update at
+ startup"
+
+This reverts commit 183f4b0c13f3dc9565bf5f693f2e5d61ca0199c9.
+---
+ src/backends/meta-monitor-manager.c | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/src/backends/meta-monitor-manager.c b/src/backends/meta-monitor-manager.c
+index 076dca8cb..0adf2100d 100644
+--- a/src/backends/meta-monitor-manager.c
++++ b/src/backends/meta-monitor-manager.c
+@@ -527,8 +527,7 @@ meta_monitor_manager_has_hotplug_mode_update (MetaMonitorManager *manager)
+ static gboolean
+ should_use_stored_config (MetaMonitorManager *manager)
+ {
+-  return (manager->in_init ||
+-          !meta_monitor_manager_has_hotplug_mode_update (manager));
++  return !meta_monitor_manager_has_hotplug_mode_update (manager);
+ }
+ 
+ static gboolean
+-- 
+2.24.1
+

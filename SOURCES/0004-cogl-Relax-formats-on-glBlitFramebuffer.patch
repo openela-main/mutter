@@ -1,0 +1,100 @@
+From 6c6c6ad5412f5bb13592630d7cb3b7aed25d159b Mon Sep 17 00:00:00 2001
+From: Pekka Paalanen <pekka.paalanen@collabora.com>
+Date: Mon, 6 May 2019 14:09:16 +0300
+Subject: [PATCH 04/12] cogl: Relax formats on glBlitFramebuffer
+
+Depends on: "cogl: Replace ANGLE with GLES3 and NV framebuffer_blit"
+
+As a possible ANGLE implementation is not longer limiting the pixel format
+matching, lift the requirement of having the same pixel format.
+
+We still cannot do a premult <-> non-premult conversion during a blit, so guard
+against that.
+
+This will be useful in follow-up work to copy from onscreen primary GPU
+framebuffer to an offscreen secondary GPU framebuffer if the formats do not
+match exactly.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/615
+
+(cherry picked from commit 6df34eb4b7c65210f4066f7eb9bd462278b7279b)
+---
+ cogl/cogl/cogl-blit.c                | 10 ++++++----
+ cogl/cogl/cogl-framebuffer-private.h |  8 ++++++--
+ cogl/cogl/cogl-framebuffer.c         |  6 ++++--
+ 3 files changed, 16 insertions(+), 8 deletions(-)
+
+diff --git a/cogl/cogl/cogl-blit.c b/cogl/cogl/cogl-blit.c
+index 74f404f3d..a61eb66d2 100644
+--- a/cogl/cogl/cogl-blit.c
++++ b/cogl/cogl/cogl-blit.c
+@@ -4,6 +4,7 @@
+  * A Low Level GPU Graphics and Utilities API
+  *
+  * Copyright (C) 2011 Intel Corporation.
++ * Copyright (C) 2019 DisplayLink (UK) Ltd.
+  *
+  * Permission is hereby granted, free of charge, to any person
+  * obtaining a copy of this software and associated documentation
+@@ -152,10 +153,11 @@ _cogl_blit_framebuffer_begin (CoglBlitData *data)
+   CoglFramebuffer *dst_fb, *src_fb;
+   CoglError *ignore_error = NULL;
+ 
+-  /* We can only blit between FBOs if both textures are the same
+-     format and the blit framebuffer extension is supported */
+-  if ((_cogl_texture_get_format (data->src_tex) & ~COGL_A_BIT) !=
+-      (_cogl_texture_get_format (data->dst_tex) & ~COGL_A_BIT) ||
++  /* We can only blit between FBOs if both textures have the same
++     premult convention and the blit framebuffer extension is
++     supported. */
++  if ((_cogl_texture_get_format (data->src_tex) & COGL_PREMULT_BIT) !=
++      (_cogl_texture_get_format (data->dst_tex) & COGL_PREMULT_BIT) ||
+       !_cogl_has_private_feature (ctx, COGL_PRIVATE_FEATURE_OFFSCREEN_BLIT))
+     return FALSE;
+ 
+diff --git a/cogl/cogl/cogl-framebuffer-private.h b/cogl/cogl/cogl-framebuffer-private.h
+index 3aab852c4..b06fbaee1 100644
+--- a/cogl/cogl/cogl-framebuffer-private.h
++++ b/cogl/cogl/cogl-framebuffer-private.h
+@@ -381,8 +381,12 @@ _cogl_push_framebuffers (CoglFramebuffer *draw_buffer,
+  * This blits a region of the color buffer of the source buffer
+  * to the destination buffer. This function should only be
+  * called if the COGL_PRIVATE_FEATURE_OFFSCREEN_BLIT feature is
+- * advertised. The two buffers must both be offscreen and have the
+- * same format.
++ * advertised. The two buffers must both be offscreen.
++ *
++ * The two buffers must have the same value types (e.g. floating-point,
++ * unsigned int, signed int, or fixed-point), but color formats do not
++ * need to match. This limitation comes from OpenGL ES 3.0 definition
++ * of glBlitFramebuffer.
+  *
+  * Note that this function differs a lot from the glBlitFramebuffer
+  * function provided by the GL_EXT_framebuffer_blit extension. Notably
+diff --git a/cogl/cogl/cogl-framebuffer.c b/cogl/cogl/cogl-framebuffer.c
+index bd8a7fa42..0bc225945 100644
+--- a/cogl/cogl/cogl-framebuffer.c
++++ b/cogl/cogl/cogl-framebuffer.c
+@@ -4,6 +4,7 @@
+  * A Low Level GPU Graphics and Utilities API
+  *
+  * Copyright (C) 2007,2008,2009,2012 Intel Corporation.
++ * Copyright (C) 2019 DisplayLink (UK) Ltd.
+  *
+  * Permission is hereby granted, free of charge, to any person
+  * obtaining a copy of this software and associated documentation
+@@ -1468,8 +1469,9 @@ _cogl_blit_framebuffer (CoglFramebuffer *src,
+      support this */
+   _COGL_RETURN_IF_FAIL (cogl_is_offscreen (src));
+   _COGL_RETURN_IF_FAIL (cogl_is_offscreen (dest));
+-  /* The buffers must be the same format */
+-  _COGL_RETURN_IF_FAIL (src->internal_format == dest->internal_format);
++  /* The buffers must use the same premult convention */
++  _COGL_RETURN_IF_FAIL ((src->internal_format & COGL_PREMULT_BIT) ==
++                        (dest->internal_format & COGL_PREMULT_BIT));
+ 
+   /* Make sure the current framebuffers are bound. We explicitly avoid
+      flushing the clip state so we can bind our own empty state */
+-- 
+2.21.0
+

@@ -1,0 +1,261 @@
+From be13d3c844a6623563ae4e74dbb3409baf16fc9c Mon Sep 17 00:00:00 2001
+From: Pekka Paalanen <pekka.paalanen@collabora.com>
+Date: Mon, 3 Dec 2018 14:34:41 +0200
+Subject: [PATCH 07/12] cogl: Expose cogl_blit_framebuffer
+
+The function will be used in copying from a primary GPU framebuffer to a
+secondary GPU framebuffer using the primary GPU specifically when the
+secondary GPU is not render-capable.
+
+To allow falling back in case glBlitFramebuffer cannot be used, add boolean
+return value, and GError argument for debugging purposes.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/615
+(cherry picked from commit 6061abbf90cd1d62e262ebf3636470d2219e04a7)
+---
+ cogl/cogl/cogl-blit.c                | 11 ++---
+ cogl/cogl/cogl-framebuffer-private.h | 55 -----------------------
+ cogl/cogl/cogl-framebuffer.c         | 40 +++++++++++------
+ cogl/cogl/cogl-framebuffer.h         | 66 +++++++++++++++++++++++++++-
+ 4 files changed, 98 insertions(+), 74 deletions(-)
+
+diff --git a/cogl/cogl/cogl-blit.c b/cogl/cogl/cogl-blit.c
+index c561b2e45..ae5a8a345 100644
+--- a/cogl/cogl/cogl-blit.c
++++ b/cogl/cogl/cogl-blit.c
+@@ -207,11 +207,12 @@ _cogl_blit_framebuffer_blit (CoglBlitData *data,
+                              int width,
+                              int height)
+ {
+-  _cogl_blit_framebuffer (data->src_fb,
+-                          data->dest_fb,
+-                          src_x, src_y,
+-                          dst_x, dst_y,
+-                          width, height);
++  cogl_blit_framebuffer (data->src_fb,
++                         data->dest_fb,
++                         src_x, src_y,
++                         dst_x, dst_y,
++                         width, height,
++                         NULL);
+ }
+ 
+ static void
+diff --git a/cogl/cogl/cogl-framebuffer-private.h b/cogl/cogl/cogl-framebuffer-private.h
+index cb1f87354..7d71fb1dc 100644
+--- a/cogl/cogl/cogl-framebuffer-private.h
++++ b/cogl/cogl/cogl-framebuffer-private.h
+@@ -367,61 +367,6 @@ void
+ _cogl_push_framebuffers (CoglFramebuffer *draw_buffer,
+                          CoglFramebuffer *read_buffer);
+ 
+-/*
+- * _cogl_blit_framebuffer:
+- * @src: The source #CoglFramebuffer
+- * @dest: The destination #CoglFramebuffer
+- * @src_x: Source x position
+- * @src_y: Source y position
+- * @dst_x: Destination x position
+- * @dst_y: Destination y position
+- * @width: Width of region to copy
+- * @height: Height of region to copy
+- *
+- * This blits a region of the color buffer of the source buffer
+- * to the destination buffer. This function should only be
+- * called if the COGL_PRIVATE_FEATURE_BLIT_FRAMEBUFFER feature is
+- * advertised.
+- *
+- * The source and destination rectangles are defined in offscreen
+- * framebuffer orientation. When copying between an offscreen and
+- * onscreen framebuffers, the image is y-flipped accordingly.
+- *
+- * The two buffers must have the same value types (e.g. floating-point,
+- * unsigned int, signed int, or fixed-point), but color formats do not
+- * need to match. This limitation comes from OpenGL ES 3.0 definition
+- * of glBlitFramebuffer.
+- *
+- * Note that this function differs a lot from the glBlitFramebuffer
+- * function provided by the GL_EXT_framebuffer_blit extension. Notably
+- * it doesn't support having different sizes for the source and
+- * destination rectangle. This doesn't seem
+- * like a particularly useful feature. If the application wanted to
+- * scale the results it may make more sense to draw a primitive
+- * instead.
+- *
+- * The GL function is documented to be affected by the scissor. This
+- * function therefore ensure that an empty clip stack is flushed
+- * before performing the blit which means the scissor is effectively
+- * ignored.
+- *
+- * The function also doesn't support specifying the buffers to copy
+- * and instead only the color buffer is copied. When copying the depth
+- * or stencil buffers the extension on GLES2.0 only supports copying
+- * the full buffer which would be awkward to document with this
+- * API. If we wanted to support that feature it may be better to have
+- * a separate function to copy the entire buffer for a given mask.
+- */
+-void
+-_cogl_blit_framebuffer (CoglFramebuffer *src,
+-                        CoglFramebuffer *dest,
+-                        int src_x,
+-                        int src_y,
+-                        int dst_x,
+-                        int dst_y,
+-                        int width,
+-                        int height);
+-
+ void
+ _cogl_framebuffer_push_projection (CoglFramebuffer *framebuffer);
+ 
+diff --git a/cogl/cogl/cogl-framebuffer.c b/cogl/cogl/cogl-framebuffer.c
+index 5cc4eada4..6d35c6b13 100644
+--- a/cogl/cogl/cogl-framebuffer.c
++++ b/cogl/cogl/cogl-framebuffer.c
+@@ -1449,26 +1449,38 @@ cogl_framebuffer_read_pixels (CoglFramebuffer *framebuffer,
+   return ret;
+ }
+ 
+-void
+-_cogl_blit_framebuffer (CoglFramebuffer *src,
+-                        CoglFramebuffer *dest,
+-                        int src_x,
+-                        int src_y,
+-                        int dst_x,
+-                        int dst_y,
+-                        int width,
+-                        int height)
++gboolean
++cogl_blit_framebuffer (CoglFramebuffer *src,
++                       CoglFramebuffer *dest,
++                       int src_x,
++                       int src_y,
++                       int dst_x,
++                       int dst_y,
++                       int width,
++                       int height,
++                       GError **error)
+ {
+   CoglContext *ctx = src->context;
+   int src_x1, src_y1, src_x2, src_y2;
+   int dst_x1, dst_y1, dst_x2, dst_y2;
+ 
+-  _COGL_RETURN_IF_FAIL (_cogl_has_private_feature
+-                        (ctx, COGL_PRIVATE_FEATURE_BLIT_FRAMEBUFFER));
++  if (!_cogl_has_private_feature (ctx, COGL_PRIVATE_FEATURE_BLIT_FRAMEBUFFER))
++    {
++      g_set_error_literal (error, COGL_SYSTEM_ERROR,
++                           COGL_SYSTEM_ERROR_UNSUPPORTED,
++                           "Cogl BLIT_FRAMEBUFFER is not supported by the system.");
++      return FALSE;
++    }
+ 
+   /* The buffers must use the same premult convention */
+-  _COGL_RETURN_IF_FAIL ((src->internal_format & COGL_PREMULT_BIT) ==
+-                        (dest->internal_format & COGL_PREMULT_BIT));
++  if ((src->internal_format & COGL_PREMULT_BIT) !=
++      (dest->internal_format & COGL_PREMULT_BIT))
++    {
++      g_set_error_literal (error, COGL_SYSTEM_ERROR,
++                           COGL_SYSTEM_ERROR_UNSUPPORTED,
++                           "cogl_blit_framebuffer premult mismatch.");
++      return FALSE;
++    }
+ 
+   /* Make sure the current framebuffers are bound. We explicitly avoid
+      flushing the clip state so we can bind our own empty state */
+@@ -1526,6 +1538,8 @@ _cogl_blit_framebuffer (CoglFramebuffer *src,
+                           dst_x1, dst_y1, dst_x2, dst_y2,
+                           GL_COLOR_BUFFER_BIT,
+                           GL_NEAREST);
++
++  return TRUE;
+ }
+ 
+ void
+diff --git a/cogl/cogl/cogl-framebuffer.h b/cogl/cogl/cogl-framebuffer.h
+index 48a77e1ed..230a78627 100644
+--- a/cogl/cogl/cogl-framebuffer.h
++++ b/cogl/cogl/cogl-framebuffer.h
+@@ -3,7 +3,8 @@
+  *
+  * A Low Level GPU Graphics and Utilities API
+  *
+- * Copyright (C) 2011 Intel Corporation.
++ * Copyright (C) 2007,2008,2009,2011 Intel Corporation.
++ * Copyright (C) 2019 DisplayLink (UK) Ltd.
+  *
+  * Permission is hereby granted, free of charge, to any person
+  * obtaining a copy of this software and associated documentation
+@@ -1846,6 +1847,69 @@ typedef enum /*< prefix=COGL_FRAMEBUFFER_ERROR >*/
+ gboolean
+ cogl_is_framebuffer (void *object);
+ 
++/**
++ * cogl_blit_framebuffer:
++ * @src: The source #CoglFramebuffer
++ * @dest: The destination #CoglFramebuffer
++ * @src_x: Source x position
++ * @src_y: Source y position
++ * @dst_x: Destination x position
++ * @dst_y: Destination y position
++ * @width: Width of region to copy
++ * @height: Height of region to copy
++ * @error: optional error object
++ *
++ * @return FALSE for an immediately detected error, TRUE otherwise.
++ *
++ * This blits a region of the color buffer of the source buffer
++ * to the destination buffer. This function should only be
++ * called if the COGL_PRIVATE_FEATURE_BLIT_FRAMEBUFFER feature is
++ * advertised.
++ *
++ * The source and destination rectangles are defined in offscreen
++ * framebuffer orientation. When copying between an offscreen and
++ * onscreen framebuffers, the image is y-flipped accordingly.
++ *
++ * The two buffers must have the same value types (e.g. floating-point,
++ * unsigned int, signed int, or fixed-point), but color formats do not
++ * need to match. This limitation comes from OpenGL ES 3.0 definition
++ * of glBlitFramebuffer.
++ *
++ * Note that this function differs a lot from the glBlitFramebuffer
++ * function provided by the GL_EXT_framebuffer_blit extension. Notably
++ * it doesn't support having different sizes for the source and
++ * destination rectangle. This doesn't seem
++ * like a particularly useful feature. If the application wanted to
++ * scale the results it may make more sense to draw a primitive
++ * instead.
++ *
++ * The GL function is documented to be affected by the scissor. This
++ * function therefore ensure that an empty clip stack is flushed
++ * before performing the blit which means the scissor is effectively
++ * ignored.
++ *
++ * The function also doesn't support specifying the buffers to copy
++ * and instead only the color buffer is copied. When copying the depth
++ * or stencil buffers the extension on GLES2.0 only supports copying
++ * the full buffer which would be awkward to document with this
++ * API. If we wanted to support that feature it may be better to have
++ * a separate function to copy the entire buffer for a given mask.
++ *
++ * The @c error argument is optional, it can be NULL. If it is not NULL
++ * and this function returns FALSE, an error object with a code from
++ * COGL_SYSTEM_ERROR will be created.
++ */
++gboolean
++cogl_blit_framebuffer (CoglFramebuffer *src,
++                       CoglFramebuffer *dest,
++                       int src_x,
++                       int src_y,
++                       int dst_x,
++                       int dst_y,
++                       int width,
++                       int height,
++                       GError **error);
++
+ G_END_DECLS
+ 
+ #endif /* __COGL_FRAMEBUFFER_H */
+-- 
+2.21.0
+

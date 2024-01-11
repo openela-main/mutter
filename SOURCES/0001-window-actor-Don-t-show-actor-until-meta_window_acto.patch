@@ -1,0 +1,35 @@
+From 24ddf60768412fd3f5f7b432449b9ed2ea0d18b3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Tue, 18 Feb 2020 23:01:28 +0100
+Subject: [PATCH] window-actor: Don't show actor until meta_window_actor_show()
+
+By default clutter will show an actor as it is added to a parent. This
+means that after we create the window actor, when it's added to the
+window group, we implicitly show it. What we really want is to not show
+it until the window is supposed to be shown, which happens when
+meta_window_actor_show() is called, as showing prior to that, could
+cause issues.
+
+Avoid the implicit show by setting the "show-on-set-parent" property on
+the window actor to `FALSE` on window actor construction.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/1066
+---
+ src/compositor/compositor.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/compositor/compositor.c b/src/compositor/compositor.c
+index a6ae55abb9..ce2c1b8a3b 100644
+--- a/src/compositor/compositor.c
++++ b/src/compositor/compositor.c
+@@ -810,6 +810,7 @@ meta_compositor_add_window (MetaCompositor    *compositor,
+ 
+   window_actor = g_object_new (window_actor_type,
+                                "meta-window", window,
++                               "show-on-set-parent", FALSE,
+                                NULL);
+ 
+   if (window->layer == META_LAYER_OVERRIDE_REDIRECT)
+-- 
+2.26.2
+

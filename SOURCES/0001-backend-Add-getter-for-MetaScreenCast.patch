@@ -1,0 +1,49 @@
+From 967d8236d81c8689f2fe60621ec7e66d88b43dea Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Wed, 17 Jun 2020 17:46:25 +0200
+Subject: [PATCH 1/4] backend: Add getter for MetaScreenCast
+
+https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/1318
+---
+ src/backends/meta-backend-private.h |  2 ++
+ src/backends/meta-backend.c         | 11 +++++++++++
+ 2 files changed, 13 insertions(+)
+
+diff --git a/src/backends/meta-backend-private.h b/src/backends/meta-backend-private.h
+index 81ec81e5f1..77f4da77c4 100644
+--- a/src/backends/meta-backend-private.h
++++ b/src/backends/meta-backend-private.h
+@@ -138,6 +138,8 @@ MetaEgl * meta_backend_get_egl (MetaBackend *backend);
+ 
+ #ifdef HAVE_REMOTE_DESKTOP
+ MetaRemoteDesktop * meta_backend_get_remote_desktop (MetaBackend *backend);
++
++MetaScreenCast * meta_backend_get_screen_cast (MetaBackend *backend);
+ #endif
+ 
+ gboolean meta_backend_grab_device (MetaBackend *backend,
+diff --git a/src/backends/meta-backend.c b/src/backends/meta-backend.c
+index 750a9248a8..b498b7aa44 100644
+--- a/src/backends/meta-backend.c
++++ b/src/backends/meta-backend.c
+@@ -965,6 +965,17 @@ meta_backend_get_remote_desktop (MetaBackend *backend)
+ 
+   return priv->remote_desktop;
+ }
++
++/**
++ * meta_backend_get_screen_cast: (skip)
++ */
++MetaScreenCast *
++meta_backend_get_screen_cast (MetaBackend *backend)
++{
++  MetaBackendPrivate *priv = meta_backend_get_instance_private (backend);
++
++  return priv->screen_cast;
++}
+ #endif /* HAVE_REMOTE_DESKTOP */
+ 
+ /**
+-- 
+2.26.2
+

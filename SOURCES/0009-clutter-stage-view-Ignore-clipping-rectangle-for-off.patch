@@ -1,0 +1,49 @@
+From 46bb54bcd9c90f90dd170355209f8c379680d5c1 Mon Sep 17 00:00:00 2001
+From: Olivier Fourdan <ofourdan@redhat.com>
+Date: Tue, 1 Oct 2019 14:16:25 +0200
+Subject: [PATCH 09/12] clutter/stage-view: Ignore clipping rectangle for
+ offscreen blit
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In `clutter_stage_view_blit_offscreen()`, the given clipping rectangle
+is in “view” coordinates whereas we intend to copy the whole actual
+framebuffer, meaning that we cannot use the clipping rectangle.
+
+Use the actual framebuffer size, starting at (0, 0) instead.
+
+That fixes the issue with partial repainting with shadow framebuffer
+when fractional scaling is enabled.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/820
+(cherry picked from commit 0a3f25c3039b586f5b5721e91136c5d2fccecca1)
+---
+ clutter/clutter/clutter-stage-view.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/clutter/clutter/clutter-stage-view.c b/clutter/clutter/clutter-stage-view.c
+index 00cbfd1ce..503c31e78 100644
+--- a/clutter/clutter/clutter-stage-view.c
++++ b/clutter/clutter/clutter-stage-view.c
+@@ -129,11 +129,14 @@ clutter_stage_view_blit_offscreen (ClutterStageView            *view,
+   clutter_stage_view_get_offscreen_transformation_matrix (view, &matrix);
+   if (cogl_matrix_is_identity (&matrix))
+     {
++      int fb_width = cogl_framebuffer_get_width (priv->framebuffer);
++      int fb_height = cogl_framebuffer_get_height (priv->framebuffer);
++
+       if (cogl_blit_framebuffer (priv->offscreen,
+                                  priv->framebuffer,
+-                                 rect->x, rect->y,
+-                                 rect->x, rect->y,
+-                                 rect->width, rect->height,
++                                 0, 0,
++                                 0, 0,
++                                 fb_width, fb_height,
+                                  NULL))
+         return;
+     }
+-- 
+2.21.0
+

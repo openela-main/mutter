@@ -1,0 +1,136 @@
+From 80f79e0cc7509b79b38193a006b0d98d03432044 Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Mon, 5 Aug 2019 14:39:21 -0400
+Subject: [PATCH] iconcache: Avoid xrender picture formats when creating cairo
+ surface
+
+If an application provides its window icon via wmhints, then mutter
+loads the pixmap specified by the application into a cairo xlib surface. When
+creating the surface it specifies the visual, indirectly, via an XRender
+picture format.
+
+This is suboptimal, since XRender picture formats don't have a way to specify
+16bpp depth, which an application may be using.
+
+In particular, applications are likely to use 16bpp depth pixmaps for their
+icons, if the video card offers a 16bpp framebuffer/root window.
+
+This commit drops the XRender middleman, and just tells cairo a visual to use
+directly.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/715
+---
+ src/x11/iconcache.c | 31 ++++++-------------------------
+ 1 file changed, 6 insertions(+), 25 deletions(-)
+
+diff --git a/src/x11/iconcache.c b/src/x11/iconcache.c
+index 15d72da65..521c77b8d 100644
+--- a/src/x11/iconcache.c
++++ b/src/x11/iconcache.c
+@@ -261,97 +261,78 @@ get_pixmap_geometry (MetaX11Display *x11_display,
+                      Pixmap          pixmap,
+                      int            *w,
+                      int            *h,
+                      int            *d)
+ {
+   Window root_ignored;
+   int x_ignored, y_ignored;
+   guint width, height;
+   guint border_width_ignored;
+   guint depth;
+ 
+   if (w)
+     *w = 1;
+   if (h)
+     *h = 1;
+   if (d)
+     *d = 1;
+ 
+   XGetGeometry (x11_display->xdisplay,
+                 pixmap, &root_ignored, &x_ignored, &y_ignored,
+                 &width, &height, &border_width_ignored, &depth);
+ 
+   if (w)
+     *w = width;
+   if (h)
+     *h = height;
+   if (d)
+     *d = depth;
+ }
+ 
+-static int
+-standard_pict_format_for_depth (int depth)
+-{
+-  switch (depth)
+-    {
+-    case 1:
+-      return PictStandardA1;
+-    case 24:
+-      return PictStandardRGB24;
+-    case 32:
+-      return PictStandardARGB32;
+-    default:
+-      g_assert_not_reached ();
+-    }
+-  return 0;
+-}
+-
+-static XRenderPictFormat *
+-pict_format_for_depth (Display *xdisplay, int depth)
+-{
+-  return XRenderFindStandardFormat (xdisplay, standard_pict_format_for_depth (depth));
+-}
+-
+ static cairo_surface_t *
+ surface_from_pixmap (Display *xdisplay, Pixmap xpixmap,
+                      int width, int height)
+ {
+   Window root_return;
++  XVisualInfo visual_info;
+   int x_ret, y_ret;
+   unsigned int w_ret, h_ret, bw_ret, depth_ret;
+ 
+   if (!XGetGeometry (xdisplay, xpixmap, &root_return,
+                      &x_ret, &y_ret, &w_ret, &h_ret, &bw_ret, &depth_ret))
+     return NULL;
+ 
+-  return cairo_xlib_surface_create_with_xrender_format (xdisplay, xpixmap, DefaultScreenOfDisplay (xdisplay),
+-                                                        pict_format_for_depth (xdisplay, depth_ret), w_ret, h_ret);
++  if (!XMatchVisualInfo (xdisplay, DefaultScreen (xdisplay),
++                         depth_ret, TrueColor, &visual_info))
++    return NULL;
++
++  return cairo_xlib_surface_create (xdisplay, xpixmap, visual_info.visual, w_ret, h_ret);
+ }
+ 
+ static gboolean
+ try_pixmap_and_mask (MetaX11Display   *x11_display,
+                      Pixmap            src_pixmap,
+                      Pixmap            src_mask,
+                      cairo_surface_t **iconp)
+ {
+   Display *xdisplay = x11_display->xdisplay;
+   cairo_surface_t *icon, *mask = NULL;
+   int w, h, d;
+ 
+   if (src_pixmap == None)
+     return FALSE;
+ 
+   meta_x11_error_trap_push (x11_display);
+ 
+   get_pixmap_geometry (x11_display, src_pixmap, &w, &h, &d);
+   icon = surface_from_pixmap (xdisplay, src_pixmap, w, h);
+ 
+   if (icon && src_mask != None)
+     {
+       get_pixmap_geometry (x11_display, src_mask, &w, &h, &d);
+ 
+       if (d == 1)
+         mask = surface_from_pixmap (xdisplay, src_mask, w, h);
+     }
+ 
+   meta_x11_error_trap_pop (x11_display);
+ 
+-- 
+2.21.0
+

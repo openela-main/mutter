@@ -1,0 +1,209 @@
+From a239886e159e6609c3e298effbd0243af8d0e333 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Tue, 16 Jun 2020 11:30:11 +0200
+Subject: [PATCH 4/4] screen-cast: Disable DMA buffer based screen casting for
+ QXL
+
+QXL doesn't support mmap():ing a DMA buffer allocated in mutter inside
+the PipeWire stream consumer process. To make screen casting work again
+on QXL, disable DMA buffer based screen casting for QXL.
+
+Eventually, it should be the client that renegotiates the supported
+buffer types, but until then we need this list.
+
+https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/1318
+---
+ src/backends/meta-screen-cast.c           | 11 ++++++
+ src/backends/meta-screen-cast.h           |  2 ++
+ src/backends/native/meta-backend-native.c | 41 +++++++++++++++++++++++
+ src/backends/native/meta-gpu-kms.c        | 26 ++++++++++++++
+ src/backends/native/meta-gpu-kms.h        |  2 ++
+ 5 files changed, 82 insertions(+)
+
+diff --git a/src/backends/meta-screen-cast.c b/src/backends/meta-screen-cast.c
+index 5f1ca8b5ca..268155e7b3 100644
+--- a/src/backends/meta-screen-cast.c
++++ b/src/backends/meta-screen-cast.c
+@@ -46,6 +46,8 @@ struct _MetaScreenCast
+ 
+   MetaDbusSessionWatcher *session_watcher;
+   MetaBackend *backend;
++
++  gboolean disable_dma_bufs;
+ };
+ 
+ static void
+@@ -94,6 +96,12 @@ meta_screen_cast_get_backend (MetaScreenCast *screen_cast)
+   return screen_cast->backend;
+ }
+ 
++void
++meta_screen_cast_disable_dma_bufs (MetaScreenCast *screen_cast)
++{
++  screen_cast->disable_dma_bufs = TRUE;
++}
++
+ CoglDmaBufHandle *
+ meta_screen_cast_create_dma_buf_handle (MetaScreenCast *screen_cast,
+                                         int             width,
+@@ -107,6 +115,9 @@ meta_screen_cast_create_dma_buf_handle (MetaScreenCast *screen_cast,
+   g_autoptr (GError) error = NULL;
+   CoglDmaBufHandle *dmabuf_handle;
+ 
++  if (screen_cast->disable_dma_bufs)
++    return NULL;
++
+   dmabuf_handle = cogl_renderer_create_dma_buf (cogl_renderer,
+                                                 width, height,
+                                                 &error);
+diff --git a/src/backends/meta-screen-cast.h b/src/backends/meta-screen-cast.h
+index fb5a38f34f..fa54be729f 100644
+--- a/src/backends/meta-screen-cast.h
++++ b/src/backends/meta-screen-cast.h
+@@ -50,6 +50,8 @@ GDBusConnection * meta_screen_cast_get_connection (MetaScreenCast *screen_cast);
+ 
+ MetaBackend * meta_screen_cast_get_backend (MetaScreenCast *screen_cast);
+ 
++void meta_screen_cast_disable_dma_bufs (MetaScreenCast *screen_cast);
++
+ CoglDmaBufHandle * meta_screen_cast_create_dma_buf_handle (MetaScreenCast *screen_cast,
+                                                            int             width,
+                                                            int             height);
+diff --git a/src/backends/native/meta-backend-native.c b/src/backends/native/meta-backend-native.c
+index c473681cb0..2bf7f5e7e2 100644
+--- a/src/backends/native/meta-backend-native.c
++++ b/src/backends/native/meta-backend-native.c
+@@ -57,6 +57,10 @@
+ #include "core/meta-border.h"
+ #include "meta/main.h"
+ 
++#ifdef HAVE_REMOTE_DESKTOP
++#include "backends/meta-screen-cast.h"
++#endif
++
+ struct _MetaBackendNative
+ {
+   MetaBackend parent;
+@@ -327,6 +331,39 @@ meta_backend_native_create_clutter_backend (MetaBackend *backend)
+   return g_object_new (META_TYPE_CLUTTER_BACKEND_NATIVE, NULL);
+ }
+ 
++#ifdef HAVE_REMOTE_DESKTOP
++static void
++maybe_disable_screen_cast_dma_bufs (MetaBackendNative *native)
++{
++  MetaBackend *backend = META_BACKEND (native);
++  MetaRenderer *renderer = meta_backend_get_renderer (backend);
++  MetaRendererNative *renderer_native = META_RENDERER_NATIVE (renderer);
++  MetaGpuKms *primary_gpu;
++  const char *driver_name;
++  int i;
++  static const char *disable_dma_buf_drivers[] = {
++    "qxl",
++  };
++
++  primary_gpu = meta_renderer_native_get_primary_gpu (renderer_native);
++  driver_name = meta_gpu_kms_get_driver_name (primary_gpu);
++
++  for (i = 0; i < G_N_ELEMENTS (disable_dma_buf_drivers); i++)
++    {
++      if (g_strcmp0 (driver_name, disable_dma_buf_drivers[i]) == 0)
++        {
++          MetaScreenCast *screen_cast = meta_backend_get_screen_cast (backend);
++
++          g_message ("The '%s' driver doesn't support DMA buffer screen sharing, disabling.",
++                     driver_name);
++
++          meta_screen_cast_disable_dma_bufs (screen_cast);
++          return;
++        }
++    }
++}
++#endif /* HAVE_REMOTE_DESKTOP */
++
+ static void
+ meta_backend_native_post_init (MetaBackend *backend)
+ {
+@@ -338,6 +375,10 @@ meta_backend_native_post_init (MetaBackend *backend)
+                                                 NULL, NULL);
+   clutter_evdev_set_relative_motion_filter (manager, relative_motion_filter,
+                                             meta_backend_get_monitor_manager (backend));
++
++#ifdef HAVE_REMOTE_DESKTOP
++  maybe_disable_screen_cast_dma_bufs (META_BACKEND_NATIVE (backend));
++#endif
+ }
+ 
+ static MetaMonitorManager *
+diff --git a/src/backends/native/meta-gpu-kms.c b/src/backends/native/meta-gpu-kms.c
+index c569b948ef..93e509def5 100644
+--- a/src/backends/native/meta-gpu-kms.c
++++ b/src/backends/native/meta-gpu-kms.c
+@@ -66,6 +66,8 @@ struct _MetaGpuKms
+   char *file_path;
+   GSource *source;
+ 
++  char *driver_name;
++
+   clockid_t clock_id;
+ 
+   drmModeConnector **connectors;
+@@ -790,6 +792,27 @@ init_outputs (MetaGpuKms       *gpu_kms,
+   setup_output_clones (gpu);
+ }
+ 
++static void
++init_info (MetaGpuKms *gpu_kms)
++{
++  drmVersion *drm_version;
++
++  drm_version = drmGetVersion (gpu_kms->fd);
++  if (!drm_version)
++    return;
++
++  gpu_kms->driver_name = g_strndup (drm_version->name,
++                                    drm_version->name_len);
++
++  drmFreeVersion (drm_version);
++}
++
++const char *
++meta_gpu_kms_get_driver_name (MetaGpuKms *gpu_kms)
++{
++  return gpu_kms->driver_name;
++}
++
+ static gboolean
+ meta_kms_resources_init (MetaKmsResources  *resources,
+                          int                fd,
+@@ -865,6 +888,7 @@ meta_gpu_kms_read_current (MetaGpu  *gpu,
+   init_crtcs (gpu_kms, &resources);
+   init_outputs (gpu_kms, &resources);
+   init_frame_clock (gpu_kms);
++  init_info (gpu_kms);
+ 
+   meta_kms_resources_release (&resources);
+ 
+@@ -940,6 +964,8 @@ meta_gpu_kms_finalize (GObject *object)
+ 
+   free_resources (gpu_kms);
+ 
++  g_free (gpu_kms->driver_name);
++
+   G_OBJECT_CLASS (meta_gpu_kms_parent_class)->finalize (object);
+ }
+ 
+diff --git a/src/backends/native/meta-gpu-kms.h b/src/backends/native/meta-gpu-kms.h
+index 1f7a939e27..6096e58341 100644
+--- a/src/backends/native/meta-gpu-kms.h
++++ b/src/backends/native/meta-gpu-kms.h
+@@ -108,4 +108,6 @@ MetaGpuKmsFlipClosureContainer * meta_gpu_kms_wrap_flip_closure (MetaGpuKms *gpu
+ 
+ void meta_gpu_kms_flip_closure_container_free (MetaGpuKmsFlipClosureContainer *closure_container);
+ 
++const char * meta_gpu_kms_get_driver_name (MetaGpuKms *gpu_kms);
++
+ #endif /* META_GPU_KMS_H */
+-- 
+2.26.2
+
