@@ -8,7 +8,7 @@
 
 Name:          mutter
 Version:       3.32.2
-Release:       71%{?dist}.1
+Release:       72%{?dist}
 Summary:       Window and compositing manager based on Clutter
 
 License:       GPLv2+
@@ -358,10 +358,10 @@ desktop-file-validate %{buildroot}/%{_datadir}/applications/%{name}.desktop
 %{_datadir}/mutter-%{mutter_api_version}/tests
 
 %changelog
-* Mon Oct 02 2023 Jan Grulich <jgrulich@redhat.com> - 3.32.2-71.1
+* Mon Oct 02 2023 Jan Grulich <jgrulich@redhat.com> - 3.32.2-72
 - Do not use DMA buffers for screencast when the client doesn't support it
 - Use DMA buffers only for i195 drivers
-  Resolves: RHEL-11227
+  Resolves: RHEL-4405
 
 * Thu Aug 17 2023 Carlos Garnacho <cgarnach@redhat.com> - 3.32.2-71
 - Fix ordering of keyboard modifiers relative to other keyboard events
