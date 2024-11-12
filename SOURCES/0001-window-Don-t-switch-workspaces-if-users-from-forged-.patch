@@ -1,0 +1,101 @@
+From f1da6553e13e3c9a9ed91370dcf435fa4a19fb2b Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Thu, 6 Jun 2024 13:01:41 -0400
+Subject: [PATCH 1/6] window: Don't switch workspaces if users from forged
+ activation messages
+
+---
+ src/core/window.c | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/src/core/window.c b/src/core/window.c
+index 7d86adece..e787dbce0 100644
+--- a/src/core/window.c
++++ b/src/core/window.c
+@@ -3687,74 +3687,81 @@ meta_window_unshade (MetaWindow  *window,
+                   "Focusing window %s after unshading it",
+                   window->desc);
+       meta_window_focus (window, timestamp);
+ 
+       set_net_wm_state (window);
+     }
+ }
+ 
+ static gboolean
+ unminimize_func (MetaWindow *window,
+                  void       *data)
+ {
+   meta_window_unminimize (window);
+   return TRUE;
+ }
+ 
+ static void
+ unminimize_window_and_all_transient_parents (MetaWindow *window)
+ {
+   meta_window_unminimize (window);
+   meta_window_foreach_ancestor (window, unminimize_func, NULL);
+ }
+ 
+ void
+ meta_window_activate_full (MetaWindow     *window,
+                            guint32         timestamp,
+                            MetaClientType  source_indication,
+                            MetaWorkspace  *workspace)
+ {
+   MetaWorkspaceManager *workspace_manager = window->display->workspace_manager;
+-  gboolean allow_workspace_switch;
++  gboolean allow_workspace_switch = FALSE;
+ 
+   if (window->unmanaging)
+     {
+       g_warning ("Trying to activate unmanaged window '%s'", window->desc);
+       return;
+     }
+ 
+   meta_topic (META_DEBUG_FOCUS,
+               "_NET_ACTIVE_WINDOW message sent for %s at time %u "
+               "by client type %u.",
+               window->desc, timestamp, source_indication);
+ 
+-  allow_workspace_switch = (timestamp != 0);
++  if (window->display->last_user_time == timestamp)
++    {
++      /* Only allow workspace switches if this activation message uses the same
++       * timestamp as the last user interaction
++       */
++      allow_workspace_switch = TRUE;
++    }
++
+   if (timestamp != 0 &&
+       XSERVER_TIME_IS_BEFORE (timestamp, window->display->last_user_time))
+     {
+       meta_topic (META_DEBUG_FOCUS,
+                   "last_user_time (%u) is more recent; ignoring "
+                   " _NET_ACTIVE_WINDOW message.",
+                   window->display->last_user_time);
+       meta_window_set_demands_attention(window);
+       return;
+     }
+ 
+   if (timestamp == 0)
+     timestamp = meta_display_get_current_time_roundtrip (window->display);
+ 
+   meta_window_set_user_time (window, timestamp);
+ 
+   /* disable show desktop mode unless we're a desktop component */
+   maybe_leave_show_desktop_mode (window);
+ 
+   /* Get window on current or given workspace */
+   if (workspace == NULL)
+     workspace = workspace_manager->active_workspace;
+ 
+   /* For non-transient windows, we just set up a pulsing indicator,
+      rather than move windows or workspaces.
+      See http://bugzilla.gnome.org/show_bug.cgi?id=482354 */
+   if (window->transient_for == NULL &&
+       !allow_workspace_switch &&
+       !meta_window_located_on_workspace (window, workspace))
+     {
+-- 
+2.44.0
+

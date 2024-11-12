@@ -1,0 +1,1154 @@
+From a93862f377dc77207ade317a2b2b284402e496e7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Wed, 3 Jul 2024 14:13:59 +0200
+Subject: [PATCH 01/13] window: Don't switch workspace on sticky transient when
+ activating
+
+If a transient window is sticky (visible on all workspaces) and it gets
+activated, we'd call move_worskpace() which would effectively unstick
+it, which is rather unexpected. It'd also effectively unstick its parent
+as well, due to moving a transient window also moves its descendants and
+ascendants.
+---
+ src/core/window.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/core/window.c b/src/core/window.c
+index 7d86adece4..ee4ea90354 100644
+--- a/src/core/window.c
++++ b/src/core/window.c
+@@ -3762,7 +3762,7 @@ meta_window_activate_full (MetaWindow     *window,
+       /* We've marked it as demanding, don't need to do anything else. */
+       return;
+     }
+-  else if (window->transient_for != NULL)
++  else if (window->transient_for != NULL && !window->on_all_workspaces)
+     {
+       /* Move transients to current workspace - preference dialogs should appear over
+          the source window.  */
+-- 
+2.44.0.501.g19981daefd.dirty
+
+
+From 5d2e7e48a055cf422f1ef2b8d99bbe5346f704b0 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Wed, 3 Jul 2024 14:17:48 +0200
+Subject: [PATCH 02/13] window: Inherit stickyness from parent when becoming
+ transient
+
+When a transient window becomes transient, check if the parent is
+sticky, and if it is, make the transient sticky as well. This handles
+situations where e.g. a utility dialog (such as search and replace) is
+opened on a sticky window, also making the utility dialog sharing the
+same stickyness state.
+
+This is also more in line with the semantics of making a window sticky,
+where transient would implicitly become sticky as a side effect.
+---
+ src/core/window.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/src/core/window.c b/src/core/window.c
+index ee4ea90354..6da7ae7c03 100644
+--- a/src/core/window.c
++++ b/src/core/window.c
+@@ -8105,6 +8105,9 @@ meta_window_set_transient_for (MetaWindow *window,
+ 
+   if (meta_window_appears_focused (window) && window->transient_for != NULL)
+     meta_window_propagate_focus_appearance (window, TRUE);
++
++  if (parent && parent->on_all_workspaces)
++    meta_window_stick (window);
+ }
+ 
+ void
+-- 
+2.44.0.501.g19981daefd.dirty
+
+
+From fe04ff1ff3b63a6943d7a192c494f6fc99eea088 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Tue, 16 Jul 2024 11:32:37 +0200
+Subject: [PATCH 03/13] window: Ignoring unmanaging ancestor when finding root
+
+This avoids the following critical warning happening sometimes when a
+Wayland client exits taking all its window with it in an arbitrary
+order:
+
+    CRITICAL: meta_window_set_stack_position_no_sync: assertion 'window->stack_position >= 0' failed
+---
+ src/core/window.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/core/window.c b/src/core/window.c
+index 6da7ae7c03..8d21e3419a 100644
+--- a/src/core/window.c
++++ b/src/core/window.c
+@@ -5096,7 +5096,8 @@ find_root_ancestor (MetaWindow *window,
+   MetaWindow **ancestor = data;
+ 
+   /* Overwrite the previously "most-root" ancestor with the new one found */
+-  *ancestor = window;
++  if (!window->unmanaging)
++    *ancestor = window;
+ 
+   /* We want this to continue until meta_window_foreach_ancestor quits because
+    * there are no more valid ancestors.
+-- 
+2.44.0.501.g19981daefd.dirty
+
+
+From 02ec655ea9356aefdef4a07896287358903c417b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Tue, 16 Jul 2024 11:44:05 +0200
+Subject: [PATCH 04/13] tests/test-runner: Add (un)set_modal
+
+Ends up calling gtk_window_(un)set_modal() in the client.
+---
+ src/tests/test-client.c | 32 ++++++++++++++++++++++++++++++++
+ src/tests/test-runner.c |  2 ++
+ 2 files changed, 34 insertions(+)
+
+diff --git a/src/tests/test-client.c b/src/tests/test-client.c
+index 73931375e9..63fdf5818b 100644
+--- a/src/tests/test-client.c
++++ b/src/tests/test-client.c
+@@ -738,6 +738,38 @@ process_line (const char *line)
+ 
+       gtk_window_unmaximize (GTK_WINDOW (window));
+     }
++  else if (strcmp (argv[0], "set_modal") == 0)
++    {
++      GtkWidget *window;
++
++      if (argc != 2)
++        {
++          g_print ("usage: set_modal <id>\n");
++          goto out;
++        }
++
++      window = lookup_window (argv[1]);
++      if (!window)
++        goto out;
++
++      gtk_window_set_modal (GTK_WINDOW (window), TRUE);
++    }
++  else if (strcmp (argv[0], "unset_modal") == 0)
++    {
++      GtkWidget *window;
++
++      if (argc != 2)
++        {
++          g_print ("usage: unset_modal <id>\n");
++          goto out;
++        }
++
++      window = lookup_window (argv[1]);
++      if (!window)
++        goto out;
++
++      gtk_window_set_modal (GTK_WINDOW (window), FALSE);
++    }
+   else if (strcmp (argv[0], "fullscreen") == 0)
+     {
+       if (argc != 2)
+diff --git a/src/tests/test-runner.c b/src/tests/test-runner.c
+index d94e0e1c2b..88aeac30d8 100644
+--- a/src/tests/test-runner.c
++++ b/src/tests/test-runner.c
+@@ -703,6 +703,8 @@ test_case_do (TestCase *test,
+            strcmp (argv[0], "unmaximize") == 0 ||
+            strcmp (argv[0], "fullscreen") == 0 ||
+            strcmp (argv[0], "unfullscreen") == 0 ||
++           strcmp (argv[0], "set_modal") == 0 ||
++           strcmp (argv[0], "unset_modal") == 0 ||
+            strcmp (argv[0], "freeze") == 0 ||
+            strcmp (argv[0], "thaw") == 0 ||
+            strcmp (argv[0], "destroy") == 0)
+-- 
+2.44.0.501.g19981daefd.dirty
+
+
+From d893cb65583d451e718ae6f5b470a873ea7e0735 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Tue, 16 Jul 2024 11:44:58 +0200
+Subject: [PATCH 05/13] window: Propagate stickyness across modal dialog chains
+
+While marking a parent window as sticky or non-sticky always propagates
+to the children, also propagate to the parents if the dialog in question
+is modal.
+---
+ src/core/window.c | 23 +++++++++++++++++++++++
+ 1 file changed, 23 insertions(+)
+
+diff --git a/src/core/window.c b/src/core/window.c
+index 8d21e3419a..de9efb8a7b 100644
+--- a/src/core/window.c
++++ b/src/core/window.c
+@@ -5057,6 +5057,27 @@ stick_foreach_func (MetaWindow *window,
+   return TRUE;
+ }
+ 
++static void
++foreach_modal_ancestor (MetaWindow  *window,
++                        void       (*func) (MetaWindow *window))
++{
++  MetaWindow *parent;
++
++  if (window->type != META_WINDOW_MODAL_DIALOG)
++    return;
++
++  parent = window->transient_for;
++  while (parent)
++    {
++      func (parent);
++
++      if (parent->type != META_WINDOW_MODAL_DIALOG)
++        break;
++
++      parent = parent->transient_for;
++    }
++}
++
+ void
+ meta_window_stick (MetaWindow  *window)
+ {
+@@ -5068,6 +5089,7 @@ meta_window_stick (MetaWindow  *window)
+   meta_window_foreach_transient (window,
+                                  stick_foreach_func,
+                                  &stick);
++  foreach_modal_ancestor (window, window_stick_impl);
+ }
+ 
+ void
+@@ -5081,6 +5103,7 @@ meta_window_unstick (MetaWindow  *window)
+   meta_window_foreach_transient (window,
+                                  stick_foreach_func,
+                                  &stick);
++  foreach_modal_ancestor (window, window_unstick_impl);
+ }
+ 
+ void
+-- 
+2.44.0.501.g19981daefd.dirty
+
+
+From 4ab883d5a509db954f09c410f88f5661ed17351d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Thu, 4 Jul 2024 11:50:24 +0200
+Subject: [PATCH 06/13] window: Clean up formatting and naming of stacking
+ adjustment condition
+
+The function checking whether a 'always-on-top' window covers the
+showing window now has that in the name, to make it more obvious. That
+function was also changed to use the more common way of iterating a
+list, and now uses auto cleanup pointers for the list.
+
+The condition itself was updated to follow the current coding style.
+---
+ src/core/window.c | 37 +++++++++++++++----------------------
+ 1 file changed, 15 insertions(+), 22 deletions(-)
+
+diff --git a/src/core/window.c b/src/core/window.c
+index de9efb8a7b..8b7b33b29e 100644
+--- a/src/core/window.c
++++ b/src/core/window.c
+@@ -2338,33 +2338,25 @@ windows_overlap (const MetaWindow *w1, const MetaWindow *w2)
+  * (say) ninety per cent and almost indistinguishable from total.
+  */
+ static gboolean
+-window_would_be_covered (const MetaWindow *newbie)
++window_would_be_covered_by_always_above_window (MetaWindow *window)
+ {
+-  MetaWorkspace *workspace = meta_window_get_workspace ((MetaWindow *)newbie);
+-  GList *tmp, *windows;
++  MetaWorkspace *workspace = meta_window_get_workspace (window);
++  g_autoptr (GList) windows = NULL;
++  GList *l;
+ 
+   windows = meta_workspace_list_windows (workspace);
+-
+-  tmp = windows;
+-  while (tmp != NULL)
++  for (l = windows; l; l = l->next)
+     {
+-      MetaWindow *w = tmp->data;
++      MetaWindow *other_window = l->data;
+ 
+-      if (w->wm_state_above && w != newbie)
++      if (other_window->wm_state_above && other_window != window)
+         {
+-          /* We have found a window that is "above". Perhaps it overlaps. */
+-          if (windows_overlap (w, newbie))
+-            {
+-              g_list_free (windows); /* clean up... */
+-              return TRUE; /* yes, it does */
+-            }
++          if (windows_overlap (other_window, window))
++            return TRUE;
+         }
+-
+-      tmp = tmp->next;
+     }
+ 
+-  g_list_free (windows);
+-  return FALSE; /* none found */
++  return FALSE;
+ }
+ 
+ void
+@@ -2445,10 +2437,11 @@ meta_window_show (MetaWindow *window)
+    * probably rather be a term in the "if" condition below.
+    */
+ 
+-  if ( focus_window != NULL && window->showing_for_first_time &&
+-      ( (!place_on_top_on_map && !takes_focus_on_map) ||
+-      window_would_be_covered (window) )
+-    ) {
++  if (focus_window &&
++      window->showing_for_first_time &&
++      ((!place_on_top_on_map && !takes_focus_on_map) ||
++       window_would_be_covered_by_always_above_window (window)))
++    {
+       if (!meta_window_is_ancestor_of_transient (focus_window, window))
+         {
+           needs_stacking_adjustment = TRUE;
+-- 
+2.44.0.501.g19981daefd.dirty
+
+
+From 7b201110be2990073518fe859c55bf0a0b3b220b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Thu, 4 Jul 2024 13:50:53 +0200
+Subject: [PATCH 07/13] place: Remove a couple of comments about X11 roundtrips
+
+It's not relevant in the context where the comment is, and don't need to
+be reminded of X11 quirks here.
+---
+ src/core/place.c | 2 --
+ 1 file changed, 2 deletions(-)
+
+diff --git a/src/core/place.c b/src/core/place.c
+index 1075fe20d5..b03f746121 100644
+--- a/src/core/place.c
++++ b/src/core/place.c
+@@ -807,7 +807,6 @@ meta_window_place (MetaWindow        *window,
+       MetaRectangle work_area;
+       MetaRectangle frame_rect;
+ 
+-      /* Warning, this function is a round trip! */
+       logical_monitor = meta_backend_get_current_logical_monitor (backend);
+ 
+       meta_window_get_work_area_for_logical_monitor (window,
+@@ -851,7 +850,6 @@ meta_window_place (MetaWindow        *window,
+     g_slist_free (all_windows);
+   }
+ 
+-  /* Warning, on X11 this might be a round trip! */
+   logical_monitor = meta_backend_get_current_logical_monitor (backend);
+ 
+   /* Maximize windows if they are too big for their work area (bit of
+-- 
+2.44.0.501.g19981daefd.dirty
+
+
+From 508ca92d4e01b4b79906528d25898a6ef1decee4 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Thu, 11 Jul 2024 14:23:26 +0200
+Subject: [PATCH 08/13] window: Add place flags
+
+Replace a boolean argument and a temporary MetaWindow struct field with
+a `MetaPlaceFlag` passed where relevant. This includes
+`meta_window_move_resize_internal()` and `meta_window_constrain()`, as
+placement may happen during constraining, and also
+`meta_window_force_placement()`.
+
+The struct field (denied_focus_and_not_transient) was only ever set in
+meta_window_show(), before meta_window_force_placement(), and
+immediately unset as a side effect of that. In .._show() we'll always
+force placement if the window wasn't already placed, and in
+meta_window_constrain(), we'd only ever call meta_window_place() if the
+window wasn't already placed, meaning the variable would only ever be
+relevant during `meta_window_show()`. Having it as a flag makes that
+relationship and temporary state clearer.
+---
+ src/core/constraints.c               | 12 +++++---
+ src/core/constraints.h               |  1 +
+ src/core/place.c                     | 16 +++++-----
+ src/core/place.h                     | 11 +++----
+ src/core/window-private.h            | 15 ++++++----
+ src/core/window.c                    | 45 +++++++++++++++++++---------
+ src/wayland/meta-wayland-xdg-shell.c |  2 +-
+ src/wayland/meta-window-wayland.c    |  7 ++++-
+ src/x11/window-x11.c                 | 18 +++++++++--
+ 9 files changed, 87 insertions(+), 40 deletions(-)
+
+diff --git a/src/core/constraints.c b/src/core/constraints.c
+index a140c62458..e0df50f1a2 100644
+--- a/src/core/constraints.c
++++ b/src/core/constraints.c
+@@ -217,6 +217,7 @@ static void setup_constraint_info        (ConstraintInfo      *info,
+                                           const MetaRectangle *orig,
+                                           MetaRectangle       *new);
+ static void place_window_if_needed       (MetaWindow     *window,
++                                          MetaPlaceFlag   place_flags,
+                                           ConstraintInfo *info);
+ static void update_onscreen_requirements (MetaWindow     *window,
+                                           ConstraintInfo *info);
+@@ -290,6 +291,7 @@ do_all_constraints (MetaWindow         *window,
+ void
+ meta_window_constrain (MetaWindow          *window,
+                        MetaMoveResizeFlags  flags,
++                       MetaPlaceFlag        place_flags,
+                        MetaGravity          resize_gravity,
+                        const MetaRectangle *orig,
+                        MetaRectangle       *new,
+@@ -313,7 +315,7 @@ meta_window_constrain (MetaWindow          *window,
+                          resize_gravity,
+                          orig,
+                          new);
+-  place_window_if_needed (window, &info);
++  place_window_if_needed (window, place_flags, &info);
+ 
+   while (!satisfied && priority <= PRIORITY_MAXIMUM) {
+     gboolean check_only = TRUE;
+@@ -519,8 +521,9 @@ get_start_rect_for_resize (MetaWindow     *window,
+ }
+ 
+ static void
+-place_window_if_needed(MetaWindow     *window,
+-                       ConstraintInfo *info)
++place_window_if_needed (MetaWindow     *window,
++                        MetaPlaceFlag   place_flags,
++                        ConstraintInfo *info)
+ {
+   gboolean did_placement;
+ 
+@@ -564,7 +567,8 @@ place_window_if_needed(MetaWindow     *window,
+         }
+       else
+         {
+-          meta_window_place (window, orig_rect.x, orig_rect.y,
++          meta_window_place (window, place_flags,
++                             orig_rect.x, orig_rect.y,
+                              &placed_rect.x, &placed_rect.y);
+ 
+           /* placing the window may have changed the monitor.  Find the
+diff --git a/src/core/constraints.h b/src/core/constraints.h
+index eaa4e45940..0bbcf7146a 100644
+--- a/src/core/constraints.h
++++ b/src/core/constraints.h
+@@ -29,6 +29,7 @@
+ 
+ void meta_window_constrain (MetaWindow          *window,
+                             MetaMoveResizeFlags  flags,
++                            MetaPlaceFlag        place_flags,
+                             MetaGravity          resize_gravity,
+                             const MetaRectangle *orig,
+                             MetaRectangle       *new,
+diff --git a/src/core/place.c b/src/core/place.c
+index b03f746121..350e1ed0f1 100644
+--- a/src/core/place.c
++++ b/src/core/place.c
+@@ -327,9 +327,10 @@ window_place_centered (MetaWindow *window)
+ }
+ 
+ static void
+-avoid_being_obscured_as_second_modal_dialog (MetaWindow *window,
+-                                             int        *x,
+-                                             int        *y)
++avoid_being_obscured_as_second_modal_dialog (MetaWindow    *window,
++                                             MetaPlaceFlag  flags,
++                                             int           *x,
++                                             int           *y)
+ {
+   /* We can't center this dialog if it was denied focus and it
+    * overlaps with the focus window and this dialog is modal and this
+@@ -351,7 +352,7 @@ avoid_being_obscured_as_second_modal_dialog (MetaWindow *window,
+ 
+   /* denied_focus_and_not_transient is only set when focus_window != NULL */
+ 
+-  if (window->denied_focus_and_not_transient &&
++  if (flags & META_PLACE_FLAG_DENIED_FOCUS_AND_NOT_TRANSIENT &&
+       window->type == META_WINDOW_MODAL_DIALOG &&
+       meta_window_same_application (window, focus_window) &&
+       window_overlaps_focus_window (window))
+@@ -660,6 +661,7 @@ meta_window_process_placement (MetaWindow        *window,
+ 
+ void
+ meta_window_place (MetaWindow        *window,
++                   MetaPlaceFlag      flags,
+                    int                x,
+                    int                y,
+                    int               *new_x,
+@@ -758,7 +760,7 @@ meta_window_place (MetaWindow        *window,
+         {
+           meta_topic (META_DEBUG_PLACEMENT,
+                       "Not placing window with PPosition or USPosition set");
+-          avoid_being_obscured_as_second_modal_dialog (window, &x, &y);
++          avoid_being_obscured_as_second_modal_dialog (window, flags, &x, &y);
+           goto done;
+         }
+     }
+@@ -791,7 +793,7 @@ meta_window_place (MetaWindow        *window,
+                       "Centered window %s over transient parent",
+                       window->desc);
+ 
+-          avoid_being_obscured_as_second_modal_dialog (window, &x, &y);
++          avoid_being_obscured_as_second_modal_dialog (window, flags, &x, &y);
+ 
+           goto done;
+         }
+@@ -895,7 +897,7 @@ meta_window_place (MetaWindow        *window,
+    * if at all possible.  This is guaranteed to only be called if the
+    * focus_window is non-NULL, and we try to avoid that window.
+    */
+-  if (window->denied_focus_and_not_transient)
++  if (flags & META_PLACE_FLAG_DENIED_FOCUS_AND_NOT_TRANSIENT)
+     {
+       MetaWindow    *focus_window;
+       gboolean       found_fit;
+diff --git a/src/core/place.h b/src/core/place.h
+index 2e2c811413..0c95ad6329 100644
+--- a/src/core/place.h
++++ b/src/core/place.h
+@@ -30,10 +30,11 @@ void meta_window_process_placement (MetaWindow        *window,
+                                     int               *rel_x,
+                                     int               *rel_y);
+ 
+-void meta_window_place (MetaWindow *window,
+-                        int         x,
+-                        int         y,
+-                        int        *new_x,
+-                        int        *new_y);
++void meta_window_place (MetaWindow    *window,
++                        MetaPlaceFlag  place_flags,
++                        int            x,
++                        int            y,
++                        int           *new_x,
++                        int           *new_y);
+ 
+ #endif
+diff --git a/src/core/window-private.h b/src/core/window-private.h
+index d1730c9880..cacc45e964 100644
+--- a/src/core/window-private.h
++++ b/src/core/window-private.h
+@@ -81,6 +81,13 @@ typedef enum
+   META_MOVE_RESIZE_PLACEMENT_CHANGED = 1 << 11,
+ } MetaMoveResizeFlags;
+ 
++typedef enum _MetaPlaceFlag
++{
++  META_PLACE_FLAG_NONE = 0,
++  META_PLACE_FLAG_FORCE_MOVE = 1 << 0,
++  META_PLACE_FLAG_DENIED_FOCUS_AND_NOT_TRANSIENT = 1 << 1,
++} MetaPlaceFlag;
++
+ typedef enum
+ {
+   META_MOVE_RESIZE_RESULT_MOVED               = 1 << 0,
+@@ -385,9 +392,6 @@ struct _MetaWindow
+   /* Have we placed this window? */
+   guint placed : 1;
+ 
+-  /* Is this not a transient of the focus window which is being denied focus? */
+-  guint denied_focus_and_not_transient : 1;
+-
+   /* Has this window not ever been shown yet? */
+   guint showing_for_first_time : 1;
+ 
+@@ -861,6 +865,7 @@ void meta_window_update_resize (MetaWindow *window,
+ 
+ void meta_window_move_resize_internal (MetaWindow          *window,
+                                        MetaMoveResizeFlags  flags,
++                                       MetaPlaceFlag        place_flags,
+                                        MetaGravity          gravity,
+                                        MetaRectangle        frame_rect);
+ 
+@@ -875,8 +880,8 @@ void meta_window_emit_size_changed (MetaWindow *window);
+ 
+ MetaPlacementRule *meta_window_get_placement_rule (MetaWindow *window);
+ 
+-void meta_window_force_placement (MetaWindow *window,
+-                                  gboolean    force_move);
++void meta_window_force_placement (MetaWindow    *window,
++                                  MetaPlaceFlag  flags);
+ 
+ void meta_window_force_restore_shortcuts (MetaWindow         *window,
+                                           ClutterInputDevice *source);
+diff --git a/src/core/window.c b/src/core/window.c
+index 8b7b33b29e..f1c81c644b 100644
+--- a/src/core/window.c
++++ b/src/core/window.c
+@@ -1085,7 +1085,6 @@ _meta_window_shared_new (MetaDisplay         *display,
+   /* if already mapped we don't want to do the placement thing;
+    * override-redirect windows are placed by the app */
+   window->placed = ((window->mapped && !window->hidden) || window->override_redirect);
+-  window->denied_focus_and_not_transient = FALSE;
+   window->unmanaging = FALSE;
+   window->is_in_queues = 0;
+   window->keys_grabbed = FALSE;
+@@ -2360,8 +2359,8 @@ window_would_be_covered_by_always_above_window (MetaWindow *window)
+ }
+ 
+ void
+-meta_window_force_placement (MetaWindow *window,
+-                             gboolean    force_move)
++meta_window_force_placement (MetaWindow    *window,
++                             MetaPlaceFlag  place_flags)
+ {
+   MetaMoveResizeFlags flags;
+ 
+@@ -2379,11 +2378,12 @@ meta_window_force_placement (MetaWindow *window,
+   window->calc_placement = TRUE;
+ 
+   flags = META_MOVE_RESIZE_MOVE_ACTION | META_MOVE_RESIZE_RESIZE_ACTION;
+-  if (force_move)
++  if (place_flags & META_PLACE_FLAG_FORCE_MOVE)
+     flags |= META_MOVE_RESIZE_FORCE_MOVE;
+ 
+   meta_window_move_resize_internal (window,
+                                     flags,
++                                    place_flags,
+                                     META_GRAVITY_NORTH_WEST,
+                                     window->unconstrained_rect);
+   window->calc_placement = FALSE;
+@@ -2393,11 +2393,6 @@ meta_window_force_placement (MetaWindow *window,
+    * still get placed when they are ultimately shown.
+    */
+   window->placed = TRUE;
+-
+-  /* Don't want to accidentally reuse the fact that we had been denied
+-   * focus in any future constraints unless we're denied focus again.
+-   */
+-  window->denied_focus_and_not_transient = FALSE;
+ }
+ 
+ static void
+@@ -2410,6 +2405,7 @@ meta_window_show (MetaWindow *window)
+   MetaWindow *focus_window;
+   gboolean notify_demands_attention = FALSE;
+   MetaDisplay *display = window->display;
++  MetaPlaceFlag place_flags = META_PLACE_FLAG_NONE;
+ 
+   meta_topic (META_DEBUG_WINDOW_STATE,
+               "Showing window %s, shaded: %d iconic: %d placed: %d",
+@@ -2446,7 +2442,7 @@ meta_window_show (MetaWindow *window)
+         {
+           needs_stacking_adjustment = TRUE;
+           if (!window->placed)
+-            window->denied_focus_and_not_transient = TRUE;
++            place_flags |= META_PLACE_FLAG_DENIED_FOCUS_AND_NOT_TRANSIENT;
+         }
+     }
+ 
+@@ -2466,7 +2462,7 @@ meta_window_show (MetaWindow *window)
+               window->maximize_vertically_after_placement = TRUE;
+             }
+         }
+-      meta_window_force_placement (window, FALSE);
++      meta_window_force_placement (window, place_flags);
+     }
+ 
+   if (needs_stacking_adjustment)
+@@ -2934,6 +2930,7 @@ meta_window_maximize (MetaWindow        *window,
+                                         (META_MOVE_RESIZE_MOVE_ACTION |
+                                          META_MOVE_RESIZE_RESIZE_ACTION |
+                                          META_MOVE_RESIZE_STATE_CHANGED),
++                                        META_PLACE_FLAG_NONE,
+                                         META_GRAVITY_NORTH_WEST,
+                                         window->unconstrained_rect);
+     }
+@@ -3202,6 +3199,7 @@ meta_window_tile (MetaWindow   *window,
+                                     (META_MOVE_RESIZE_MOVE_ACTION |
+                                      META_MOVE_RESIZE_RESIZE_ACTION |
+                                      META_MOVE_RESIZE_STATE_CHANGED),
++                                    META_PLACE_FLAG_NONE,
+                                     META_GRAVITY_NORTH_WEST,
+                                     window->unconstrained_rect);
+ 
+@@ -3411,6 +3409,7 @@ meta_window_unmaximize (MetaWindow        *window,
+                                          META_MOVE_RESIZE_RESIZE_ACTION |
+                                          META_MOVE_RESIZE_STATE_CHANGED |
+                                          META_MOVE_RESIZE_UNMAXIMIZE),
++                                        META_PLACE_FLAG_NONE,
+                                         META_GRAVITY_NORTH_WEST,
+                                         target_rect);
+ 
+@@ -3528,6 +3527,7 @@ meta_window_make_fullscreen (MetaWindow  *window)
+                                         (META_MOVE_RESIZE_MOVE_ACTION |
+                                          META_MOVE_RESIZE_RESIZE_ACTION |
+                                          META_MOVE_RESIZE_STATE_CHANGED),
++                                        META_PLACE_FLAG_NONE,
+                                         META_GRAVITY_NORTH_WEST,
+                                         window->unconstrained_rect);
+     }
+@@ -3575,6 +3575,7 @@ meta_window_unmake_fullscreen (MetaWindow  *window)
+                                          META_MOVE_RESIZE_RESIZE_ACTION |
+                                          META_MOVE_RESIZE_STATE_CHANGED |
+                                          META_MOVE_RESIZE_UNFULLSCREEN),
++                                        META_PLACE_FLAG_NONE,
+                                         META_GRAVITY_NORTH_WEST,
+                                         target_rect);
+ 
+@@ -3834,6 +3835,7 @@ meta_window_reposition (MetaWindow *window)
+   meta_window_move_resize_internal (window,
+                                     (META_MOVE_RESIZE_MOVE_ACTION |
+                                      META_MOVE_RESIZE_RESIZE_ACTION),
++                                    META_PLACE_FLAG_NONE,
+                                     META_GRAVITY_NORTH_WEST,
+                                     window->rect);
+ }
+@@ -4005,6 +4007,7 @@ meta_window_update_monitor (MetaWindow                   *window,
+ void
+ meta_window_move_resize_internal (MetaWindow          *window,
+                                   MetaMoveResizeFlags  flags,
++                                  MetaPlaceFlag        place_flags,
+                                   MetaGravity          gravity,
+                                   MetaRectangle        frame_rect)
+ {
+@@ -4099,6 +4102,7 @@ meta_window_move_resize_internal (MetaWindow          *window,
+ 
+       meta_window_constrain (window,
+                              flags,
++                             place_flags,
+                              gravity,
+                              &old_rect,
+                              &constrained_rect,
+@@ -4216,7 +4220,11 @@ meta_window_move_frame (MetaWindow *window,
+   g_return_if_fail (!window->override_redirect);
+ 
+   flags = (user_op ? META_MOVE_RESIZE_USER_ACTION : 0) | META_MOVE_RESIZE_MOVE_ACTION;
+-  meta_window_move_resize_internal (window, flags, META_GRAVITY_NORTH_WEST, rect);
++  meta_window_move_resize_internal (window,
++                                    flags,
++                                    META_PLACE_FLAG_NONE,
++                                    META_GRAVITY_NORTH_WEST,
++                                    rect);
+ }
+ 
+ static void
+@@ -4249,6 +4257,7 @@ meta_window_move_between_rects (MetaWindow  *window,
+                                     move_resize_flags |
+                                     META_MOVE_RESIZE_MOVE_ACTION |
+                                     META_MOVE_RESIZE_RESIZE_ACTION,
++                                    META_PLACE_FLAG_NONE,
+                                     META_GRAVITY_NORTH_WEST,
+                                     window->unconstrained_rect);
+ }
+@@ -4280,7 +4289,11 @@ meta_window_move_resize_frame (MetaWindow  *window,
+ 
+   flags = (user_op ? META_MOVE_RESIZE_USER_ACTION : 0) | META_MOVE_RESIZE_MOVE_ACTION | META_MOVE_RESIZE_RESIZE_ACTION;
+ 
+-  meta_window_move_resize_internal (window, flags, META_GRAVITY_NORTH_WEST, rect);
++  meta_window_move_resize_internal (window,
++                                    flags,
++                                    META_PLACE_FLAG_NONE,
++                                    META_GRAVITY_NORTH_WEST,
++                                    rect);
+ }
+ 
+ /**
+@@ -4379,7 +4392,11 @@ meta_window_resize_frame_with_gravity (MetaWindow *window,
+     }
+ 
+   flags = (user_op ? META_MOVE_RESIZE_USER_ACTION : 0) | META_MOVE_RESIZE_RESIZE_ACTION;
+-  meta_window_move_resize_internal (window, flags, gravity, rect);
++  meta_window_move_resize_internal (window,
++                                    flags,
++                                    META_PLACE_FLAG_NONE,
++                                    gravity,
++                                    rect);
+ }
+ 
+ static void
+diff --git a/src/wayland/meta-wayland-xdg-shell.c b/src/wayland/meta-wayland-xdg-shell.c
+index c5f0d0b913..16c7cac60e 100644
+--- a/src/wayland/meta-wayland-xdg-shell.c
++++ b/src/wayland/meta-wayland-xdg-shell.c
+@@ -429,7 +429,7 @@ xdg_toplevel_set_maximized (struct wl_client   *client,
+   if (!window->has_maximize_func)
+     return;
+ 
+-  meta_window_force_placement (window, TRUE);
++  meta_window_force_placement (window, META_PLACE_FLAG_FORCE_MOVE);
+   meta_window_maximize (window, META_MAXIMIZE_BOTH);
+ }
+ 
+diff --git a/src/wayland/meta-window-wayland.c b/src/wayland/meta-window-wayland.c
+index 12e9567d9c..92cb684bb2 100644
+--- a/src/wayland/meta-window-wayland.c
++++ b/src/wayland/meta-window-wayland.c
+@@ -1000,7 +1000,11 @@ meta_window_wayland_finish_move_resize (MetaWindow              *window,
+     gravity = meta_resize_gravity_from_grab_op (window->display->grab_op);
+   else
+     gravity = META_GRAVITY_STATIC;
+-  meta_window_move_resize_internal (window, flags, gravity, rect);
++  meta_window_move_resize_internal (window,
++                                    flags,
++                                    META_PLACE_FLAG_NONE,
++                                    gravity,
++                                    rect);
+ 
+   g_clear_pointer (&acked_configuration, meta_wayland_window_configuration_free);
+ }
+@@ -1046,6 +1050,7 @@ meta_window_place_with_placement_rule (MetaWindow        *window,
+                                     (META_MOVE_RESIZE_MOVE_ACTION |
+                                      META_MOVE_RESIZE_RESIZE_ACTION |
+                                      META_MOVE_RESIZE_PLACEMENT_CHANGED),
++                                    META_PLACE_FLAG_NONE,
+                                     META_GRAVITY_NORTH_WEST,
+                                     window->unconstrained_rect);
+   window->calc_placement = FALSE;
+diff --git a/src/x11/window-x11.c b/src/x11/window-x11.c
+index 204b49e93e..a4bd06bf0e 100644
+--- a/src/x11/window-x11.c
++++ b/src/x11/window-x11.c
+@@ -509,7 +509,11 @@ meta_window_apply_session_info (MetaWindow *window,
+ 
+       adjust_for_gravity (window, FALSE, gravity, &rect);
+       meta_window_client_rect_to_frame_rect (window, &rect, &rect);
+-      meta_window_move_resize_internal (window, flags, gravity, rect);
++      meta_window_move_resize_internal (window,
++                                        flags,
++                                        META_PLACE_FLAG_NONE,
++                                        gravity,
++                                        rect);
+     }
+ }
+ 
+@@ -577,7 +581,11 @@ meta_window_x11_manage (MetaWindow *window)
+ 
+       adjust_for_gravity (window, TRUE, gravity, &rect);
+       meta_window_client_rect_to_frame_rect (window, &rect, &rect);
+-      meta_window_move_resize_internal (window, flags, gravity, rect);
++      meta_window_move_resize_internal (window,
++                                        flags,
++                                        META_PLACE_FLAG_NONE,
++                                        gravity,
++                                        rect);
+     }
+ 
+   meta_window_x11_update_shape_region (window);
+@@ -2658,7 +2666,11 @@ meta_window_move_resize_request (MetaWindow  *window,
+ 
+       adjust_for_gravity (window, TRUE, gravity, &rect);
+       meta_window_client_rect_to_frame_rect (window, &rect, &rect);
+-      meta_window_move_resize_internal (window, flags, gravity, rect);
++      meta_window_move_resize_internal (window,
++                                        flags,
++                                        META_PLACE_FLAG_NONE,
++                                        gravity,
++                                        rect);
+     }
+ }
+ 
+-- 
+2.44.0.501.g19981daefd.dirty
+
+
+From e7b243bd6aee654b94812a402ad1a1f3103fdde3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Thu, 11 Jul 2024 14:33:01 +0200
+Subject: [PATCH 09/13] window: Move required condition into main if statement
+ in show()
+
+No logical changes.
+---
+ src/core/window.c | 10 ++++------
+ 1 file changed, 4 insertions(+), 6 deletions(-)
+
+diff --git a/src/core/window.c b/src/core/window.c
+index f1c81c644b..aa5623682b 100644
+--- a/src/core/window.c
++++ b/src/core/window.c
+@@ -2435,15 +2435,13 @@ meta_window_show (MetaWindow *window)
+ 
+   if (focus_window &&
+       window->showing_for_first_time &&
++      !meta_window_is_ancestor_of_transient (focus_window, window) &&
+       ((!place_on_top_on_map && !takes_focus_on_map) ||
+        window_would_be_covered_by_always_above_window (window)))
+     {
+-      if (!meta_window_is_ancestor_of_transient (focus_window, window))
+-        {
+-          needs_stacking_adjustment = TRUE;
+-          if (!window->placed)
+-            place_flags |= META_PLACE_FLAG_DENIED_FOCUS_AND_NOT_TRANSIENT;
+-        }
++      needs_stacking_adjustment = TRUE;
++      if (!window->placed)
++        place_flags |= META_PLACE_FLAG_DENIED_FOCUS_AND_NOT_TRANSIENT;
+     }
+ 
+   if (!window->placed)
+-- 
+2.44.0.501.g19981daefd.dirty
+
+
+From b92ae1e8d11719bdf2aaa00a80259ca8d7661a13 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Thu, 11 Jul 2024 14:46:04 +0200
+Subject: [PATCH 10/13] window: Clarify expression for deciding whether to
+ auto-maximize
+
+Calculate areas and store them in descriptively named variables, and
+then compare them, instead of doing it all in one go.
+---
+ src/core/window.c | 12 +++++++++---
+ 1 file changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/src/core/window.c b/src/core/window.c
+index aa5623682b..8ab86933ef 100644
+--- a/src/core/window.c
++++ b/src/core/window.c
+@@ -2452,9 +2452,15 @@ meta_window_show (MetaWindow *window)
+           window->has_maximize_func)
+         {
+           MetaRectangle work_area;
+-          meta_window_get_work_area_for_monitor (window, window->monitor->number, &work_area);
+-          /* Automaximize windows that map with a size > MAX_UNMAXIMIZED_WINDOW_AREA of the work area */
+-          if (window->rect.width * window->rect.height > work_area.width * work_area.height * MAX_UNMAXIMIZED_WINDOW_AREA)
++          int window_area;
++          int work_area_area;
++
++          window_area = window->rect.width * window->rect.height;
++          meta_window_get_work_area_for_monitor (window, window->monitor->number,
++                                                 &work_area);
++          work_area_area = work_area.width * work_area.height;
++
++          if (window_area > work_area_area * MAX_UNMAXIMIZED_WINDOW_AREA)
+             {
+               window->maximize_horizontally_after_placement = TRUE;
+               window->maximize_vertically_after_placement = TRUE;
+-- 
+2.44.0.501.g19981daefd.dirty
+
+
+From b7d43ff70a9188b64e42d5cfd1d1be6c9ea3b768 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Thu, 11 Jul 2024 14:47:07 +0200
+Subject: [PATCH 11/13] window: Fix minor coding style issue
+
+---
+ src/core/window.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/core/window.c b/src/core/window.c
+index 8ab86933ef..6a693a7a9d 100644
+--- a/src/core/window.c
++++ b/src/core/window.c
+@@ -4102,8 +4102,8 @@ meta_window_move_resize_internal (MetaWindow          *window,
+       window->monitor)
+     {
+       MetaRectangle old_rect;
+-      meta_window_get_frame_rect (window, &old_rect);
+ 
++      meta_window_get_frame_rect (window, &old_rect);
+       meta_window_constrain (window,
+                              flags,
+                              place_flags,
+-- 
+2.44.0.501.g19981daefd.dirty
+
+
+From 6397f60c9b5f06ece742bcaa2936b6501498ede7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Thu, 11 Jul 2024 14:57:15 +0200
+Subject: [PATCH 12/13] window: Don't check always-on-top overlap before
+ placing
+
+When we show a window, we'll check if it overlaps with an existing
+always-on-top window with the intention to deny focus. However, we did
+this potentially before having placed the window, meaning we effectively
+checked as if it was placed at (0, 0), which created unexpected results.
+
+Instead check the overlap state after placing. A window placement test
+case is added to verify this works as expected.
+---
+ src/core/place.c  | 11 ++++++++---
+ src/core/window.c | 10 ++++++++--
+ 2 files changed, 16 insertions(+), 5 deletions(-)
+
+diff --git a/src/core/place.c b/src/core/place.c
+index 350e1ed0f1..e89aa4887b 100644
+--- a/src/core/place.c
++++ b/src/core/place.c
+@@ -296,7 +296,9 @@ find_most_freespace (MetaWindow *window,
+ }
+ 
+ static gboolean
+-window_overlaps_focus_window (MetaWindow *window)
++window_overlaps_focus_window (MetaWindow *window,
++                              int         new_x,
++                              int         new_y)
+ {
+   MetaWindow *focus_window;
+   MetaRectangle window_frame, focus_frame, overlap;
+@@ -306,6 +308,9 @@ window_overlaps_focus_window (MetaWindow *window)
+     return FALSE;
+ 
+   meta_window_get_frame_rect (window, &window_frame);
++  window_frame.x = new_x;
++  window_frame.y = new_y;
++
+   meta_window_get_frame_rect (focus_window, &focus_frame);
+ 
+   return meta_rectangle_intersect (&window_frame,
+@@ -355,7 +360,7 @@ avoid_being_obscured_as_second_modal_dialog (MetaWindow    *window,
+   if (flags & META_PLACE_FLAG_DENIED_FOCUS_AND_NOT_TRANSIENT &&
+       window->type == META_WINDOW_MODAL_DIALOG &&
+       meta_window_same_application (window, focus_window) &&
+-      window_overlaps_focus_window (window))
++      window_overlaps_focus_window (window, *x, *y))
+     {
+       find_most_freespace (window, focus_window, *x, *y, x, y);
+       meta_topic (META_DEBUG_PLACEMENT,
+@@ -906,7 +911,7 @@ meta_window_place (MetaWindow        *window,
+       g_assert (focus_window != NULL);
+ 
+       /* No need to do anything if the window doesn't overlap at all */
+-      found_fit = !window_overlaps_focus_window (window);
++      found_fit = !window_overlaps_focus_window (window, x, y);
+ 
+       /* Try to do a first fit again, this time only taking into account the
+        * focus window.
+diff --git a/src/core/window.c b/src/core/window.c
+index 6a693a7a9d..6082a158a7 100644
+--- a/src/core/window.c
++++ b/src/core/window.c
+@@ -2436,8 +2436,8 @@ meta_window_show (MetaWindow *window)
+   if (focus_window &&
+       window->showing_for_first_time &&
+       !meta_window_is_ancestor_of_transient (focus_window, window) &&
+-      ((!place_on_top_on_map && !takes_focus_on_map) ||
+-       window_would_be_covered_by_always_above_window (window)))
++      !place_on_top_on_map &&
++      !takes_focus_on_map)
+     {
+       needs_stacking_adjustment = TRUE;
+       if (!window->placed)
+@@ -2469,6 +2469,12 @@ meta_window_show (MetaWindow *window)
+       meta_window_force_placement (window, place_flags);
+     }
+ 
++  if (focus_window &&
++      window->showing_for_first_time &&
++      !meta_window_is_ancestor_of_transient (focus_window, window) &&
++      window_would_be_covered_by_always_above_window (window))
++    needs_stacking_adjustment = TRUE;
++
+   if (needs_stacking_adjustment)
+     {
+       gboolean overlap;
+-- 
+2.44.0.501.g19981daefd.dirty
+
+
+From aefa1b34670124c0c95c741328c4095b55ec6333 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Thu, 11 Jul 2024 15:11:13 +0200
+Subject: [PATCH 13/13] window: Only deny focus if mostly overlapped with
+ always-on-top window
+
+Having an always-on-top window affects focus granting logic if the
+to be showing window overlaps with any of them. Instead of triggering
+the focus denying logic if a new window ever so slightly touches an
+always-on-top window to only triggering if it's covered more than 60% by
+always-on-top windows.
+
+This is intended to make using always-on-top windows a bit less annoying
+and not cause as many unintended focus-on-map denials.
+---
+ src/core/window.c | 41 ++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 34 insertions(+), 7 deletions(-)
+
+diff --git a/src/core/window.c b/src/core/window.c
+index 6082a158a7..fe34023673 100644
+--- a/src/core/window.c
++++ b/src/core/window.c
+@@ -68,6 +68,7 @@
+ #include "backends/meta-backend-private.h"
+ #include "backends/meta-logical-monitor.h"
+ #include "cogl/cogl.h"
++#include "compositor/region-utils.h"
+ #include "core/boxes-private.h"
+ #include "core/constraints.h"
+ #include "core/edge-resistance.h"
+@@ -2325,6 +2326,20 @@ windows_overlap (const MetaWindow *w1, const MetaWindow *w2)
+   return meta_rectangle_overlap (&w1rect, &w2rect);
+ }
+ 
++static int
++calculate_region_area (cairo_region_t *region)
++{
++  MetaRegionIterator iter;
++  int area = 0;
++
++  for (meta_region_iterator_init (&iter, region);
++       !meta_region_iterator_at_end (&iter);
++       meta_region_iterator_next (&iter))
++    area += iter.rectangle.width * iter.rectangle.height;
++
++  return area;
++}
++
+ /* Returns whether a new window would be covered by any
+  * existing window on the same workspace that is set
+  * to be "above" ("always on top").  A window that is not
+@@ -2337,25 +2352,37 @@ windows_overlap (const MetaWindow *w1, const MetaWindow *w2)
+  * (say) ninety per cent and almost indistinguishable from total.
+  */
+ static gboolean
+-window_would_be_covered_by_always_above_window (MetaWindow *window)
++window_would_mostly_be_covered_by_always_above_window (MetaWindow *window)
+ {
+   MetaWorkspace *workspace = meta_window_get_workspace (window);
+   g_autoptr (GList) windows = NULL;
+   GList *l;
++  cairo_region_t *region;
++  int window_area, intersection_area, visible_area;
+ 
++  region = cairo_region_create ();
+   windows = meta_workspace_list_windows (workspace);
+   for (l = windows; l; l = l->next)
+     {
+       MetaWindow *other_window = l->data;
+ 
+       if (other_window->wm_state_above && other_window != window)
+-        {
+-          if (windows_overlap (other_window, window))
+-            return TRUE;
+-        }
++        cairo_region_union_rectangle (region, &other_window->rect);
+     }
+ 
+-  return FALSE;
++  window_area = window->rect.width * window->rect.height;
++
++  cairo_region_intersect_rectangle (region, &window->rect);
++  intersection_area = calculate_region_area (region);
++  visible_area = window_area - intersection_area;
++
++  cairo_region_destroy (region);
++
++#define REQUIRED_VISIBLE_AREA_PERCENT 40
++  if ((100 * visible_area) / window_area > REQUIRED_VISIBLE_AREA_PERCENT)
++    return FALSE;
++  else
++    return TRUE;
+ }
+ 
+ void
+@@ -2472,7 +2499,7 @@ meta_window_show (MetaWindow *window)
+   if (focus_window &&
+       window->showing_for_first_time &&
+       !meta_window_is_ancestor_of_transient (focus_window, window) &&
+-      window_would_be_covered_by_always_above_window (window))
++      window_would_mostly_be_covered_by_always_above_window (window))
+     needs_stacking_adjustment = TRUE;
+ 
+   if (needs_stacking_adjustment)
+-- 
+2.44.0.501.g19981daefd.dirty
+

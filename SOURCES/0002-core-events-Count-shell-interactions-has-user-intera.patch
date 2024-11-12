@@ -1,0 +1,133 @@
+From b2cf9836373a446d674ecce251e3e42bb863dc75 Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Thu, 6 Jun 2024 13:32:03 -0400
+Subject: [PATCH 2/6] core/events: Count shell interactions has user
+ interactions too
+
+mutter keeps track of the last time the user used the system to
+decide whether or not to prevent focus stealing.
+
+Right now, it only considers user interactions with application
+windows, not interactions with the compositor chrome.
+
+That means a user could start loading an application,
+switch workspaces, and get forcefully pulled back when the
+application finishes loading.
+
+This commit fixes that problem by updating the user time on shell
+interactions as well.
+---
+ src/core/events.c | 38 ++++++++++++++++++++++++--------------
+ 1 file changed, 24 insertions(+), 14 deletions(-)
+
+diff --git a/src/core/events.c b/src/core/events.c
+index 775104229..4d25b6dc0 100644
+--- a/src/core/events.c
++++ b/src/core/events.c
+@@ -288,79 +288,89 @@ meta_display_handle_event (MetaDisplay        *display,
+       if (source)
+         meta_backend_update_last_device (backend, source);
+     }
+ 
+ #ifdef HAVE_WAYLAND
+   if (meta_is_wayland_compositor () && event->type == CLUTTER_MOTION)
+     {
+       MetaCursorRenderer *cursor_renderer;
+       ClutterInputDevice *device;
+ 
+       device = clutter_event_get_device (event);
+       cursor_renderer = meta_backend_get_cursor_renderer_for_device (backend,
+                                                                      device);
+       if (cursor_renderer)
+         meta_cursor_renderer_update_position (cursor_renderer);
+ 
+       if (device == clutter_seat_get_pointer (clutter_input_device_get_seat (device)))
+         {
+           MetaCursorTracker *cursor_tracker =
+             meta_backend_get_cursor_tracker (backend);
+ 
+           meta_cursor_tracker_invalidate_position (cursor_tracker);
+         }
+     }
+ #endif
+ 
+   window = get_window_for_event (display, event);
+ 
+   display->current_time = event->any.time;
+ 
+-  if (window && !window->override_redirect &&
+-      (event->type == CLUTTER_KEY_PRESS ||
+-       event->type == CLUTTER_BUTTON_PRESS ||
+-       event->type == CLUTTER_TOUCH_BEGIN))
++  if (event->type == CLUTTER_KEY_PRESS ||
++      event->type == CLUTTER_BUTTON_PRESS ||
++      event->type == CLUTTER_TOUCH_BEGIN)
+     {
+-      if (META_CURRENT_TIME == display->current_time)
++      if (window && !window->override_redirect)
+         {
+-          /* We can't use missing (i.e. invalid) timestamps to set user time,
+-           * nor do we want to use them to sanity check other timestamps.
+-           * See bug 313490 for more details.
+-           */
+-          meta_warning ("Event has no timestamp! You may be using a broken "
+-                        "program such as xse.  Please ask the authors of that "
+-                        "program to fix it.");
++          if (META_CURRENT_TIME == display->current_time)
++            {
++              /* We can't use missing (i.e. invalid) timestamps to set user time,
++               * nor do we want to use them to sanity check other timestamps.
++               * See bug 313490 for more details.
++               */
++              meta_warning ("Event has no timestamp! You may be using a broken "
++                            "program such as xse.  Please ask the authors of that "
++                            "program to fix it.");
++            }
++          else
++            {
++              meta_window_set_user_time (window, display->current_time);
++              meta_display_sanity_check_timestamps (display, display->current_time);
++            }
+         }
+       else
+         {
+-          meta_window_set_user_time (window, display->current_time);
+-          meta_display_sanity_check_timestamps (display, display->current_time);
++          /* Always update user time to the last time the user did an event, even
++           * if it was to shell chrome or a notification or something.
++           */
++          if (XSERVER_TIME_IS_BEFORE (display->last_user_time, display->current_time))
++            display->last_user_time = display->current_time;
+         }
+     }
+ 
+   gesture_tracker = meta_display_get_gesture_tracker (display);
+ 
+   if (meta_gesture_tracker_handle_event (gesture_tracker, event))
+     {
+       bypass_wayland = bypass_clutter = TRUE;
+       goto out;
+     }
+ 
+   if (display->event_route == META_EVENT_ROUTE_WINDOW_OP)
+     {
+       if (meta_window_handle_mouse_grab_op_event (window, event))
+         {
+           bypass_clutter = TRUE;
+           bypass_wayland = TRUE;
+           goto out;
+         }
+     }
+ 
+   /* For key events, it's important to enforce single-handling, or
+    * we can get into a confused state. So if a keybinding is
+    * handled (because it's one of our hot-keys, or because we are
+    * in a keyboard-grabbed mode like moving a window, we don't
+    * want to pass the key event to the compositor or Wayland at all.
+    */
+   if (meta_keybindings_process_event (display, window, event))
+     {
+       bypass_clutter = TRUE;
+-- 
+2.44.0
+

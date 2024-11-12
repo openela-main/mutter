@@ -10,7 +10,7 @@
 
 Name:          mutter
 Version:       40.9
-Release:       15%{?dist}
+Release:       20%{?dist}
 Summary:       Window and compositing manager based on Clutter
 
 License:       GPLv2+
@@ -112,6 +112,28 @@ Patch45: 0001-gpu-kms-Report-that-we-can-have-outputs-if-we-have-c.patch
 Patch46: 0001-clutter-text-Don-t-query-preferred-size-without-allo.patch
 
 Patch47: 0001-core-Change-MetaWaylandTextInput-event-forwarding-to.patch
+
+Patch48: 0001-backends-Disambiguate-output-mapped-to-tablet-with-c.patch
+
+# Backport https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/2359
+# Resolves https://issues.redhat.com/browse/RHEL-45198
+Patch49: 0001-kms-impl-device-Add-addfb2_modifiers-to-MetaKmsDevic.patch
+Patch50: 0002-kms-device-Disable-modifiers-when-DRM_CAP_ADDFB2_MOD.patch
+
+# Focus stealing prevention fixes
+# Resolves https://issues.redhat.com/browse/RHEL-29537
+Patch51: 0001-window-Don-t-switch-workspaces-if-users-from-forged-.patch
+Patch52: 0002-core-events-Count-shell-interactions-has-user-intera.patch
+Patch53: 0003-core-window-Split-cgroup-out-to-separate-struct.patch
+Patch54: 0004-window-Track-workspace-per-cgroup.patch
+Patch55: 0005-core-display-Avoid-placement-heuristcs-for-apps-that.patch
+Patch56: 0006-meson-Add-optional-libsystemd-dependency.patch
+
+# Don't retry cursor plane if failed (RHEL-33720)
+Patch57: 0001-cursor-renderer-native-Don-t-retry-forever-after-GBM.patch
+
+# RHEL-45998 & RHEL-45366
+Patch58: sticky-or-on-top-dialog-fixes.patch
 
 BuildRequires: chrpath
 BuildRequires: pango-devel
@@ -260,6 +282,29 @@ desktop-file-validate %{buildroot}/%{_datadir}/applications/%{name}.desktop
 %{_datadir}/mutter-%{mutter_api_version}/tests
 
 %changelog
+* Mon Aug 05 2024 Jonas Ådahl <jadahl@redhat.com>) - 40.9-20
+- Fix positioning when using always-on-top windows
+  Resolves: RHEL-45998
+- Improve handling of always-on-visible-workspace windows
+  Resolves: RHEL-45366
+
+* Mon Aug 05 2024 Jonas Ådahl <jadahl@redhat.com>) - 40.9-19
+- Don't retry using cursor plane if it failed
+  Resolves: RHEL-32622
+
+* Mon Jul 29 2024 Ray Strode <rstrode@redhat.com> - 40.9-18
+- Don't allow applications on other workspaces to steal
+  focus, unless their timestamps are pristine
+  Resolves: RHEL-29537
+
+* Thu Jul 04 2024 José Expósito <jexposit@redhat.com> - 40.9-17
+- Fix Wayland session with Virtio driver
+  Resolves: RHEL-45198
+
+* Tue Feb 06 2024 Carlos Garnacho <cgarnach@redhat.com> - 40.9-16
+- Disambiguate output mapped to tablet with connector name
+  Resolves: RHEL-28535
+
 * Mon Jul 10 2023 Carlos Garnacho <cgarnach@redhat.com> - 40.9-15
 - Fix ordering of keyboard modifiers relative to other keyboard events
   Resolves: #2218146

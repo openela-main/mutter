@@ -1,0 +1,51 @@
+From 11e6100226006b5371de30310357582db64c9309 Mon Sep 17 00:00:00 2001
+From: Daniel van Vugt <daniel.van.vugt@canonical.com>
+Date: Tue, 5 Apr 2022 17:05:17 +0800
+Subject: [PATCH 1/2] kms/impl-device: Add addfb2_modifiers to
+ MetaKmsDeviceCaps
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/2359>
+---
+ src/backends/native/meta-kms-impl-device.c | 6 ++++++
+ src/backends/native/meta-kms-impl-device.h | 1 +
+ 2 files changed, 7 insertions(+)
+
+diff --git a/src/backends/native/meta-kms-impl-device.c b/src/backends/native/meta-kms-impl-device.c
+index 75920fe6b..d2e821338 100644
+--- a/src/backends/native/meta-kms-impl-device.c
++++ b/src/backends/native/meta-kms-impl-device.c
+@@ -288,6 +288,7 @@ init_caps (MetaKmsImplDevice *impl_device)
+     meta_kms_impl_device_get_instance_private (impl_device);
+   int fd = priv->fd;
+   uint64_t cursor_width, cursor_height;
++  uint64_t addfb2_modifiers;
+ 
+   if (drmGetCap (fd, DRM_CAP_CURSOR_WIDTH, &cursor_width) == 0 &&
+       drmGetCap (fd, DRM_CAP_CURSOR_HEIGHT, &cursor_height) == 0)
+@@ -296,6 +297,11 @@ init_caps (MetaKmsImplDevice *impl_device)
+       priv->caps.cursor_width = cursor_width;
+       priv->caps.cursor_height = cursor_height;
+     }
++
++  if (drmGetCap (fd, DRM_CAP_ADDFB2_MODIFIERS, &addfb2_modifiers) == 0)
++    {
++      priv->caps.addfb2_modifiers = (addfb2_modifiers != 0);
++    }
+ }
+ 
+ static void
+diff --git a/src/backends/native/meta-kms-impl-device.h b/src/backends/native/meta-kms-impl-device.h
+index 913ba992f..a82ad4155 100644
+--- a/src/backends/native/meta-kms-impl-device.h
++++ b/src/backends/native/meta-kms-impl-device.h
+@@ -36,6 +36,7 @@ typedef struct _MetaKmsDeviceCaps
+   gboolean has_cursor_size;
+   uint64_t cursor_width;
+   uint64_t cursor_height;
++  gboolean addfb2_modifiers;
+ } MetaKmsDeviceCaps;
+ 
+ typedef struct _MetaKmsProp MetaKmsProp;
+-- 
+2.45.2
+

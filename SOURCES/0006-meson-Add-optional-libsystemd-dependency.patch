@@ -1,0 +1,370 @@
+From 63c529fc5a8db1a82fd6b988aa44e3e6a1e417bf Mon Sep 17 00:00:00 2001
+From: Nishal Kulkarni <nishalkulkarni@gmail.com>
+Date: Thu, 5 Aug 2021 19:37:28 +0530
+Subject: [PATCH 6/6] meson: Add optional libsystemd dependency
+
+To utilize the API provided by libsystemd it would be better to
+create a separate HAVE_LIBSYSTEMD configuration option instead of
+having to rely on HAVE_NATIVE_BACKEND.
+
+For now this will be utilized for getting the control group of a
+MetaWindow.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/1960>
+---
+ config.h.meson    | 3 +++
+ meson.build       | 5 ++++-
+ meson_options.txt | 6 ++++++
+ src/meson.build   | 6 ++++++
+ 4 files changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/config.h.meson b/config.h.meson
+index 26e13b9ca..b7ca736df 100644
+--- a/config.h.meson
++++ b/config.h.meson
+@@ -7,60 +7,63 @@
+ /* Version number of package */
+ #mesondefine PACKAGE_VERSION
+ 
+ /* Search path for plugins */
+ #mesondefine MUTTER_PLUGIN_DIR
+ 
+ /* */
+ #mesondefine MUTTER_LOCALEDIR
+ 
+ /* */
+ #mesondefine MUTTER_LIBEXECDIR
+ 
+ /* */
+ #mesondefine MUTTER_PKGDATADIR
+ 
+ /* Defined if EGL support is enabled */
+ #mesondefine HAVE_EGL
+ 
+ /* Defined if EGLDevice support is enabled */
+ #mesondefine HAVE_EGL_DEVICE
+ 
+ /* Defined if EGLStream support is enabled */
+ #mesondefine HAVE_WAYLAND_EGLSTREAM
+ 
+ /* Building with gudev for device type detection */
+ #mesondefine HAVE_LIBGUDEV
+ 
+ /* Building with libwacom for advanced tablet management */
+ #mesondefine HAVE_LIBWACOM
+ 
++/* Building with libsystemd */
++#mesondefine HAVE_LIBSYSTEMD
++
+ /* Define if you want to enable the native (KMS) backend based on systemd */
+ #mesondefine HAVE_NATIVE_BACKEND
+ 
+ /* Define if you want to enable Wayland support */
+ #mesondefine HAVE_WAYLAND
+ 
+ /* Defined if screen cast and remote desktop support is enabled */
+ #mesondefine HAVE_REMOTE_DESKTOP
+ 
+ /* Building with SM support */
+ #mesondefine HAVE_SM
+ 
+ /* Building with startup notification support */
+ #mesondefine HAVE_STARTUP_NOTIFICATION
+ 
+ /* Building with Sysprof profiling support */
+ #mesondefine HAVE_PROFILER
+ 
+ /* Path to Xwayland executable */
+ #mesondefine XWAYLAND_PATH
+ 
+ /* Xwayland applications allowed to issue keyboard grabs */
+ #mesondefine XWAYLAND_GRAB_DEFAULT_ACCESS_RULES
+ 
+ /* XKB base prefix */
+ #mesondefine XKB_BASE
+ 
+ /* Whether <sys/prctl.h> exists and it defines prctl() */
+ #mesondefine HAVE_SYS_PRCTL
+ 
+diff --git a/meson.build b/meson.build
+index 39ad5bcd1..613aa6779 100644
+--- a/meson.build
++++ b/meson.build
+@@ -161,67 +161,69 @@ if have_gles2
+   if not have_egl
+     error('GLESv2 support requires EGL to be enabled')
+   endif
+ endif
+ 
+ have_wayland = get_option('wayland')
+ if have_wayland
+   wayland_server_dep = dependency('wayland-server', version: wayland_server_req)
+   wayland_client_dep = dependency('wayland-client', version: wayland_server_req)
+   wayland_protocols_dep = dependency('wayland-protocols',
+                                      version: wayland_protocols_req)
+   wayland_egl_dep = dependency('wayland-egl')
+ 
+   if not have_egl
+     error('Wayland support requires EGL to be enabled')
+   endif
+ endif
+ 
+ have_libgudev = get_option('udev')
+ if have_libgudev
+   libudev_dep = dependency('libudev', version: udev_req)
+   gudev_dep = dependency('gudev-1.0', version: gudev_req)
+   udev_dep = dependency('udev')
+ 
+   udev_dir = get_option('udev_dir')
+   if udev_dir == ''
+     udev_dir = udev_dep.get_pkgconfig_variable('udevdir')
+   endif
+ endif
+ 
++have_libsystemd = get_option('systemd')
++libsystemd_dep = dependency('libsystemd', required: have_libsystemd)
++
+ have_native_backend = get_option('native_backend')
+ if have_native_backend
+   libdrm_dep = dependency('libdrm')
+   libgbm_dep = dependency('gbm', version: gbm_req)
+   libinput_dep = dependency('libinput', version: libinput_req)
+ 
+-  libsystemd_dep = dependency('libsystemd', required: false)
+   if libsystemd_dep.found()
+     logind_provider_dep = libsystemd_dep
+   else
+     logind_provider_dep = dependency('libelogind')
+   endif
+ 
+   if not have_egl
+     error('The native backend requires EGL to be enabled')
+   endif
+ 
+   if not have_gles2
+     error('The native backend requires GLESv2 to be enabled')
+   endif
+ 
+   if not have_libgudev
+     error('The native backend requires udev to be enabled')
+   endif
+ endif
+ 
+ have_egl_device = get_option('egl_device')
+ 
+ have_wayland_eglstream = get_option('wayland_eglstream')
+ if have_wayland_eglstream
+   wayland_eglstream_protocols_dep = dependency('wayland-eglstream-protocols')
+   dl_dep = cc.find_library('dl', required: true)
+ 
+   if not have_wayland
+     error('Wayland EGLStream support requires Wayland to be enabled')
+   endif
+ endif
+@@ -359,60 +361,61 @@ if buildtype != 'plain'
+     '-Werror=array-bounds',
+     '-Werror=write-strings',
+     '-Werror=address',
+     '-Werror=int-to-pointer-cast',
+     '-Werror=pointer-to-int-cast',
+     '-Werror=empty-body',
+     '-Werror=write-strings',
+   ]
+   supported_warnings = cc.get_supported_arguments(all_warnings)
+   add_project_arguments(supported_warnings, language: 'c')
+ endif
+ 
+ if get_option('debug')
+   debug_c_args = [
+     '-DG_ENABLE_DEBUG',
+     '-fno-omit-frame-pointer'
+   ]
+   supported_debug_c_args = cc.get_supported_arguments(debug_c_args)
+   add_project_arguments(supported_debug_c_args, language: 'c')
+ endif
+ 
+ cc.compiles('void main (void) { __builtin_ffsl (0); __builtin_popcountl (0); }')
+ 
+ cdata = configuration_data()
+ cdata.set_quoted('GETTEXT_PACKAGE', gettext_package)
+ cdata.set_quoted('VERSION', meson.project_version())
+ cdata.set_quoted('PACKAGE_VERSION', meson.project_version())
+ 
+ cdata.set('HAVE_EGL', have_egl)
+ cdata.set('HAVE_WAYLAND', have_wayland)
++cdata.set('HAVE_LIBSYSTEMD', have_libsystemd)
+ cdata.set('HAVE_NATIVE_BACKEND', have_native_backend)
+ cdata.set('HAVE_REMOTE_DESKTOP', have_remote_desktop)
+ cdata.set('HAVE_EGL_DEVICE', have_egl_device)
+ cdata.set('HAVE_WAYLAND_EGLSTREAM', have_wayland_eglstream)
+ cdata.set('HAVE_LIBGUDEV', have_libgudev)
+ cdata.set('HAVE_LIBWACOM', have_libwacom)
+ cdata.set('HAVE_SM', have_sm)
+ cdata.set('HAVE_STARTUP_NOTIFICATION', have_startup_notification)
+ cdata.set('HAVE_INTROSPECTION', have_introspection)
+ cdata.set('HAVE_PROFILER', have_profiler)
+ 
+ xkb_base = xkeyboard_config_dep.get_pkgconfig_variable('xkb_base')
+ cdata.set_quoted('XKB_BASE', xkb_base)
+ 
+ if cc.has_header_symbol('sys/prctl.h', 'prctl')
+   cdata.set('HAVE_SYS_PRCTL', 1)
+ endif
+ 
+ have_xwayland_initfd = false
+ have_xwayland_listenfd = false
+ if have_wayland
+   xwayland_dep = dependency('xwayland', required: false)
+ 
+   xwayland_path = get_option('xwayland_path')
+   if xwayland_path == ''
+     if xwayland_dep.found()
+       xwayland_path = xwayland_dep.get_pkgconfig_variable('xwayland')
+     else
+       xwayland_path = find_program('Xwayland').path()
+     endif
+diff --git a/meson_options.txt b/meson_options.txt
+index 61d9cb48d..6609e4332 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -12,60 +12,66 @@ option('opengl_libname',
+ 
+ option('gles2_libname',
+   type: 'string',
+   value: 'libGLESv2.so.2',
+   description: 'GLESv2 library file name'
+ )
+ 
+ option('gles2',
+   type: 'boolean',
+   value: true,
+   description: 'Enable GLES2 support'
+ )
+ 
+ option('egl',
+   type: 'boolean',
+   value: true,
+   description: 'Enable EGL support'
+ )
+ option('glx',
+   type: 'boolean',
+   value: true,
+   description: 'Enable GLX support'
+ )
+ 
+ option('wayland',
+   type: 'boolean',
+   value: true,
+   description: 'Enable Wayland support'
+ )
+ 
++option('systemd',
++  type: 'boolean',
++  value: true,
++  description: 'Enable systemd support'
++)
++
+ option('native_backend',
+   type: 'boolean',
+   value: true,
+   description: 'Enable the native backend'
+ )
+ 
+ option('remote_desktop',
+   type: 'boolean',
+   value: true,
+   description: 'Enable remote desktop and screen cast support'
+ )
+ 
+ option('egl_device',
+   type: 'boolean',
+   value: false,
+   description: 'Enable EGLDevice and EGLStream renderer support'
+ )
+ 
+ option('wayland_eglstream',
+   type: 'boolean',
+   value: false,
+   description: 'Enable Wayland EGLStream support client support'
+ )
+ 
+ option('udev',
+   type: 'boolean',
+   value: true,
+   description: 'Enable udev support when using the X11 backend'
+ )
+ 
+diff --git a/src/meson.build b/src/meson.build
+index 47633498e..9ac6afa1a 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -91,60 +91,66 @@ if have_x11
+     xinerama_dep,
+     xext_dep,
+     ice_dep,
+     xcomposite_dep,
+     xcursor_dep,
+     xdamage_dep,
+     xkbfile_dep,
+     xkeyboard_config_dep,
+     xkbcommon_x11_dep,
+     xrender_dep,
+     x11_xcb_dep,
+     xcb_randr_dep,
+     xcb_res_dep,
+     xau_dep,
+     xtst_dep,
+   ]
+ 
+   if have_sm
+     mutter_pkg_private_deps += [
+       sm_dep,
+     ]
+   endif
+ endif
+ 
+ if have_wayland
+   mutter_pkg_deps += [
+     wayland_server_dep,
+   ]
+ endif
+ 
++if have_libsystemd
++  mutter_pkg_private_deps += [
++    libsystemd_dep,
++  ]
++endif
++
+ if have_native_backend
+   mutter_pkg_private_deps += [
+     libdrm_dep,
+     libinput_dep,
+     gudev_dep,
+     libgbm_dep,
+     logind_provider_dep,
+     libudev_dep,
+     xkbcommon_dep,
+   ]
+ endif
+ 
+ if have_wayland_eglstream
+   mutter_lib_deps += [
+     dl_dep,
+   ]
+   mutter_pkg_private_deps += [
+     wayland_eglstream_protocols_dep,
+   ]
+ endif
+ 
+ mutter_deps = [
+   mutter_pkg_deps,
+   mutter_pkg_private_deps,
+   mutter_lib_deps,
+ ]
+ 
+ mutter_c_args = [
+   '-DCLUTTER_ENABLE_COMPOSITOR_API',
+   '-DCOGL_ENABLE_EXPERIMENTAL_API',
+-- 
+2.44.0
+

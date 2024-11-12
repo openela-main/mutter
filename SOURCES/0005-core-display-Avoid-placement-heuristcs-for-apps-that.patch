@@ -1,0 +1,556 @@
+From 62e4f7153738b404b05b1ee59d088bc52fd86bc0 Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Mon, 8 Jul 2024 09:54:01 -0400
+Subject: [PATCH 5/6] core/display: Avoid placement heuristcs for apps that can
+ do startup notification
+
+We recently introduced heuristics to decide which workspace to put an an
+application window on. Those heuristics are only used if an application
+doesn't support startup notification (since startup notification
+provides a means to give that information without heuristics).
+
+Unfortunately, sometimes applications that support startup notification
+aren't started with it. In those cases, it's wrong to fall back to
+heuristics, because those heuristics are a big change in behavior, and
+cause applications to break (like terminals launched from the desktop
+starting on the wrong workspace)
+
+This commit adds code to try to deduce the application from its cgroup,
+and then check if it supports startup notification, even if it's not
+started with it in any given instance.
+---
+ src/core/display-private.h |   1 +
+ src/core/display.c         | 113 +++++++++++++++++++++++++++++++++++++
+ src/core/window.c          |  10 +++-
+ 3 files changed, 122 insertions(+), 2 deletions(-)
+
+diff --git a/src/core/display-private.h b/src/core/display-private.h
+index 2b8d9e0d0..3c7e0898b 100644
+--- a/src/core/display-private.h
++++ b/src/core/display-private.h
+@@ -81,60 +81,61 @@ typedef enum
+ } MetaTileMode;
+ 
+ typedef enum
+ {
+   /* Normal interaction where you're interacting with windows.
+    * Events go to windows normally. */
+   META_EVENT_ROUTE_NORMAL,
+ 
+   /* In a window operation like moving or resizing. All events
+    * goes to MetaWindow, but not to the actual client window. */
+   META_EVENT_ROUTE_WINDOW_OP,
+ 
+   /* In a compositor grab operation. All events go to the
+    * compositor plugin. */
+   META_EVENT_ROUTE_COMPOSITOR_GRAB,
+ 
+   /* A Wayland application has a popup open. All events go to
+    * the Wayland application. */
+   META_EVENT_ROUTE_WAYLAND_POPUP,
+ 
+   /* The user is clicking on a window button. */
+   META_EVENT_ROUTE_FRAME_BUTTON,
+ } MetaEventRoute;
+ 
+ typedef void (* MetaDisplayWindowFunc) (MetaWindow *window,
+                                         gpointer    user_data);
+ 
+ typedef struct _MetaCGroup MetaCGroup;
+ struct _MetaCGroup {
+   GFile *path;
++  GAppInfo *app_info;
+   guint32 user_time;
+   MetaWorkspace *last_active_workspace;
+   gboolean has_startup_sequence;
+ 
+   grefcount ref_count;
+ };
+ 
+ struct _MetaDisplay
+ {
+   GObject parent_instance;
+ 
+   MetaX11Display *x11_display;
+ 
+   int clutter_event_filter;
+ 
+   /* Our best guess as to the "currently" focused window (that is, the
+    * window that we expect will be focused at the point when the X
+    * server processes our next request), and the serial of the request
+    * or event that caused this.
+    */
+   MetaWindow *focus_window;
+ 
+   /* last timestamp passed to XSetInputFocus */
+   guint32 last_focus_time;
+ 
+   /* last user interaction time in any app */
+   guint32 last_user_time;
+ 
+   /* whether we're using mousenav (only relevant for sloppy&mouse focus modes;
+    * !mouse_mode means "keynav mode")
+diff --git a/src/core/display.c b/src/core/display.c
+index f30f9a268..4c9038e62 100644
+--- a/src/core/display.c
++++ b/src/core/display.c
+@@ -65,60 +65,62 @@
+ #include "core/meta-clipboard-manager.h"
+ #include "core/meta-workspace-manager-private.h"
+ #include "core/util-private.h"
+ #include "core/window-private.h"
+ #include "core/workspace-private.h"
+ #include "meta/compositor-mutter.h"
+ #include "meta/compositor.h"
+ #include "meta/main.h"
+ #include "meta/meta-backend.h"
+ #include "meta/meta-enum-types.h"
+ #include "meta/meta-sound-player.h"
+ #include "meta/meta-x11-errors.h"
+ #include "meta/prefs.h"
+ #include "x11/meta-startup-notification-x11.h"
+ #include "x11/meta-x11-display-private.h"
+ #include "x11/window-x11.h"
+ #include "x11/xprops.h"
+ 
+ #ifdef HAVE_WAYLAND
+ #include "compositor/meta-compositor-native.h"
+ #include "compositor/meta-compositor-server.h"
+ #include "wayland/meta-xwayland-private.h"
+ #include "wayland/meta-wayland-tablet-seat.h"
+ #include "wayland/meta-wayland-tablet-pad.h"
+ #endif
+ 
+ #ifdef HAVE_NATIVE_BACKEND
+ #include "backends/native/meta-backend-native.h"
+ #endif
+ 
++#include <gio/gdesktopappinfo.h>
++
+ /*
+  * SECTION:pings
+  *
+  * Sometimes we want to see whether a window is responding,
+  * so we send it a "ping" message and see whether it sends us back a "pong"
+  * message within a reasonable time. Here we have a system which lets us
+  * nominate one function to be called if we get the pong in time and another
+  * function if we don't. The system is rather more complicated than it needs
+  * to be, since we only ever use it to destroy windows which are asked to
+  * close themselves and don't do so within a reasonable amount of time, and
+  * therefore we always use the same callbacks. It's possible that we might
+  * use it for other things in future, or on the other hand we might decide
+  * that we're never going to do so and simplify it a bit.
+  */
+ 
+ /**
+  * MetaPingData:
+  *
+  * Describes a ping on a window. When we send a ping to a window, we build
+  * one of these structs, and it eventually gets passed to the timeout function
+  * or to the function which handles the response from the window. If the window
+  * does or doesn't respond to the ping, we use this information to deal with
+  * these facts; we have a handler function for each.
+  */
+ typedef struct
+ {
+   MetaWindow *window;
+   guint32     serial;
+   guint       ping_timeout_id;
+ } MetaPingData;
+@@ -1493,85 +1495,196 @@ meta_display_set_input_focus (MetaDisplay *display,
+ 
+   meta_display_update_focus_window (display, window);
+ 
+   display->last_focus_time = timestamp;
+ 
+   if (window == NULL || window != display->autoraise_window)
+     meta_display_remove_autoraise_callback (display);
+ }
+ 
+ void
+ meta_display_unset_input_focus (MetaDisplay *display,
+                                 guint32      timestamp)
+ {
+   meta_display_set_input_focus (display, NULL, FALSE, timestamp);
+ }
+ 
+ void
+ meta_display_register_wayland_window (MetaDisplay *display,
+                                       MetaWindow  *window)
+ {
+   g_hash_table_add (display->wayland_windows, window);
+ }
+ 
+ void
+ meta_display_unregister_wayland_window (MetaDisplay *display,
+                                         MetaWindow  *window)
+ {
+   g_hash_table_remove (display->wayland_windows, window);
+ }
+ 
++static void
++unescape_app_id (char **app_id)
++{
++  char *p = *app_id;
++  char *q = *app_id;
++
++  while (*p != '\0')
++    {
++      if (*p == '\\' &&
++          p[1] == 'x' &&
++          g_ascii_isxdigit (p[2]) &&
++          g_ascii_isxdigit (p[3]))
++        {
++          char escape_code[3] = { p[2], p[3], '\0' };
++          *q = (char) g_ascii_strtoll (escape_code, NULL, 16);
++          p += strlen ("\\xAA");
++        }
++      else
++        {
++          *q = *p;
++          p++;
++        }
++      q++;
++    }
++  *q = '\0';
++}
++
++/* The possible formats are:
++ *
++ * /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-dbus\x2d:1.2\x2dorg.gnome.Totem.slice/dbus-:1.2-org.gnome.Totem@0.service
++ * /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/gnome-terminal-server.service
++ * /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/app-gnome-org.gnome.Evince-12345.scope
++ */
++static char *
++extract_app_id_from_cgroup (const char *cgroup)
++{
++  g_auto (GStrv) path_components = NULL;
++  const char *unit_name = NULL;
++  size_t i;
++  g_autofree char *app_id = NULL;
++  char *start_delimiter = NULL;
++  char *end_delimiter = NULL;
++  int app_id_length;
++
++  path_components = g_strsplit (cgroup, G_DIR_SEPARATOR_S, -1);
++
++  for (i = 0; path_components[i]; i++)
++    {
++      if (!g_str_equal (path_components[i], "app.slice"))
++        continue;
++
++      unit_name = path_components[i + 1];
++      break;
++    }
++
++  if (!unit_name)
++    return NULL;
++
++  if (!g_str_has_prefix (unit_name, "app-"))
++    return NULL;
++
++  end_delimiter = g_strrstr (unit_name, ".slice");
++
++  if (!end_delimiter)
++    end_delimiter = strrchr (unit_name, '-');
++
++  if (end_delimiter == NULL || end_delimiter == unit_name)
++    return NULL;
++
++  start_delimiter = end_delimiter - 1;
++  while (start_delimiter > cgroup && *start_delimiter != '-')
++    start_delimiter--;
++
++  if (start_delimiter == NULL || start_delimiter == unit_name)
++    return NULL;
++
++  app_id_length = end_delimiter - (start_delimiter + 1);
++  app_id = g_strdup_printf ("%.*s.desktop", app_id_length, start_delimiter + 1);
++
++  unescape_app_id (&app_id);
++
++  if (g_str_has_prefix (app_id, "dbus-"))
++    {
++      const char *dbus_prefix;
++      dbus_prefix = strchr (app_id + strlen ("dbus-") + 1, '-');
++
++      if (dbus_prefix)
++        {
++          char *stripped_app_id = strdup (dbus_prefix + 1);
++          g_clear_pointer (&app_id, g_free);
++          app_id = g_steal_pointer (&stripped_app_id);
++        }
++    }
++
++  return g_steal_pointer (&app_id);
++}
++
+ MetaCGroup*
+ meta_cgroup_new (const char *path)
+ {
+   MetaCGroup *cgroup;
++  g_autofree char *app_id = NULL;
+ 
+   cgroup = g_new0 (MetaCGroup, 1);
+   cgroup->path = g_file_new_for_path (path);
+   g_ref_count_init (&cgroup->ref_count);
+ 
++  app_id = extract_app_id_from_cgroup (path);
++
++  if (app_id)
++    {
++      g_autoptr (GDesktopAppInfo) app_info = NULL;
++
++      app_info = g_desktop_app_info_new (app_id);
++
++      if (app_info)
++        cgroup->app_info = G_APP_INFO (g_steal_pointer (&app_info));
++    }
++
+   return cgroup;
+ }
+ 
+ MetaCGroup*
+ meta_cgroup_ref (MetaCGroup *cgroup)
+ {
+   g_ref_count_inc (&cgroup->ref_count);
+   return cgroup;
+ }
+ 
+ gboolean
+ meta_cgroup_unref (MetaCGroup *cgroup)
+ {
+   if (!g_ref_count_dec (&cgroup->ref_count))
+     return FALSE;
+ 
++  g_clear_object (&cgroup->app_info);
+   g_clear_object (&cgroup->path);
+   g_free (cgroup);
+ 
+   return TRUE;
+ }
+ 
+ void
+ meta_cgroup_update_workspace (MetaCGroup    *cgroup,
+ 			      MetaWorkspace *workspace,
+ 			      guint32        timestamp)
+ {
+   if (!cgroup)
+     return;
+ 
+   if (!XSERVER_TIME_IS_BEFORE (cgroup->user_time, timestamp))
+     return;
+ 
+   cgroup->user_time = timestamp;
+ 
+   if (cgroup->last_active_workspace)
+     g_object_remove_weak_pointer (G_OBJECT (cgroup->last_active_workspace),
+                                   (gpointer *) &cgroup->last_active_workspace);
+ 
+   cgroup->last_active_workspace = workspace;
+ 
+   g_object_add_weak_pointer (G_OBJECT (workspace),
+                              (gpointer *) &cgroup->last_active_workspace);
+ }
+ 
+ void
+diff --git a/src/core/window.c b/src/core/window.c
+index 5c7b2e8cf..d36e45992 100644
+--- a/src/core/window.c
++++ b/src/core/window.c
+@@ -74,60 +74,62 @@
+ #include "core/frame.h"
+ #include "core/keybindings-private.h"
+ #include "core/meta-workspace-manager-private.h"
+ #include "core/place.h"
+ #include "core/stack.h"
+ #include "core/util-private.h"
+ #include "core/workspace-private.h"
+ #include "meta/compositor-mutter.h"
+ #include "meta/group.h"
+ #include "meta/meta-cursor-tracker.h"
+ #include "meta/meta-enum-types.h"
+ #include "meta/meta-x11-errors.h"
+ #include "meta/prefs.h"
+ #include "ui/ui.h"
+ #include "x11/meta-x11-display-private.h"
+ #include "x11/window-props.h"
+ #include "x11/window-x11.h"
+ #include "x11/xprops.h"
+ 
+ #ifdef HAVE_WAYLAND
+ #include "wayland/meta-wayland-private.h"
+ #include "wayland/meta-wayland-surface.h"
+ #include "wayland/meta-window-wayland.h"
+ #include "wayland/meta-window-xwayland.h"
+ #endif
+ 
+ #ifdef HAVE_LIBSYSTEMD
+ #include <systemd/sd-login.h>
+ #endif
+ 
++#include <gio/gdesktopappinfo.h>
++
+ 
+ /* Windows that unmaximize to a size bigger than that fraction of the workarea
+  * will be scaled down to that size (while maintaining aspect ratio).
+  * Windows that cover an area greater then this size are automaximized on map.
+  */
+ #define MAX_UNMAXIMIZED_WINDOW_AREA .8
+ 
+ #define SNAP_SECURITY_LABEL_PREFIX "snap."
+ 
+ static int destroying_windows_disallowed = 0;
+ 
+ /* Each window has a "stamp" which is a non-recycled 64-bit ID. They
+  * start after the end of the XID space so that, for stacking
+  * we can keep a guint64 that represents one or the other
+  */
+ static guint64 next_window_stamp = G_GUINT64_CONSTANT(0x100000000);
+ 
+ static void     invalidate_work_areas     (MetaWindow     *window);
+ static void     set_wm_state              (MetaWindow     *window);
+ static void     set_net_wm_state          (MetaWindow     *window);
+ static void     meta_window_set_above     (MetaWindow     *window,
+                                            gboolean        new_value);
+ 
+ static void     meta_window_show          (MetaWindow     *window);
+ static void     meta_window_hide          (MetaWindow     *window);
+ 
+ static void     meta_window_save_rect         (MetaWindow    *window);
+ 
+ static void     ensure_mru_position_after (MetaWindow *window,
+                                            MetaWindow *after_this_one);
+@@ -1317,61 +1319,63 @@ _meta_window_shared_new (MetaDisplay         *display,
+ 
+   /* override-redirect windows are subtly different from other windows
+    * with window->on_all_workspaces == TRUE. Other windows are part of
+    * some workspace (so they can return to that if the flag is turned off),
+    * but appear on other workspaces. override-redirect windows are part
+    * of no workspace.
+    */
+   if (!window->override_redirect && window->workspace == NULL)
+     {
+       meta_window_read_cgroup (window);
+       if (window->transient_for != NULL)
+         {
+           meta_topic (META_DEBUG_PLACEMENT,
+                       "Putting window %s on same workspace as parent %s",
+                       window->desc, window->transient_for->desc);
+ 
+           g_warn_if_fail (!window->transient_for->override_redirect);
+           set_workspace_state (window,
+                                window->transient_for->on_all_workspaces,
+                                window->transient_for->workspace);
+         }
+       else if (window->on_all_workspaces)
+         {
+           meta_topic (META_DEBUG_PLACEMENT,
+                       "Putting window %s on all workspaces",
+                       window->desc);
+ 
+           set_workspace_state (window, TRUE, NULL);
+         }
+       else if (window->cgroup && window->cgroup->last_active_workspace != NULL &&
+-               !window->cgroup->has_startup_sequence)
++               !window->cgroup->has_startup_sequence &&
++               (!window->cgroup->app_info ||
++                !g_desktop_app_info_get_boolean (G_DESKTOP_APP_INFO (window->cgroup->app_info), "StartupNotify")))
+         {
+           meta_topic (META_DEBUG_PLACEMENT,
+                       "Putting window %s on active workspace",
+                       window->desc);
+           set_workspace_state (window, FALSE, window->cgroup->last_active_workspace);
+         }
+       else
+         {
+           meta_topic (META_DEBUG_PLACEMENT,
+                       "Putting window %s on active workspace",
+                       window->desc);
+ 
+           set_workspace_state (window, FALSE, workspace_manager->active_workspace);
+         }
+ 
+       meta_window_update_struts (window);
+     }
+ 
+   meta_window_main_monitor_changed (window, NULL);
+ 
+   /* Must add window to stack before doing move/resize, since the
+    * window might have fullscreen size (i.e. should have been
+    * fullscreen'd; acrobat is one such braindead case; it withdraws
+    * and remaps its window whenever trying to become fullscreen...)
+    * and thus constraints may try to auto-fullscreen it which also
+    * means restacking it.
+    */
+   if (meta_window_is_stackable (window))
+     meta_stack_add (window->display->stack,
+                     window);
+@@ -3751,61 +3755,63 @@ meta_window_activate_full (MetaWindow     *window,
+        * timestamp as the last user interaction
+        */
+       allow_workspace_switch = TRUE;
+     }
+ 
+   if (timestamp != 0 &&
+       XSERVER_TIME_IS_BEFORE (timestamp, window->display->last_user_time))
+     {
+       meta_topic (META_DEBUG_FOCUS,
+                   "last_user_time (%u) is more recent; ignoring "
+                   " _NET_ACTIVE_WINDOW message.",
+                   window->display->last_user_time);
+       meta_window_set_demands_attention(window);
+       return;
+     }
+ 
+   if (timestamp == 0)
+     timestamp = meta_display_get_current_time_roundtrip (window->display);
+ 
+   meta_window_set_user_time (window, timestamp);
+ 
+   /* disable show desktop mode unless we're a desktop component */
+   maybe_leave_show_desktop_mode (window);
+ 
+  /* Get window on last active, current, or given workspace */
+  if (workspace == NULL)
+   {
+     meta_window_read_cgroup (window);
+     if (window->cgroup &&
+         window->cgroup->last_active_workspace != NULL &&
+-        !window->cgroup->has_startup_sequence)
++        !window->cgroup->has_startup_sequence &&
++        (!window->cgroup->app_info ||
++         !g_desktop_app_info_get_boolean (G_DESKTOP_APP_INFO (window->cgroup->app_info), "StartupNotify")))
+       workspace = window->cgroup->last_active_workspace;
+     else
+       workspace = workspace_manager->active_workspace;
+   }
+ 
+   /* For non-transient windows, we just set up a pulsing indicator,
+      rather than move windows or workspaces.
+      See http://bugzilla.gnome.org/show_bug.cgi?id=482354 */
+   if (window->transient_for == NULL &&
+       !allow_workspace_switch &&
+       !meta_window_located_on_workspace (window, workspace))
+     {
+       meta_window_set_demands_attention (window);
+       /* We've marked it as demanding, don't need to do anything else. */
+       return;
+     }
+   else if (window->transient_for != NULL)
+     {
+       /* Move transients to current workspace - preference dialogs should appear over
+          the source window.  */
+       meta_window_change_workspace (window, workspace);
+     }
+ 
+   if (window->shaded)
+     meta_window_unshade (window, timestamp);
+ 
+   unminimize_window_and_all_transient_parents (window);
+ 
+   if (meta_prefs_get_raise_on_click () ||
+       source_indication == META_CLIENT_TYPE_PAGER)
+-- 
+2.44.0
+

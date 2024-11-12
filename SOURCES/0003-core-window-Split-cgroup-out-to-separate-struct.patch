@@ -1,0 +1,816 @@
+From 0c104d85654318978d10d0fadf33ceea92e29c0a Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Thu, 13 Jun 2024 12:58:21 -0400
+Subject: [PATCH 3/6] core/window: Split cgroup out to separate struct
+
+We're going to need to attach other information to the cgroup,
+aside from the cgroup path, so this commit separates it out
+to its own struct, shared with other windows using the same
+cgroup.
+---
+ src/core/display-private.h | 17 +++++++++
+ src/core/display.c         | 70 ++++++++++++++++++++++++++++++++++++++
+ src/core/window-private.h  |  2 ++
+ src/core/window.c          | 44 ++++++++++++++++++++++++
+ 4 files changed, 133 insertions(+)
+
+diff --git a/src/core/display-private.h b/src/core/display-private.h
+index 3d690fcb6..fb17d20a6 100644
+--- a/src/core/display-private.h
++++ b/src/core/display-private.h
+@@ -78,98 +78,106 @@ typedef enum
+   META_TILE_LEFT,
+   META_TILE_RIGHT,
+   META_TILE_MAXIMIZED
+ } MetaTileMode;
+ 
+ typedef enum
+ {
+   /* Normal interaction where you're interacting with windows.
+    * Events go to windows normally. */
+   META_EVENT_ROUTE_NORMAL,
+ 
+   /* In a window operation like moving or resizing. All events
+    * goes to MetaWindow, but not to the actual client window. */
+   META_EVENT_ROUTE_WINDOW_OP,
+ 
+   /* In a compositor grab operation. All events go to the
+    * compositor plugin. */
+   META_EVENT_ROUTE_COMPOSITOR_GRAB,
+ 
+   /* A Wayland application has a popup open. All events go to
+    * the Wayland application. */
+   META_EVENT_ROUTE_WAYLAND_POPUP,
+ 
+   /* The user is clicking on a window button. */
+   META_EVENT_ROUTE_FRAME_BUTTON,
+ } MetaEventRoute;
+ 
+ typedef void (* MetaDisplayWindowFunc) (MetaWindow *window,
+                                         gpointer    user_data);
+ 
++typedef struct _MetaCGroup MetaCGroup;
++struct _MetaCGroup {
++  GFile *path;
++
++  grefcount ref_count;
++};
++
+ struct _MetaDisplay
+ {
+   GObject parent_instance;
+ 
+   MetaX11Display *x11_display;
+ 
+   int clutter_event_filter;
+ 
+   /* Our best guess as to the "currently" focused window (that is, the
+    * window that we expect will be focused at the point when the X
+    * server processes our next request), and the serial of the request
+    * or event that caused this.
+    */
+   MetaWindow *focus_window;
+ 
+   /* last timestamp passed to XSetInputFocus */
+   guint32 last_focus_time;
+ 
+   /* last user interaction time in any app */
+   guint32 last_user_time;
+ 
+   /* whether we're using mousenav (only relevant for sloppy&mouse focus modes;
+    * !mouse_mode means "keynav mode")
+    */
+   guint mouse_mode : 1;
+ 
+   /* Helper var used when focus_new_windows setting is 'strict'; only
+    * relevant in 'strict' mode and if the focus window is a terminal.
+    * In that case, we don't allow new windows to take focus away from
+    * a terminal, but if the user explicitly did something that should
+    * allow a different window to gain focus (e.g. global keybinding or
+    * clicking on a dock), then we will allow the transfer.
+    */
+   guint allow_terminal_deactivation : 1;
+ 
+   /*< private-ish >*/
+   GHashTable *stamps;
+   GHashTable *wayland_windows;
++  GHashTable *cgroups;
+ 
+   /* serials of leave/unmap events that may
+    * correspond to an enter event we should
+    * ignore
+    */
+   unsigned long ignored_crossing_serials[N_IGNORED_CROSSING_SERIALS];
+ 
+   guint32 current_time;
+ 
+   /* We maintain a sequence counter, incremented for each #MetaWindow
+    * created.  This is exposed by meta_window_get_stable_sequence()
+    * but is otherwise not used inside mutter.
+    *
+    * It can be useful to plugins which want to sort windows in a
+    * stable fashion.
+    */
+   guint32 window_sequence_counter;
+ 
+   /* Pings which we're waiting for a reply from */
+   GSList     *pending_pings;
+ 
+   /* Pending focus change */
+   guint       focus_timeout_id;
+ 
+   /* Pending autoraise */
+   guint       autoraise_timeout_id;
+   MetaWindow* autoraise_window;
+ 
+   /* Event routing */
+   MetaEventRoute event_route;
+@@ -254,60 +262,69 @@ struct _MetaDisplayClass
+  *
+  * See the docs for meta_display_xserver_time_is_before().
+  */
+ #define XSERVER_TIME_IS_BEFORE(time1, time2)                          \
+   ( (time1) == 0 ||                                                     \
+     (XSERVER_TIME_IS_BEFORE_ASSUMING_REAL_TIMESTAMPS(time1, time2) && \
+      (time2) != 0)                                                      \
+   )
+ 
+ gboolean      meta_display_open                (void);
+ 
+ void meta_display_manage_all_xwindows (MetaDisplay *display);
+ void meta_display_unmanage_windows   (MetaDisplay *display,
+                                       guint32      timestamp);
+ 
+ /* Utility function to compare the stacking of two windows */
+ int           meta_display_stack_cmp           (const void *a,
+                                                 const void *b);
+ 
+ /* Each MetaWindow is uniquely identified by a 64-bit "stamp"; unlike a
+  * a MetaWindow *, a stamp will never be recycled
+  */
+ MetaWindow* meta_display_lookup_stamp     (MetaDisplay *display,
+                                            guint64      stamp);
+ void        meta_display_register_stamp   (MetaDisplay *display,
+                                            guint64     *stampp,
+                                            MetaWindow  *window);
+ void        meta_display_unregister_stamp (MetaDisplay *display,
+                                            guint64      stamp);
+ 
++void        meta_display_register_cgroup (MetaDisplay *display,
++                                          MetaWindow  *window,
++                                          const char  *path);
++void        meta_display_unregister_cgroup (MetaDisplay *display,
++                                            MetaWindow  *window);
++
++MetaCGroup* meta_cgroup_ref (MetaCGroup *cgroup);
++gboolean    meta_cgroup_unref (MetaCGroup *cgroup);
++
+ /* A "stack id" is a XID or a stamp */
+ #define META_STACK_ID_IS_X11(id) ((id) < G_GUINT64_CONSTANT(0x100000000))
+ 
+ META_EXPORT_TEST
+ MetaWindow* meta_display_lookup_stack_id   (MetaDisplay *display,
+                                             guint64      stack_id);
+ 
+ /* for debug logging only; returns a human-description of the stack
+  * ID - a small number of buffers are recycled, so the result must
+  * be used immediately or copied */
+ const char *meta_display_describe_stack_id (MetaDisplay *display,
+                                             guint64      stack_id);
+ 
+ void        meta_display_register_wayland_window   (MetaDisplay *display,
+                                                     MetaWindow  *window);
+ void        meta_display_unregister_wayland_window (MetaDisplay *display,
+                                                     MetaWindow  *window);
+ 
+ void        meta_display_notify_window_created (MetaDisplay  *display,
+                                                 MetaWindow   *window);
+ 
+ META_EXPORT_TEST
+ GSList*     meta_display_list_windows        (MetaDisplay          *display,
+                                               MetaListWindowsFlags  flags);
+ 
+ MetaDisplay* meta_display_for_x_display  (Display     *xdisplay);
+ 
+ META_EXPORT_TEST
+ MetaDisplay* meta_get_display            (void);
+ 
+diff --git a/src/core/display.c b/src/core/display.c
+index 4b58a5d2f..937defd2c 100644
+--- a/src/core/display.c
++++ b/src/core/display.c
+@@ -833,60 +833,61 @@ meta_display_open (void)
+ 
+   i = 0;
+   while (i < N_IGNORED_CROSSING_SERIALS)
+     {
+       display->ignored_crossing_serials[i] = 0;
+       ++i;
+     }
+ 
+   display->current_time = META_CURRENT_TIME;
+ 
+   display->grab_resize_timeout_id = 0;
+   display->grab_have_keyboard = FALSE;
+ 
+   display->grab_op = META_GRAB_OP_NONE;
+   display->grab_window = NULL;
+   display->grab_tile_mode = META_TILE_NONE;
+   display->grab_tile_monitor_number = -1;
+ 
+   meta_display_cleanup_edges (display);
+ 
+   meta_display_init_keys (display);
+ 
+   meta_prefs_add_listener (prefs_changed_callback, display);
+ 
+   /* Get events */
+   meta_display_init_events (display);
+ 
+   display->stamps = g_hash_table_new (g_int64_hash,
+                                       g_int64_equal);
+   display->wayland_windows = g_hash_table_new (NULL, NULL);
++  display->cgroups = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+ 
+   monitor_manager = meta_backend_get_monitor_manager (backend);
+   g_signal_connect (monitor_manager, "monitors-changed-internal",
+                     G_CALLBACK (on_monitors_changed_internal), display);
+ 
+   display->pad_action_mapper = meta_pad_action_mapper_new (monitor_manager);
+ 
+   settings = meta_backend_get_settings (backend);
+   g_signal_connect (settings, "ui-scaling-factor-changed",
+                     G_CALLBACK (on_ui_scaling_factor_changed), display);
+ 
+   display->compositor = create_compositor (display);
+ 
+   meta_display_set_cursor (display, META_CURSOR_DEFAULT);
+ 
+   display->stack = meta_stack_new (display);
+   display->stack_tracker = meta_stack_tracker_new (display);
+ 
+   display->workspace_manager = meta_workspace_manager_new (display);
+ 
+   display->startup_notification = meta_startup_notification_new (display);
+ 
+   display->bell = meta_bell_new (display);
+ 
+   display->selection = meta_selection_new (display);
+   meta_clipboard_manager_init (display);
+ 
+ #ifdef HAVE_WAYLAND
+   if (meta_is_wayland_compositor ())
+     {
+@@ -1095,60 +1096,61 @@ meta_display_close (MetaDisplay *display,
+   meta_prefs_remove_listener (prefs_changed_callback, display);
+ 
+   meta_display_remove_autoraise_callback (display);
+ 
+   g_clear_object (&display->gesture_tracker);
+ 
+   g_clear_handle_id (&display->focus_timeout_id, g_source_remove);
+   g_clear_handle_id (&display->tile_preview_timeout_id, g_source_remove);
+ 
+   if (display->work_area_later != 0)
+     meta_later_remove (display->work_area_later);
+   if (display->check_fullscreen_later != 0)
+     meta_later_remove (display->check_fullscreen_later);
+ 
+   /* Stop caring about events */
+   meta_display_free_events (display);
+ 
+   g_clear_pointer (&display->compositor, meta_compositor_destroy);
+ 
+   meta_display_shutdown_x11 (display);
+ 
+   g_clear_object (&display->stack);
+   g_clear_pointer (&display->stack_tracker,
+                    meta_stack_tracker_free);
+ 
+   /* Must be after all calls to meta_window_unmanage() since they
+    * unregister windows
+    */
+   g_hash_table_destroy (display->wayland_windows);
+   g_hash_table_destroy (display->stamps);
++  g_hash_table_destroy (display->cgroups);
+ 
+   meta_display_shutdown_keys (display);
+ 
+   g_clear_object (&display->bell);
+   g_clear_object (&display->startup_notification);
+   g_clear_object (&display->workspace_manager);
+   g_clear_object (&display->sound_player);
+ 
+   meta_clipboard_manager_shutdown (display);
+   g_clear_object (&display->selection);
+   g_clear_object (&display->pad_action_mapper);
+ 
+   g_object_unref (display);
+   the_display = NULL;
+ 
+   meta_quit (META_EXIT_SUCCESS);
+ }
+ 
+ /**
+  * meta_display_for_x_display:
+  * @xdisplay: An X display
+  *
+  * Returns the singleton MetaDisplay if @xdisplay matches the X display it's
+  * managing; otherwise gives a warning and returns %NULL.  When we were claiming
+  * to be able to manage multiple displays, this was supposed to find the
+  * display out of the list which matched that display.  Now it's merely an
+  * extra sanity check.
+  *
+  * Returns: The singleton X display, or %NULL if @xdisplay isn't the one
+  *          we're managing.
+@@ -1491,60 +1493,128 @@ meta_display_set_input_focus (MetaDisplay *display,
+ 
+   meta_display_update_focus_window (display, window);
+ 
+   display->last_focus_time = timestamp;
+ 
+   if (window == NULL || window != display->autoraise_window)
+     meta_display_remove_autoraise_callback (display);
+ }
+ 
+ void
+ meta_display_unset_input_focus (MetaDisplay *display,
+                                 guint32      timestamp)
+ {
+   meta_display_set_input_focus (display, NULL, FALSE, timestamp);
+ }
+ 
+ void
+ meta_display_register_wayland_window (MetaDisplay *display,
+                                       MetaWindow  *window)
+ {
+   g_hash_table_add (display->wayland_windows, window);
+ }
+ 
+ void
+ meta_display_unregister_wayland_window (MetaDisplay *display,
+                                         MetaWindow  *window)
+ {
+   g_hash_table_remove (display->wayland_windows, window);
+ }
+ 
++MetaCGroup*
++meta_cgroup_new (const char *path)
++{
++  MetaCGroup *cgroup;
++
++  cgroup = g_new0 (MetaCGroup, 1);
++  cgroup->path = g_file_new_for_path (path);
++  g_ref_count_init (&cgroup->ref_count);
++
++  return cgroup;
++}
++
++MetaCGroup*
++meta_cgroup_ref (MetaCGroup *cgroup)
++{
++  g_ref_count_inc (&cgroup->ref_count);
++  return cgroup;
++}
++
++gboolean
++meta_cgroup_unref (MetaCGroup *cgroup)
++{
++  if (!g_ref_count_dec (&cgroup->ref_count))
++    return FALSE;
++
++  g_clear_object (&cgroup->path);
++  g_free (cgroup);
++
++  return TRUE;
++}
++
++void
++meta_display_register_cgroup (MetaDisplay *display,
++                              MetaWindow  *window,
++                              const char  *path)
++{
++  MetaCGroup *cgroup;
++
++  cgroup = g_hash_table_lookup (display->cgroups, path);
++
++  if (cgroup)
++    {
++      window->cgroup = meta_cgroup_ref (cgroup);
++      return;
++    }
++
++  cgroup = meta_cgroup_new (path);
++  g_hash_table_insert (display->cgroups, g_file_get_path (cgroup->path), cgroup);
++}
++
++void
++meta_display_unregister_cgroup (MetaDisplay *display,
++                                MetaWindow  *window)
++{
++  g_autofree const char *path = NULL;
++  MetaCGroup *cgroup = g_steal_pointer (&window->cgroup);
++
++  if (!cgroup)
++    return;
++
++  path = g_file_get_path (cgroup->path);
++
++  if (!meta_cgroup_unref (cgroup))
++    return;
++
++  g_hash_table_remove (display->cgroups, path);
++}
++
+ MetaWindow*
+ meta_display_lookup_stamp (MetaDisplay *display,
+                            guint64       stamp)
+ {
+   return g_hash_table_lookup (display->stamps, &stamp);
+ }
+ 
+ void
+ meta_display_register_stamp (MetaDisplay *display,
+                              guint64     *stampp,
+                              MetaWindow  *window)
+ {
+   g_return_if_fail (g_hash_table_lookup (display->stamps, stampp) == NULL);
+ 
+   g_hash_table_insert (display->stamps, stampp, window);
+ }
+ 
+ void
+ meta_display_unregister_stamp (MetaDisplay *display,
+                                guint64      stamp)
+ {
+   g_return_if_fail (g_hash_table_lookup (display->stamps, &stamp) != NULL);
+ 
+   g_hash_table_remove (display->stamps, &stamp);
+ }
+ 
+ MetaWindow*
+ meta_display_lookup_stack_id (MetaDisplay *display,
+                               guint64      stack_id)
+ {
+diff --git a/src/core/window-private.h b/src/core/window-private.h
+index d1730c988..8a0aebb38 100644
+--- a/src/core/window-private.h
++++ b/src/core/window-private.h
+@@ -193,60 +193,62 @@ struct _MetaWindow
+    * binary data
+    */
+   char *res_class;
+   char *res_name;
+   char *role;
+   char *sm_client_id;
+   char *wm_client_machine;
+ 
+   char *startup_id;
+   char *mutter_hints;
+   char *sandboxed_app_id;
+   char *gtk_theme_variant;
+   char *gtk_application_id;
+   char *gtk_unique_bus_name;
+   char *gtk_application_object_path;
+   char *gtk_window_object_path;
+   char *gtk_app_menu_object_path;
+   char *gtk_menubar_object_path;
+ 
+   Window xtransient_for;
+   Window xgroup_leader;
+   Window xclient_leader;
+   MetaWindow *transient_for;
+ 
+   /* Initial workspace property */
+   int initial_workspace;
+ 
+   /* Initial timestamp property */
+   guint32 initial_timestamp;
+ 
++  MetaCGroup *cgroup;
++
+   /* Whether this is an override redirect window or not */
+   guint override_redirect : 1;
+ 
+   /* Whether we're maximized */
+   guint maximized_horizontally : 1;
+   guint maximized_vertically : 1;
+ 
+   /* Whether we have to maximize/minimize after placement */
+   guint maximize_horizontally_after_placement : 1;
+   guint maximize_vertically_after_placement : 1;
+   guint minimize_after_placement : 1;
+ 
+   /* The current tile mode */
+   MetaTileMode tile_mode;
+ 
+   /* The last "full" maximized/unmaximized state. We need to keep track of
+    * that to toggle between normal/tiled or maximized/tiled states. */
+   guint saved_maximize : 1;
+   int tile_monitor_number;
+ 
+   struct {
+     MetaEdgeConstraint top;
+     MetaEdgeConstraint right;
+     MetaEdgeConstraint bottom;
+     MetaEdgeConstraint left;
+   } edge_constraints;
+ 
+   double tile_hfraction;
+ 
+   uint64_t preferred_output_winsys_id;
+diff --git a/src/core/window.c b/src/core/window.c
+index e787dbce0..f5ecd6438 100644
+--- a/src/core/window.c
++++ b/src/core/window.c
+@@ -70,60 +70,65 @@
+ #include "cogl/cogl.h"
+ #include "core/boxes-private.h"
+ #include "core/constraints.h"
+ #include "core/edge-resistance.h"
+ #include "core/frame.h"
+ #include "core/keybindings-private.h"
+ #include "core/meta-workspace-manager-private.h"
+ #include "core/place.h"
+ #include "core/stack.h"
+ #include "core/util-private.h"
+ #include "core/workspace-private.h"
+ #include "meta/compositor-mutter.h"
+ #include "meta/group.h"
+ #include "meta/meta-cursor-tracker.h"
+ #include "meta/meta-enum-types.h"
+ #include "meta/meta-x11-errors.h"
+ #include "meta/prefs.h"
+ #include "ui/ui.h"
+ #include "x11/meta-x11-display-private.h"
+ #include "x11/window-props.h"
+ #include "x11/window-x11.h"
+ #include "x11/xprops.h"
+ 
+ #ifdef HAVE_WAYLAND
+ #include "wayland/meta-wayland-private.h"
+ #include "wayland/meta-wayland-surface.h"
+ #include "wayland/meta-window-wayland.h"
+ #include "wayland/meta-window-xwayland.h"
+ #endif
+ 
++#ifdef HAVE_LIBSYSTEMD
++#include <systemd/sd-login.h>
++#endif
++
++
+ /* Windows that unmaximize to a size bigger than that fraction of the workarea
+  * will be scaled down to that size (while maintaining aspect ratio).
+  * Windows that cover an area greater then this size are automaximized on map.
+  */
+ #define MAX_UNMAXIMIZED_WINDOW_AREA .8
+ 
+ #define SNAP_SECURITY_LABEL_PREFIX "snap."
+ 
+ static int destroying_windows_disallowed = 0;
+ 
+ /* Each window has a "stamp" which is a non-recycled 64-bit ID. They
+  * start after the end of the XID space so that, for stacking
+  * we can keep a guint64 that represents one or the other
+  */
+ static guint64 next_window_stamp = G_GUINT64_CONSTANT(0x100000000);
+ 
+ static void     invalidate_work_areas     (MetaWindow     *window);
+ static void     set_wm_state              (MetaWindow     *window);
+ static void     set_net_wm_state          (MetaWindow     *window);
+ static void     meta_window_set_above     (MetaWindow     *window,
+                                            gboolean        new_value);
+ 
+ static void     meta_window_show          (MetaWindow     *window);
+ static void     meta_window_hide          (MetaWindow     *window);
+ 
+ static void     meta_window_save_rect         (MetaWindow    *window);
+ 
+ static void     ensure_mru_position_after (MetaWindow *window,
+                                            MetaWindow *after_this_one);
+ 
+@@ -303,60 +308,63 @@ meta_window_real_get_client_pid (MetaWindow *window)
+ }
+ 
+ static void
+ meta_window_finalize (GObject *object)
+ {
+   MetaWindow *window = META_WINDOW (object);
+ 
+   if (window->icon)
+     cairo_surface_destroy (window->icon);
+ 
+   if (window->mini_icon)
+     cairo_surface_destroy (window->mini_icon);
+ 
+   if (window->frame_bounds)
+     cairo_region_destroy (window->frame_bounds);
+ 
+   if (window->shape_region)
+     cairo_region_destroy (window->shape_region);
+ 
+   if (window->opaque_region)
+     cairo_region_destroy (window->opaque_region);
+ 
+   if (window->input_region)
+     cairo_region_destroy (window->input_region);
+ 
+   if (window->transient_for)
+     g_object_unref (window->transient_for);
+ 
+   g_free (window->sm_client_id);
+   g_free (window->wm_client_machine);
++
++  meta_display_unregister_cgroup (window->display, window);
++
+   g_free (window->startup_id);
+   g_free (window->role);
+   g_free (window->res_class);
+   g_free (window->res_name);
+   g_free (window->title);
+   g_free (window->desc);
+   g_free (window->sandboxed_app_id);
+   g_free (window->gtk_theme_variant);
+   g_free (window->gtk_application_id);
+   g_free (window->gtk_unique_bus_name);
+   g_free (window->gtk_application_object_path);
+   g_free (window->gtk_window_object_path);
+   g_free (window->gtk_app_menu_object_path);
+   g_free (window->gtk_menubar_object_path);
+   g_free (window->placement.rule);
+ 
+   G_OBJECT_CLASS (meta_window_parent_class)->finalize (object);
+ }
+ 
+ static void
+ meta_window_get_property(GObject         *object,
+                          guint            prop_id,
+                          GValue          *value,
+                          GParamSpec      *pspec)
+ {
+   MetaWindow *win = META_WINDOW (object);
+ 
+   switch (prop_id)
+     {
+     case PROP_TITLE:
+@@ -1129,60 +1137,61 @@ _meta_window_shared_new (MetaDisplay         *display,
+   window->has_minimize_func = TRUE;
+   window->has_maximize_func = TRUE;
+   window->has_move_func = TRUE;
+   window->has_resize_func = TRUE;
+ 
+   window->has_shade_func = TRUE;
+ 
+   window->has_fullscreen_func = TRUE;
+ 
+   window->always_sticky = FALSE;
+ 
+   window->skip_taskbar = FALSE;
+   window->skip_pager = FALSE;
+   window->skip_from_window_list = FALSE;
+   window->wm_state_above = FALSE;
+   window->wm_state_below = FALSE;
+   window->wm_state_demands_attention = FALSE;
+ 
+   window->res_class = NULL;
+   window->res_name = NULL;
+   window->role = NULL;
+   window->sm_client_id = NULL;
+   window->wm_client_machine = NULL;
+   window->is_remote = FALSE;
+   window->startup_id = NULL;
+ 
+   window->client_pid = 0;
+ 
+   window->xtransient_for = None;
+   window->xclient_leader = None;
++  window->cgroup = NULL;
+ 
+   window->type = META_WINDOW_NORMAL;
+ 
+   window->struts = NULL;
+ 
+   window->layer = META_LAYER_LAST; /* invalid value */
+   window->stack_position = -1;
+   window->initial_workspace = 0; /* not used */
+   window->initial_timestamp = 0; /* not used */
+ 
+   window->compositor_private = NULL;
+ 
+   window->monitor = meta_window_calculate_main_logical_monitor (window);
+   if (window->monitor)
+     window->preferred_output_winsys_id = window->monitor->winsys_id;
+   else
+     window->preferred_output_winsys_id = UINT_MAX;
+ 
+   window->tile_match = NULL;
+ 
+   /* Assign this #MetaWindow a sequence number which can be used
+    * for sorting.
+    */
+   window->stable_sequence = ++display->window_sequence_counter;
+ 
+   window->opacity = 0xFF;
+ 
+   if (window->override_redirect)
+     {
+       window->decorated = FALSE;
+@@ -7640,60 +7649,95 @@ meta_window_get_transient_for (MetaWindow *window)
+   else if (window->xtransient_for)
+     return meta_x11_display_lookup_x_window (window->display->x11_display,
+                                              window->xtransient_for);
+   else
+     return NULL;
+ }
+ 
+ /**
+  * meta_window_get_pid:
+  * @window: a #MetaWindow
+  *
+  * Returns the pid of the process that created this window, if available
+  * to the windowing system.
+  *
+  * Note that the value returned by this is vulnerable to spoofing attacks
+  * by the client.
+  *
+  * Return value: the pid, or 0 if not known.
+  */
+ pid_t
+ meta_window_get_pid (MetaWindow *window)
+ {
+   g_return_val_if_fail (META_IS_WINDOW (window), 0);
+ 
+   if (window->client_pid == 0)
+     window->client_pid = META_WINDOW_GET_CLASS (window)->get_client_pid (window);
+ 
+   return window->client_pid;
+ }
+ 
++static void
++meta_window_read_cgroup (MetaWindow *window)
++{
++#ifdef HAVE_LIBSYSTEMD
++  g_autofree char *contents = NULL;
++  g_autofree char *complete_path = NULL;
++  g_autofree char *unit_name = NULL;
++  g_autofree char *unit_path = NULL;
++  char *unit_end;
++  pid_t pid;
++
++  if (window->cgroup)
++    return;
++
++  pid = meta_window_get_pid (window);
++  if (pid < 1)
++    return;
++
++  if (sd_pid_get_cgroup (pid, &contents) < 0)
++    return;
++  g_strstrip (contents);
++
++  complete_path = g_strdup_printf ("%s%s", "/sys/fs/cgroup", contents);
++
++  if (sd_pid_get_user_unit (pid, &unit_name) < 0)
++    return;
++  g_strstrip (unit_name);
++
++  unit_end = strstr (complete_path, unit_name) + strlen (unit_name);
++  *unit_end = '\0';
++
++  meta_display_register_cgroup (window->display, window, complete_path);
++#endif
++}
++
+ /**
+  * meta_window_get_client_machine:
+  * @window: a #MetaWindow
+  *
+  * Returns name of the client machine from which this windows was created,
+  * if known (obtained from the WM_CLIENT_MACHINE property).
+  *
+  * Return value: (transfer none): the machine name, or NULL; the string is
+  * owned by the window manager and should not be freed or modified by the
+  * caller.
+  */
+ const char *
+ meta_window_get_client_machine (MetaWindow *window)
+ {
+   g_return_val_if_fail (META_IS_WINDOW (window), NULL);
+ 
+   return window->wm_client_machine;
+ }
+ 
+ /**
+  * meta_window_is_remote:
+  * @window: a #MetaWindow
+  *
+  * Returns: %TRUE if this window originates from a host
+  * different from the one running mutter.
+  */
+ gboolean
+ meta_window_is_remote (MetaWindow *window)
+ {
+   return window->is_remote;
+-- 
+2.44.0
+

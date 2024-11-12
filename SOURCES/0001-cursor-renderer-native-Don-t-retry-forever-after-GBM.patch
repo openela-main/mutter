@@ -1,0 +1,69 @@
+From 4618af58cc9046142f348d16ab1150bfde8f49c4 Mon Sep 17 00:00:00 2001
+From: Daniel van Vugt <daniel.van.vugt@canonical.com>
+Date: Wed, 20 Jul 2022 10:10:21 +0000
+Subject: [PATCH] cursor-renderer-native: Don't retry forever after GBM cursor
+ functions fail
+
+This avoids flooding the log with every cursor change:
+```
+(gnome-shell:19923): libmutter-WARNING **: 10:15:23.404: Realizing HW cursor failed: Failed to allocate gbm_bo: Invalid argument
+
+(gnome-shell:19923): libmutter-WARNING **: 10:15:23.450: Realizing HW cursor failed: Failed to allocate gbm_bo: Invalid argument
+
+(gnome-shell:19923): libmutter-WARNING **: 10:15:23.451: Realizing HW cursor failed: Failed to allocate gbm_bo: Invalid argument
+```
+
+Related: https://gitlab.gnome.org/GNOME/mutter/-/issues/2354
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/2520>
+---
+ .../native/meta-cursor-renderer-native.c      | 19 ++++++++++++++-----
+ 1 file changed, 14 insertions(+), 5 deletions(-)
+
+diff --git a/src/backends/native/meta-cursor-renderer-native.c b/src/backends/native/meta-cursor-renderer-native.c
+index 3c63a15d68..08c9819a12 100644
+--- a/src/backends/native/meta-cursor-renderer-native.c
++++ b/src/backends/native/meta-cursor-renderer-native.c
+@@ -506,12 +506,9 @@ unset_crtc_cursor (MetaCursorRendererNative *native,
+ }
+ 
+ static void
+-disable_hw_cursor_for_crtc (MetaKmsCrtc  *kms_crtc,
+-                            const GError *error)
++disable_hw_cursor_for_gpu (MetaGpuKms   *gpu_kms,
++                           const GError *error)
+ {
+-  MetaCrtcKms *crtc_kms = meta_crtc_kms_from_kms_crtc (kms_crtc);
+-  MetaCrtc *crtc = META_CRTC (crtc_kms);
+-  MetaGpuKms *gpu_kms = META_GPU_KMS (meta_crtc_get_gpu (crtc));
+   MetaCursorRendererNativeGpuData *cursor_renderer_gpu_data =
+     meta_cursor_renderer_native_gpu_data_from_gpu (gpu_kms);
+ 
+@@ -521,6 +518,17 @@ disable_hw_cursor_for_crtc (MetaKmsCrtc  *kms_crtc,
+   cursor_renderer_gpu_data->hw_cursor_broken = TRUE;
+ }
+ 
++static void
++disable_hw_cursor_for_crtc (MetaKmsCrtc  *kms_crtc,
++                            const GError *error)
++{
++  MetaCrtcKms *crtc_kms = meta_crtc_kms_from_kms_crtc (kms_crtc);
++  MetaCrtc *crtc = META_CRTC (crtc_kms);
++  MetaGpuKms *gpu_kms = META_GPU_KMS (meta_crtc_get_gpu (crtc));
++
++  disable_hw_cursor_for_gpu (gpu_kms, error);
++}
++
+ void
+ meta_cursor_renderer_native_prepare_frame (MetaCursorRendererNative *cursor_renderer_native,
+                                            MetaRendererView         *view)
+@@ -1375,6 +1383,7 @@ load_cursor_sprite_gbm_buffer_for_gpu (MetaCursorRendererNative *native,
+   if (!buffer)
+     {
+       g_warning ("Realizing HW cursor failed: %s", error->message);
++      disable_hw_cursor_for_gpu (gpu_kms, error);
+       return;
+     }
+ 
+-- 
+2.44.0.501.g19981daefd.dirty
+
