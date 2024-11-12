@@ -10,7 +10,7 @@
 
 Name:          mutter
 Version:       40.9
-Release:       20%{?dist}
+Release:       22%{?dist}
 Summary:       Window and compositing manager based on Clutter
 
 License:       GPLv2+
@@ -134,6 +134,17 @@ Patch57: 0001-cursor-renderer-native-Don-t-retry-forever-after-GBM.patch
 
 # RHEL-45998 & RHEL-45366
 Patch58: sticky-or-on-top-dialog-fixes.patch
+
+# RHEL-62988
+Patch59: 0001-wayland-wl-shell-Make-sure-created-window-has-a-prop.patch
+Patch60: 0002-window-Avoid-SIGFPE-on-bogus-window-size.patch
+
+# RHEL-62997, RHEL-63000
+Patch61: 0001-display-Make-cgroup-constructor-local.patch
+Patch62: 0002-display-Also-set-window-cgroup-on-cgroup-creation.patch
+Patch63: 0003-window-Unregister-cgroup-on-unmanage.patch
+Patch64: 0004-window-Don-t-use-cgroup-workspace-if-there-already-i.patch
+Patch65: 0005-cgroup-Get-app-info-from-gnome-shell-when-possible.patch
 
 BuildRequires: chrpath
 BuildRequires: pango-devel
@@ -282,13 +293,23 @@ desktop-file-validate %{buildroot}/%{_datadir}/applications/%{name}.desktop
 %{_datadir}/mutter-%{mutter_api_version}/tests
 
 %changelog
-* Mon Aug 05 2024 Jonas Ådahl <jadahl@redhat.com>) - 40.9-20
+* Fri Oct 18 2024 Jonas Ådahl <jadahl@redhat.com> - 40.9-22
+- Fix crash when moving window while switching workspace
+  Resolves: RHEL-62997
+- Improve app discovery for workspace logic
+  Resolves: RHEL-63000
+
+* Fri Oct 18 2024 Jonas Ådahl <jadahl@redhat.com> - 40.9-21
+- Fix regression causing wl-copy to trigger a crash
+  Resolves: RHEL-62993
+
+* Mon Aug 05 2024 Jonas Ådahl <jadahl@redhat.com> - 40.9-20
 - Fix positioning when using always-on-top windows
   Resolves: RHEL-45998
 - Improve handling of always-on-visible-workspace windows
   Resolves: RHEL-45366
 
-* Mon Aug 05 2024 Jonas Ådahl <jadahl@redhat.com>) - 40.9-19
+* Mon Aug 05 2024 Jonas Ådahl <jadahl@redhat.com> - 40.9-19
 - Don't retry using cursor plane if it failed
   Resolves: RHEL-32622
 

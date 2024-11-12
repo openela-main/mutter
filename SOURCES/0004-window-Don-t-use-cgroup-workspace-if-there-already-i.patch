@@ -1,0 +1,30 @@
+From 6cdfc8abe25fccfd06cac99ae82c0f2acbbdb7c2 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@redhat.com>
+Date: Thu, 17 Oct 2024 11:49:26 +0200
+Subject: [PATCH 4/5] window: Don't use cgroup workspace if there already is
+ one
+
+This fixes a re-entry issue where calling 'meta_window_activate()'
+assumed it'd activate on the current workspace.
+---
+ src/core/window.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/src/core/window.c b/src/core/window.c
+index 272d664965..8ad8e5c4c4 100644
+--- a/src/core/window.c
++++ b/src/core/window.c
+@@ -3812,7 +3812,9 @@ meta_window_activate_full (MetaWindow     *window,
+  if (workspace == NULL)
+   {
+     meta_window_read_cgroup (window);
+-    if (window->cgroup &&
++    if (!window->workspace &&
++        !window->on_all_workspaces &&
++        window->cgroup &&
+         window->cgroup->last_active_workspace != NULL &&
+         !window->cgroup->has_startup_sequence &&
+         (!window->cgroup->app_info ||
+-- 
+2.44.0.501.g19981daefd.dirty
+

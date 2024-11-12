@@ -1,0 +1,24 @@
+From e434615ed1d4ba506e0282ad5cdc94303310c682 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@redhat.com>
+Date: Wed, 16 Oct 2024 14:26:28 +0200
+Subject: [PATCH 2/2] window: Avoid SIGFPE on bogus window size
+
+---
+ src/core/window.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/core/window.c b/src/core/window.c
+index 512ef9312f..142aa0eca1 100644
+--- a/src/core/window.c
++++ b/src/core/window.c
+@@ -2393,6 +2393,7 @@ window_would_mostly_be_covered_by_always_above_window (MetaWindow *window)
+     }
+ 
+   window_area = window->rect.width * window->rect.height;
++  g_return_val_if_fail (window_area > 0, FALSE);
+ 
+   cairo_region_intersect_rectangle (region, &window->rect);
+   intersection_area = calculate_region_area (region);
+-- 
+2.44.0.501.g19981daefd.dirty
+

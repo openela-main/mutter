@@ -1,0 +1,166 @@
+From 50d0355bda637a2b214e14c23e767e80066c1084 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@redhat.com>
+Date: Fri, 18 Oct 2024 13:23:01 +0200
+Subject: [PATCH 5/5] cgroup: Get app info from gnome-shell when possible
+
+Using cgroups alone for getting the app-id is flawed, as there are many
+situations where the cgroup isn't set up properly, e.g. opening via
+xdg-open or equivalent. gnome-shell already has a system for associating
+windows with apps, so reuse this for the cgroup app info.
+---
+ src/core/display-private.h |  2 ++
+ src/core/display.c         | 56 +++++++++++++++++++++++++++++++-------
+ src/core/window.c          |  6 ++++
+ 3 files changed, 54 insertions(+), 10 deletions(-)
+
+diff --git a/src/core/display-private.h b/src/core/display-private.h
+index 3c7e0898bf..9836e560b3 100644
+--- a/src/core/display-private.h
++++ b/src/core/display-private.h
+@@ -304,6 +304,8 @@ gboolean    meta_cgroup_unref (MetaCGroup *cgroup);
+ void        meta_cgroup_update_workspace (MetaCGroup    *cgroup,
+ 					  MetaWorkspace *workspace,
+ 					  guint32        timestamp);
++void        meta_cgroup_update_app_info (MetaCGroup *cgroup,
++                                         MetaWindow *window);
+ 
+ /* A "stack id" is a XID or a stamp */
+ #define META_STACK_ID_IS_X11(id) ((id) < G_GUINT64_CONSTANT(0x100000000))
+diff --git a/src/core/display.c b/src/core/display.c
+index e99e787fbe..637bc006d8 100644
+--- a/src/core/display.c
++++ b/src/core/display.c
+@@ -162,6 +162,7 @@ enum
+   WORKAREAS_CHANGED,
+   CLOSING,
+   INIT_XSERVER,
++  FIND_APP_INFO,
+   LAST_SIGNAL
+ };
+ 
+@@ -515,6 +516,12 @@ meta_display_class_init (MetaDisplayClass *klass)
+                   0, g_signal_accumulator_first_wins,
+                   NULL, NULL,
+                   G_TYPE_BOOLEAN, 1, G_TYPE_TASK);
++  display_signals[FIND_APP_INFO] =
++    g_signal_new ("find-app-info",
++                  G_TYPE_FROM_CLASS (klass),
++                  G_SIGNAL_RUN_LAST,
++                  0, NULL, NULL, NULL,
++                  G_TYPE_DESKTOP_APP_INFO, 1, META_TYPE_WINDOW);
+ 
+   g_object_class_install_property (object_class,
+                                    PROP_COMPOSITOR_MODIFIERS,
+@@ -1620,25 +1627,32 @@ extract_app_id_from_cgroup (const char *cgroup)
+ }
+ 
+ static MetaCGroup*
+-meta_cgroup_new (const char *path)
++meta_cgroup_new (const char *path,
++                 GAppInfo   *app_info)
+ {
+   MetaCGroup *cgroup;
+-  g_autofree char *app_id = NULL;
+ 
+   cgroup = g_new0 (MetaCGroup, 1);
+   cgroup->path = g_file_new_for_path (path);
+   g_ref_count_init (&cgroup->ref_count);
+ 
+-  app_id = extract_app_id_from_cgroup (path);
+-
+-  if (app_id)
++  if (!app_info)
+     {
+-      g_autoptr (GDesktopAppInfo) app_info = NULL;
++      g_autofree char *app_id = NULL;
+ 
+-      app_info = g_desktop_app_info_new (app_id);
++      app_id = extract_app_id_from_cgroup (path);
++      if (app_id)
++        {
++          GDesktopAppInfo *desktop_app_info;
+ 
+-      if (app_info)
+-        cgroup->app_info = G_APP_INFO (g_steal_pointer (&app_info));
++          desktop_app_info = g_desktop_app_info_new (app_id);
++          if (desktop_app_info)
++            cgroup->app_info = G_APP_INFO (desktop_app_info);
++        }
++    }
++  else if (app_info)
++    {
++      cgroup->app_info = g_object_ref (app_info);
+     }
+ 
+   return cgroup;
+@@ -1687,12 +1701,30 @@ meta_cgroup_update_workspace (MetaCGroup    *cgroup,
+                              (gpointer *) &cgroup->last_active_workspace);
+ }
+ 
++void
++meta_cgroup_update_app_info (MetaCGroup *cgroup,
++                             MetaWindow *window)
++{
++  g_autoptr (GDesktopAppInfo) app_info = NULL;
++
++  g_signal_emit (window->display,
++                 display_signals[FIND_APP_INFO], 0,
++                 window, &app_info);
++
++  if (app_info)
++    {
++      g_clear_object (&cgroup->app_info);
++      cgroup->app_info = G_APP_INFO (g_steal_pointer (&app_info));
++    }
++}
++
+ void
+ meta_display_register_cgroup (MetaDisplay *display,
+                               MetaWindow  *window,
+                               const char  *path)
+ {
+   MetaCGroup *cgroup;
++  g_autoptr (GDesktopAppInfo) app_info = NULL;
+ 
+   cgroup = g_hash_table_lookup (display->cgroups, path);
+ 
+@@ -1702,7 +1734,11 @@ meta_display_register_cgroup (MetaDisplay *display,
+       return;
+     }
+ 
+-  cgroup = meta_cgroup_new (path);
++  g_signal_emit (display,
++                 display_signals[FIND_APP_INFO], 0,
++                 window, &app_info);
++
++  cgroup = meta_cgroup_new (path, app_info ? G_APP_INFO (app_info) : NULL);
+   g_hash_table_insert (display->cgroups, g_file_get_path (cgroup->path), cgroup);
+   window->cgroup = cgroup;
+ }
+diff --git a/src/core/window.c b/src/core/window.c
+index 8ad8e5c4c4..6de815839f 100644
+--- a/src/core/window.c
++++ b/src/core/window.c
+@@ -8131,6 +8131,9 @@ meta_window_set_wm_class (MetaWindow *window,
+   window->res_class = g_strdup (wm_class);
+ 
+   g_object_notify_by_pspec (G_OBJECT (window), obj_props[PROP_WM_CLASS]);
++
++  if (window->cgroup)
++    meta_cgroup_update_app_info (window->cgroup, window);
+ }
+ 
+ void
+@@ -8169,6 +8172,9 @@ meta_window_set_gtk_dbus_properties (MetaWindow *window,
+   g_object_notify_by_pspec (G_OBJECT (window), obj_props[PROP_GTK_WINDOW_OBJECT_PATH]);
+ 
+   g_object_thaw_notify (G_OBJECT (window));
++
++  if (window->cgroup)
++    meta_cgroup_update_app_info (window->cgroup, window);
+ }
+ 
+ static gboolean
+-- 
+2.44.0.501.g19981daefd.dirty
+

@@ -1,0 +1,27 @@
+From 37b4b8dd63851e97b507008fe1028a259c0419c7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Tue, 27 Aug 2024 11:33:22 +0200
+Subject: [PATCH 2/5] display: Also set window cgroup on cgroup creation
+
+We'd register the cgroup for a window twice, because the firs time
+didn't update the MetaWindow::cgroup pointer. This meant the cgroups
+were never removed.
+---
+ src/core/display.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/core/display.c b/src/core/display.c
+index 97f591a876..e99e787fbe 100644
+--- a/src/core/display.c
++++ b/src/core/display.c
+@@ -1704,6 +1704,7 @@ meta_display_register_cgroup (MetaDisplay *display,
+ 
+   cgroup = meta_cgroup_new (path);
+   g_hash_table_insert (display->cgroups, g_file_get_path (cgroup->path), cgroup);
++  window->cgroup = cgroup;
+ }
+ 
+ void
+-- 
+2.44.0.501.g19981daefd.dirty
+
