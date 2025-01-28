@@ -1,0 +1,101 @@
+From eb99d91c61d1a7e33ee6c8efa47ba7214cf913e3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@redhat.com>
+Date: Wed, 4 Dec 2024 14:04:45 +0100
+Subject: [PATCH] x11/iconcache: Turn icons from WM_HINTS pixmaps to cairo
+ image surface
+
+There were two problems with how windows icons coming from WM_HINTS were handled:
+
+Only xlib cairo surfaces directly from Pixmap's were created, while the
+gnome-shell image cache only supported handling image surfaces. Address this by
+creating a cairo image surface, and paint the pixmap cairo surface onto it,
+later discarding the pixmap surface.
+
+Cairo surfaces were only created given a matching X11 visual. This only worked
+for pixmaps with a bit depth of 24 or higher, meaning bitmap pixmaps got
+discarded. Address this by creating bitmap surfaces using
+cairo_xlib_surface_create_for_bitmap(), then using the bitmap surface as a mask
+drawing it using black on a white surface.
+---
+ src/x11/iconcache.c | 57 +++++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 52 insertions(+), 5 deletions(-)
+
+diff --git a/src/x11/iconcache.c b/src/x11/iconcache.c
+index 521c77b8d2..f085a5ec1b 100644
+--- a/src/x11/iconcache.c
++++ b/src/x11/iconcache.c
+@@ -293,7 +293,6 @@ surface_from_pixmap (Display *xdisplay, Pixmap xpixmap,
+                      int width, int height)
+ {
+   Window root_return;
+-  XVisualInfo visual_info;
+   int x_ret, y_ret;
+   unsigned int w_ret, h_ret, bw_ret, depth_ret;
+ 
+@@ -301,11 +300,59 @@ surface_from_pixmap (Display *xdisplay, Pixmap xpixmap,
+                      &x_ret, &y_ret, &w_ret, &h_ret, &bw_ret, &depth_ret))
+     return NULL;
+ 
+-  if (!XMatchVisualInfo (xdisplay, DefaultScreen (xdisplay),
+-                         depth_ret, TrueColor, &visual_info))
+-    return NULL;
++  if (depth_ret == 1)
++    {
++      cairo_surface_t *bitmap_surface;
++      cairo_surface_t *icon_surface;
++      cairo_t *cr;
+ 
+-  return cairo_xlib_surface_create (xdisplay, xpixmap, visual_info.visual, w_ret, h_ret);
++      bitmap_surface =
++        cairo_xlib_surface_create_for_bitmap (xdisplay,
++                                              xpixmap,
++                                              DefaultScreenOfDisplay (xdisplay),
++                                              w_ret,
++                                              h_ret);
++
++      icon_surface = cairo_surface_create_similar_image (bitmap_surface,
++                                                         CAIRO_FORMAT_ARGB32,
++                                                         w_ret, h_ret);
++      cr = cairo_create (icon_surface);
++      cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 1.0);
++      cairo_fill (cr);
++      cairo_paint (cr);
++      cairo_set_source_surface (cr, bitmap_surface, 0, 0);
++      cairo_set_operator (cr, CAIRO_OPERATOR_MULTIPLY);
++      cairo_paint_with_alpha (cr, 1.0);
++      cairo_destroy (cr);
++      cairo_surface_destroy (bitmap_surface);
++      return icon_surface;
++    }
++  else
++    {
++      XVisualInfo visual_info;
++      cairo_surface_t *pixmap_surface;
++      cairo_surface_t *icon_surface;
++      cairo_t *cr;
++
++      if (!XMatchVisualInfo (xdisplay, DefaultScreen (xdisplay),
++                             depth_ret, TrueColor, &visual_info))
++        return NULL;
++
++      pixmap_surface = cairo_xlib_surface_create (xdisplay,
++                                                  xpixmap,
++                                                  visual_info.visual,
++                                                  w_ret,
++                                                  h_ret);
++      icon_surface = cairo_surface_create_similar_image (pixmap_surface,
++                                                         CAIRO_FORMAT_ARGB32,
++                                                         w_ret, h_ret);
++      cr = cairo_create (icon_surface);
++      cairo_set_source_surface (cr, pixmap_surface, 0, 0);
++      cairo_paint (cr);
++      cairo_destroy (cr);
++      cairo_surface_destroy (pixmap_surface);
++      return icon_surface;
++    }
+ }
+ 
+ static gboolean
+-- 
+2.44.0.501.g19981daefd.dirty
+

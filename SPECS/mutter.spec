@@ -8,7 +8,7 @@
 
 Name:          mutter
 Version:       3.32.2
-Release:       72%{?dist}
+Release:       73%{?dist}
 Summary:       Window and compositing manager based on Clutter
 
 License:       GPLv2+
@@ -217,6 +217,9 @@ Patch531: 0001-renderer-native-Queue-fail-safe-callbacks-when-mode-.patch
 
 Patch532: 0001-core-Change-MetaWaylandTextInput-event-forwarding-to.patch
 
+# RHEL-35286
+Patch533: 0001-x11-iconcache-Turn-icons-from-WM_HINTS-pixmaps-to-ca.patch
+
 BuildRequires: chrpath
 BuildRequires: pango-devel
 BuildRequires: startup-notification-devel
@@ -358,6 +361,10 @@ desktop-file-validate %{buildroot}/%{_datadir}/applications/%{name}.desktop
 %{_datadir}/mutter-%{mutter_api_version}/tests
 
 %changelog
+* Wed Dec 04 2024 Jonas Ådahl <jadahl@redhat.com> - 3.32.2-73
+- Fix handling of more WM_HINTS window icon types
+  Resolves: RHEL-35286
+
 * Mon Oct 02 2023 Jan Grulich <jgrulich@redhat.com> - 3.32.2-72
 - Do not use DMA buffers for screencast when the client doesn't support it
 - Use DMA buffers only for i195 drivers
