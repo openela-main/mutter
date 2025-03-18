@@ -1,0 +1,264 @@
+From 0085197f2b5084109fd9c8f05e3504a73d3da183 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Thu, 13 Oct 2022 11:51:00 +0200
+Subject: [PATCH 1/3] Revert "wayland-keyboard: Don't send pressed keys on
+ enter"
+
+Back in 2014 sending pressed keys to Wayland clients caused issues,
+because at least Xwayland didn't handle that gracefully, causing issues
+like ghost-pressed keys. A way it was reproduced was quickly alt-tab:ing
+to and from a Firefox window, which would cause the File menu bar
+incorrectly appearing.
+
+While this was reported to the Xwayland component back then, it was,
+probably by mistake, assumed to be an issue in mutter, and mutter
+stopped sending pressed key events on enter.
+
+The following year, Xwayland was eventually fixed, but the work around
+in mutter has been kept around until it was again noticed as an
+inconsistency between compositor implementations.
+
+Lets remove the work around, and follow the spec, again.
+
+This reverts commit c39f18c2d438efe3a866767c9546a6140dd5aaad.
+
+Closes: https://gitlab.gnome.org/GNOME/mutter/-/issues/2457
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/2657>
+---
+ src/wayland/meta-wayland-keyboard.c | 67 ++++++++++++++++++++---------
+ src/wayland/meta-wayland-keyboard.h |  2 +
+ 2 files changed, 48 insertions(+), 21 deletions(-)
+
+diff --git a/src/wayland/meta-wayland-keyboard.c b/src/wayland/meta-wayland-keyboard.c
+index 460d9e9..526da18 100644
+--- a/src/wayland/meta-wayland-keyboard.c
++++ b/src/wayland/meta-wayland-keyboard.c
+@@ -516,6 +516,9 @@ meta_wayland_keyboard_enable (MetaWaylandKeyboard *keyboard)
+   ClutterBackend *clutter_backend = clutter_get_default_backend ();
+ 
+   keyboard->settings = g_settings_new ("org.gnome.desktop.peripherals.keyboard");
++
++  wl_array_init (&keyboard->pressed_keys);
++
+   g_signal_connect (keyboard->settings, "changed",
+                     G_CALLBACK (settings_changed), keyboard);
+ 
+@@ -555,15 +558,57 @@ meta_wayland_keyboard_disable (MetaWaylandKeyboard *keyboard)
+   wl_list_remove (&keyboard->focus_resource_list);
+   wl_list_init (&keyboard->focus_resource_list);
+ 
++  wl_array_release (&keyboard->pressed_keys);
++
+   g_clear_object (&keyboard->settings);
+ }
+ 
++static void
++update_pressed_keys (struct wl_array *keys,
++                     uint32_t         evdev_code,
++                     gboolean         is_press)
++{
++  uint32_t *end = (void *) ((char *) keys->data + keys->size);
++  uint32_t *k;
++
++  if (is_press)
++    {
++      /* Make sure we don't already have this key. */
++      for (k = keys->data; k < end; k++)
++        {
++          if (*k == evdev_code)
++            return;
++        }
++
++      /* Otherwise add the key to the list of pressed keys */
++      k = wl_array_add (keys, sizeof (*k));
++      *k = evdev_code;
++    }
++  else
++    {
++      /* Remove the key from the array */
++      for (k = keys->data; k < end; k++)
++        {
++          if (*k == evdev_code)
++            {
++              *k = *(end - 1);
++              keys->size -= sizeof (*k);
++              return;
++            }
++        }
++
++      g_warning ("unexpected key release event for key 0x%x", evdev_code);
++    }
++}
++
+ void
+ meta_wayland_keyboard_update (MetaWaylandKeyboard *keyboard,
+                               const ClutterKeyEvent *event)
+ {
+   gboolean is_press = event->type == CLUTTER_KEY_PRESS;
+ 
++  update_pressed_keys (&keyboard->pressed_keys, event->evdev_code, is_press);
++
+   /* If we get a key event but still have pending modifier state
+    * changes from a previous event that didn't get cleared, we need to
+    * send that state right away so that the new key event can be
+@@ -668,30 +713,10 @@ static void
+ broadcast_focus (MetaWaylandKeyboard *keyboard,
+                  struct wl_resource  *resource)
+ {
+-  struct wl_array fake_keys;
+-
+-  /* We never want to send pressed keys to wayland clients on
+-   * enter. The protocol says that we should send them, presumably so
+-   * that clients can trigger their own key repeat routine in case
+-   * they are given focus and a key is physically pressed.
+-   *
+-   * Unfortunately this causes some clients, in particular Xwayland,
+-   * to register key events that they really shouldn't handle,
+-   * e.g. on an Alt+Tab keybinding, where Alt is released before Tab,
+-   * clients would see Tab being pressed on enter followed by a key
+-   * release event for Tab, meaning that Tab would be processed by
+-   * the client when it really shouldn't.
+-   *
+-   * Since the use case for the pressed keys array on enter seems weak
+-   * to us, we'll just fake that there are no pressed keys instead
+-   * which should be spec compliant even if it might not be true.
+-   */
+-  wl_array_init (&fake_keys);
+-
+   keyboard_send_modifiers (keyboard, resource, keyboard->focus_serial);
+   wl_keyboard_send_enter (resource, keyboard->focus_serial,
+                           keyboard->focus_surface->resource,
+-                          &fake_keys);
++                          &keyboard->pressed_keys);
+ }
+ 
+ void
+diff --git a/src/wayland/meta-wayland-keyboard.h b/src/wayland/meta-wayland-keyboard.h
+index ac57d76..2377d83 100644
+--- a/src/wayland/meta-wayland-keyboard.h
++++ b/src/wayland/meta-wayland-keyboard.h
+@@ -95,6 +95,8 @@ struct _MetaWaylandKeyboard
+   uint32_t key_up_keycode;
+   uint32_t key_up_serial;
+ 
++  struct wl_array pressed_keys;
++
+   MetaWaylandXkbInfo xkb_info;
+   enum xkb_state_component mods_changed;
+   xkb_mod_mask_t kbd_a11y_latched_mods;
+-- 
+2.47.0
+
+
+From ea401fe0c2993d110301bd8e24bc649260f003bc Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Wed, 7 Jun 2023 12:52:46 +0200
+Subject: [PATCH 2/3] wayland: Account for doubly pressed/released keys in
+ MetaWaylandKeyboard
+
+Given the presence of IMs and the different paths in event handling to reach
+one of them, we cannot make guesses about whether should stick to the original
+hardware-triggered event, or wait/prefer a second hand IM event that might or
+might not arrive. We also have no say for other IM foci unrelated to wayland
+(e.g. ClutterText) triggering the double event emission.
+
+So go with it and maintain our own internal state for keys, we already kinda
+do, but mainly for warning purposes, at the time of updating the
+MetaWaylandKeyboard state.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/3044>
+---
+ src/wayland/meta-wayland-keyboard.c | 12 +++++++-----
+ 1 file changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/src/wayland/meta-wayland-keyboard.c b/src/wayland/meta-wayland-keyboard.c
+index 526da18..9ee3fb4 100644
+--- a/src/wayland/meta-wayland-keyboard.c
++++ b/src/wayland/meta-wayland-keyboard.c
+@@ -563,7 +563,7 @@ meta_wayland_keyboard_disable (MetaWaylandKeyboard *keyboard)
+   g_clear_object (&keyboard->settings);
+ }
+ 
+-static void
++static gboolean
+ update_pressed_keys (struct wl_array *keys,
+                      uint32_t         evdev_code,
+                      gboolean         is_press)
+@@ -577,12 +577,13 @@ update_pressed_keys (struct wl_array *keys,
+       for (k = keys->data; k < end; k++)
+         {
+           if (*k == evdev_code)
+-            return;
++            return FALSE;
+         }
+ 
+       /* Otherwise add the key to the list of pressed keys */
+       k = wl_array_add (keys, sizeof (*k));
+       *k = evdev_code;
++      return TRUE;
+     }
+   else
+     {
+@@ -593,11 +594,11 @@ update_pressed_keys (struct wl_array *keys,
+             {
+               *k = *(end - 1);
+               keys->size -= sizeof (*k);
+-              return;
++              return TRUE;
+             }
+         }
+ 
+-      g_warning ("unexpected key release event for key 0x%x", evdev_code);
++      return FALSE;
+     }
+ }
+ 
+@@ -607,7 +608,8 @@ meta_wayland_keyboard_update (MetaWaylandKeyboard *keyboard,
+ {
+   gboolean is_press = event->type == CLUTTER_KEY_PRESS;
+ 
+-  update_pressed_keys (&keyboard->pressed_keys, event->evdev_code, is_press);
++  if (!update_pressed_keys (&keyboard->pressed_keys, event->evdev_code, is_press))
++    return;
+ 
+   /* If we get a key event but still have pending modifier state
+    * changes from a previous event that didn't get cleared, we need to
+-- 
+2.47.0
+
+
+From 69eb3d3bfa39b53ab0143f01d248b159eaeec241 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Thu, 13 Oct 2022 11:56:06 +0200
+Subject: [PATCH 3/3] wayland/seat: Don't double-disable input classes
+
+We'd set the capabilities to 'none', meaning all previously enabled
+device classes would be disabled. That means we shouldn't re-disable
+them directly after.
+
+This ensures '..disable()' is only called once for every '..enable()'.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/2657>
+---
+ src/wayland/meta-wayland-seat.c | 3 ---
+ 1 file changed, 3 deletions(-)
+
+diff --git a/src/wayland/meta-wayland-seat.c b/src/wayland/meta-wayland-seat.c
+index 27d8fe3..1214b12 100644
+--- a/src/wayland/meta-wayland-seat.c
++++ b/src/wayland/meta-wayland-seat.c
+@@ -270,11 +270,8 @@ meta_wayland_seat_free (MetaWaylandSeat *seat)
+   g_signal_handlers_disconnect_by_data (clutter_seat, seat);
+   meta_wayland_seat_set_capabilities (seat, 0);
+ 
+-  meta_wayland_pointer_disable (seat->pointer);
+   g_object_unref (seat->pointer);
+-  meta_wayland_keyboard_disable (seat->keyboard);
+   g_object_unref (seat->keyboard);
+-  meta_wayland_touch_disable (seat->touch);
+   g_object_unref (seat->touch);
+ 
+   meta_wayland_gtk_text_input_destroy (seat->gtk_text_input);
+-- 
+2.47.0
+

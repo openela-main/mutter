@@ -10,7 +10,7 @@
 
 Name:          mutter
 Version:       40.9
-Release:       22%{?dist}
+Release:       23%{?dist}
 Summary:       Window and compositing manager based on Clutter
 
 License:       GPLv2+
@@ -145,6 +145,9 @@ Patch62: 0002-display-Also-set-window-cgroup-on-cgroup-creation.patch
 Patch63: 0003-window-Unregister-cgroup-on-unmanage.patch
 Patch64: 0004-window-Don-t-use-cgroup-workspace-if-there-already-i.patch
 Patch65: 0005-cgroup-Get-app-info-from-gnome-shell-when-possible.patch
+
+# RHEL-56602
+Patch66: double-key-event-handling.patch
 
 BuildRequires: chrpath
 BuildRequires: pango-devel
@@ -293,6 +296,10 @@ desktop-file-validate %{buildroot}/%{_datadir}/applications/%{name}.desktop
 %{_datadir}/mutter-%{mutter_api_version}/tests
 
 %changelog
+* Tue Jan 28 2025 Carlos Garnacho <cgarnach@redhat.com> - 40.9-23
+- Fix stuck modifier keys
+  Resolves: RHEL-56602
+
 * Fri Oct 18 2024 Jonas Ådahl <jadahl@redhat.com> - 40.9-22
 - Fix crash when moving window while switching workspace
   Resolves: RHEL-62997
