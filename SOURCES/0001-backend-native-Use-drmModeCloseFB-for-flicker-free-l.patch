@@ -1,0 +1,51 @@
+From d71294da2282fe9a82cc8661d3110c8020a5069a Mon Sep 17 00:00:00 2001
+From: Jocelyn Falempe <jfalempe@redhat.com>
+Date: Wed, 13 Mar 2024 15:34:14 +0100
+Subject: [PATCH] backend/native: Use drmModeCloseFB for flicker-free login
+
+When logging in from gdm to gnome, the main plane is deactivated, and
+leads to the screen going blank before gnome is able to enable it
+again.
+Using the new CloseFB ioctl, allows to keep the gdm login screen
+displayed until gnome-shell replace it.
+
+Signed-off-by: Jocelyn Falempe <jfalempe@redhat.com>
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/3659>
+(cherry picked from commit a775241efd8b840e7789077fb2224f0df2361d54)
+---
+ meson.build                           | 3 ++-
+ src/backends/native/meta-drm-buffer.c | 4 +++-
+ 2 files changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/meson.build b/meson.build
+index 613aa67792..0c342ed335 100644
+--- a/meson.build
++++ b/meson.build
+@@ -45,7 +45,8 @@ wayland_protocols_req = '>= 1.19'
+ 
+ # native backend version requirements
+ libinput_req = '>= 1.15.0'
+-gbm_req = '>= 17.3'
++gbm_req = '>= 21.3'
++libdrm_req = '>= 2.4.118'
+ 
+ # screen cast version requirements
+ libpipewire_req = '>= 0.3.21'
+diff --git a/src/backends/native/meta-drm-buffer.c b/src/backends/native/meta-drm-buffer.c
+index a0f8055b31..c650484552 100644
+--- a/src/backends/native/meta-drm-buffer.c
++++ b/src/backends/native/meta-drm-buffer.c
+@@ -211,7 +211,9 @@ rm_fb_in_impl (MetaKmsImpl  *impl,
+   int ret;
+ 
+   fd = meta_kms_impl_device_get_fd (impl_device);
+-  ret = drmModeRmFB (fd, fb_id);
++  ret = drmModeCloseFB (fd, fb_id);
++  if (ret == -EINVAL)
++    ret = drmModeRmFB (fd, fb_id);
+   if (ret != 0)
+     g_warning ("drmModeRmFB: %s", g_strerror (-ret));
+ 
+-- 
+2.44.0.501.g19981daefd.dirty
+

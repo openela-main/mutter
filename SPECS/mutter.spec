@@ -10,7 +10,7 @@
 
 Name:          mutter
 Version:       40.9
-Release:       23%{?dist}
+Release:       24%{?dist}
 Summary:       Window and compositing manager based on Clutter
 
 License:       GPLv2+
@@ -146,8 +146,11 @@ Patch63: 0003-window-Unregister-cgroup-on-unmanage.patch
 Patch64: 0004-window-Don-t-use-cgroup-workspace-if-there-already-i.patch
 Patch65: 0005-cgroup-Get-app-info-from-gnome-shell-when-possible.patch
 
-# RHEL-56602
-Patch66: double-key-event-handling.patch
+# RHEL-10895
+Patch66: 0001-backend-native-Use-drmModeCloseFB-for-flicker-free-l.patch
+
+# RHEL-21286
+Patch67: double-key-event-handling.patch
 
 BuildRequires: chrpath
 BuildRequires: pango-devel
@@ -296,9 +299,13 @@ desktop-file-validate %{buildroot}/%{_datadir}/applications/%{name}.desktop
 %{_datadir}/mutter-%{mutter_api_version}/tests
 
 %changelog
-* Tue Jan 28 2025 Carlos Garnacho <cgarnach@redhat.com> - 40.9-23
+* Tue Jan 28 2025 Carlos Garnacho <cgarnach@redhat.com> - 40.9-24
 - Fix stuck modifier keys
-  Resolves: RHEL-56602
+  Resolves: RHEL-21286
+
+* Fri Nov 01 2024 Jonas Ådahl <jadahl@redhat.com> - 40.9-23
+- Backport fix for flicker-free login
+  Resolves: RHEL-10895
 
 * Fri Oct 18 2024 Jonas Ådahl <jadahl@redhat.com> - 40.9-22
 - Fix crash when moving window while switching workspace
