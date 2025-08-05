@@ -10,7 +10,7 @@
 
 Name:          mutter
 Version:       40.9
-Release:       24%{?dist}
+Release:       25%{?dist}.1
 Summary:       Window and compositing manager based on Clutter
 
 License:       GPLv2+
@@ -151,6 +151,9 @@ Patch66: 0001-backend-native-Use-drmModeCloseFB-for-flicker-free-l.patch
 
 # RHEL-21286
 Patch67: double-key-event-handling.patch
+
+# RHEL-101894
+Patch68: 0001-compositor-x11-sync-again-at-the-end-of-before_paint.patch
 
 BuildRequires: chrpath
 BuildRequires: pango-devel
@@ -299,6 +302,15 @@ desktop-file-validate %{buildroot}/%{_datadir}/applications/%{name}.desktop
 %{_datadir}/mutter-%{mutter_api_version}/tests
 
 %changelog
+* Fri Jul 08 2025 Tomas Pelka <tpelka@redhat.com> - 40.9-25
+- Bumping the release and rebuilding in correct build target
+- Backport fix for screen not refreshing properly
+  Resolves: RHEL-101894
+
+* Fri Jul 04 2025 Jonas Ådahl <jadahl@redhat.com> - 40.9-25
+- Backport fix for screen not refreshing properly
+  Resolves: RHEL-101894
+
 * Tue Jan 28 2025 Carlos Garnacho <cgarnach@redhat.com> - 40.9-24
 - Fix stuck modifier keys
   Resolves: RHEL-21286
