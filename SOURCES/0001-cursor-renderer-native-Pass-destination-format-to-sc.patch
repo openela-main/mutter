@@ -1,0 +1,48 @@
+From 7e4cae2f91f01db5083622b18d7173c8d9bf6540 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Michel=20D=C3=A4nzer?= <mdaenzer@redhat.com>
+Date: Thu, 6 Feb 2025 17:34:47 +0100
+Subject: [PATCH 1/3] cursor-renderer/native: Pass destination format to
+ scale_and_transform
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Preparation for next commit, no functional change intended.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4255>
+---
+ src/backends/native/meta-cursor-renderer-native.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/src/backends/native/meta-cursor-renderer-native.c b/src/backends/native/meta-cursor-renderer-native.c
+index 103d8e66e1..0db0dde022 100644
+--- a/src/backends/native/meta-cursor-renderer-native.c
++++ b/src/backends/native/meta-cursor-renderer-native.c
+@@ -774,6 +774,7 @@ scale_and_transform_cursor_sprite_cpu (MetaCursorRendererNative *cursor_renderer
+                                        int                       height,
+                                        int                       rowstride,
+                                        const graphene_matrix_t  *matrix,
++                                       CoglPixelFormat           dst_format,
+                                        int                       dst_width,
+                                        int                       dst_height,
+                                        GError                  **error)
+@@ -801,7 +802,7 @@ scale_and_transform_cursor_sprite_cpu (MetaCursorRendererNative *cursor_renderer
+   dst_texture = cogl_texture_2d_new_with_format (cogl_context,
+                                                  dst_width,
+                                                  dst_height,
+-                                                 COGL_PIXEL_FORMAT_BGRA_8888_PRE);
++                                                 dst_format);
+   offscreen = cogl_offscreen_new_with_texture (dst_texture);
+   if (!cogl_framebuffer_allocate (COGL_FRAMEBUFFER (offscreen), error))
+     return NULL;
+@@ -976,6 +977,7 @@ load_scaled_and_transformed_cursor_sprite (MetaCursorRendererNative *native,
+                                                        height,
+                                                        rowstride,
+                                                        &matrix,
++                                                       COGL_PIXEL_FORMAT_BGRA_8888_PRE,
+                                                        crtc_dst_width,
+                                                        crtc_dst_height,
+                                                        &error);
+-- 
+2.48.1
+

@@ -1,0 +1,80 @@
+From 80a19134ffb5ddd6577f00986aafcaf9db6505b9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jos=C3=A9=20Exp=C3=B3sito?= <jexposit@redhat.com>
+Date: Tue, 5 Nov 2024 12:03:49 +0100
+Subject: [PATCH 2/3] monitor-manager: Allow to check if config has a visible
+ monitor
+
+Add a new function, similar to meta_logical_monitor_configs_have_monitor()
+that, in addition, checks if the monitor is visible.
+
+Refactor, no functional change.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4121>
+---
+ src/backends/meta-monitor-config-manager.c | 24 +++++++++++++++++-----
+ src/backends/meta-monitor-config-manager.h |  4 ++++
+ 2 files changed, 23 insertions(+), 5 deletions(-)
+
+diff --git a/src/backends/meta-monitor-config-manager.c b/src/backends/meta-monitor-config-manager.c
+index 0df193f0a4..74aa2df4b1 100644
+--- a/src/backends/meta-monitor-config-manager.c
++++ b/src/backends/meta-monitor-config-manager.c
+@@ -1638,14 +1638,12 @@ meta_monitors_config_new (MetaMonitorManager           *monitor_manager,
+       MetaMonitor *monitor = l->data;
+       MetaMonitorSpec *monitor_spec;
+ 
+-      if (!monitor_matches_rule (monitor, monitor_manager,
+-                                 MONITOR_MATCH_VISIBLE))
++      if (meta_logical_monitor_configs_have_visible_monitor (monitor_manager,
++                                                             logical_monitor_configs,
++                                                             monitor))
+         continue;
+ 
+       monitor_spec = meta_monitor_get_spec (monitor);
+-      if (meta_logical_monitor_configs_have_monitor (logical_monitor_configs,
+-                                                     monitor_spec))
+-        continue;
+ 
+       disabled_monitor_specs =
+         g_list_prepend (disabled_monitor_specs,
+@@ -1889,6 +1887,22 @@ meta_logical_monitor_configs_have_monitor (GList           *logical_monitor_conf
+   return FALSE;
+ }
+ 
++gboolean
++meta_logical_monitor_configs_have_visible_monitor (MetaMonitorManager *monitor_manager,
++                                                   GList              *logical_monitor_configs,
++                                                   MetaMonitor        *monitor)
++{
++  MetaMonitorSpec *monitor_spec;
++
++  if (!monitor_matches_rule (monitor, monitor_manager, MONITOR_MATCH_VISIBLE))
++    return TRUE;
++
++  monitor_spec = meta_monitor_get_spec (monitor);
++
++  return meta_logical_monitor_configs_have_monitor (logical_monitor_configs,
++                                                    monitor_spec);
++}
++
+ static gboolean
+ meta_monitors_config_is_monitor_enabled (MetaMonitorsConfig *config,
+                                          MetaMonitorSpec    *monitor_spec)
+diff --git a/src/backends/meta-monitor-config-manager.h b/src/backends/meta-monitor-config-manager.h
+index 87a29bc2dd..f033ac6555 100644
+--- a/src/backends/meta-monitor-config-manager.h
++++ b/src/backends/meta-monitor-config-manager.h
+@@ -187,6 +187,10 @@ META_EXPORT_TEST
+ gboolean meta_logical_monitor_configs_have_monitor (GList           *logical_monitor_configs,
+                                                     MetaMonitorSpec *monitor_spec);
+ 
++gboolean meta_logical_monitor_configs_have_visible_monitor (MetaMonitorManager *monitor_manager,
++                                                            GList              *logical_monitor_configs,
++                                                            MetaMonitor        *monitor);
++
+ META_EXPORT_TEST
+ gboolean meta_verify_monitor_mode_spec (MetaMonitorModeSpec *monitor_mode_spec,
+                                         GError             **error);
+-- 
+2.48.1
+

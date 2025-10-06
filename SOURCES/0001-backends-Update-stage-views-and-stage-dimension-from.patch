@@ -1,0 +1,178 @@
+From cedeee4eb0c252d2450b7174b35f47ff5c27fc8e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Wed, 12 Mar 2025 11:35:17 +0800
+Subject: [PATCH 1/2] backends: Update stage views and stage dimension from
+ MetaStage
+
+This reduces the amount of code duplication between the native and
+nested backend.
+---
+ src/backends/meta-stage-impl-private.h           |  2 ++
+ src/backends/meta-stage-impl.c                   | 12 ++++++++++++
+ src/backends/meta-stage-private.h                |  2 ++
+ src/backends/meta-stage.c                        | 16 ++++++++++++++++
+ src/backends/native/meta-backend-native.c        |  5 +----
+ src/backends/native/meta-stage-native.c          | 12 ------------
+ src/backends/native/meta-stage-native.h          |  2 --
+ .../x11/nested/meta-backend-x11-nested.c         | 11 ++---------
+ 8 files changed, 35 insertions(+), 27 deletions(-)
+
+diff --git a/src/backends/meta-stage-impl-private.h b/src/backends/meta-stage-impl-private.h
+index 766c283488..93b8bbad2f 100644
+--- a/src/backends/meta-stage-impl-private.h
++++ b/src/backends/meta-stage-impl-private.h
+@@ -64,4 +64,6 @@ MetaBackend * meta_stage_impl_get_backend (MetaStageImpl *stage_impl);
+ void meta_stage_impl_add_onscreen_frame_info (MetaStageImpl    *stage_impl,
+                                               ClutterStageView *view);
+ 
++void meta_stage_impl_rebuild_views (MetaStageImpl *stage_impl);
++
+ G_END_DECLS
+diff --git a/src/backends/meta-stage-impl.c b/src/backends/meta-stage-impl.c
+index 945e95ff2b..804d77f25d 100644
+--- a/src/backends/meta-stage-impl.c
++++ b/src/backends/meta-stage-impl.c
+@@ -34,6 +34,7 @@
+ #include <stdlib.h>
+ #include <math.h>
+ 
++#include "backends/meta-renderer.h"
+ #include "backends/meta-stage-view-private.h"
+ #include "clutter/clutter-mutter.h"
+ #include "cogl/cogl.h"
+@@ -907,3 +908,14 @@ meta_stage_impl_get_backend (MetaStageImpl *stage_impl)
+ 
+   return priv->backend;
+ }
++
++void
++meta_stage_impl_rebuild_views (MetaStageImpl *stage_impl)
++{
++  MetaBackend *backend = meta_stage_impl_get_backend (stage_impl);
++  MetaRenderer *renderer = meta_backend_get_renderer (backend);
++  ClutterActor *stage = meta_backend_get_stage (backend);
++
++  meta_renderer_rebuild_views (renderer);
++  clutter_stage_clear_stage_views (CLUTTER_STAGE (stage));
++}
+diff --git a/src/backends/meta-stage-private.h b/src/backends/meta-stage-private.h
+index 5546cc8ccf..e59ea35c6c 100644
+--- a/src/backends/meta-stage-private.h
++++ b/src/backends/meta-stage-private.h
+@@ -68,4 +68,6 @@ META_EXPORT_TEST
+ void meta_stage_remove_watch (MetaStage      *stage,
+                               MetaStageWatch *watch);
+ 
++void meta_stage_rebuild_views (MetaStage *stage);
++
+ G_END_DECLS
+diff --git a/src/backends/meta-stage.c b/src/backends/meta-stage.c
+index 96224a03b5..32f681c8c5 100644
+--- a/src/backends/meta-stage.c
++++ b/src/backends/meta-stage.c
+@@ -494,3 +494,19 @@ meta_stage_remove_watch (MetaStage      *stage,
+ 
+   g_assert (removed);
+ }
++
++void
++meta_stage_rebuild_views (MetaStage *stage)
++{
++  ClutterStageWindow *stage_window =
++    _clutter_stage_get_window (CLUTTER_STAGE (stage));
++  MetaStageImpl *stage_impl = META_STAGE_IMPL (stage_window);
++  MetaMonitorManager *monitor_manager =
++    meta_backend_get_monitor_manager (stage->backend);
++  int width, height;
++
++  meta_stage_impl_rebuild_views (stage_impl);
++
++  meta_monitor_manager_get_screen_size (monitor_manager, &width, &height);
++  clutter_actor_set_size (CLUTTER_ACTOR (stage), width, height);
++}
+diff --git a/src/backends/native/meta-backend-native.c b/src/backends/native/meta-backend-native.c
+index ee02b2783a..85bfeb7810 100644
+--- a/src/backends/native/meta-backend-native.c
++++ b/src/backends/native/meta-backend-native.c
+@@ -399,14 +399,11 @@ static void
+ meta_backend_native_update_stage (MetaBackend *backend)
+ {
+   ClutterActor *stage = meta_backend_get_stage (backend);
+-  ClutterStageWindow *stage_window =
+-    _clutter_stage_get_window (CLUTTER_STAGE (stage));
+-  MetaStageNative *stage_native = META_STAGE_NATIVE (stage_window);
+   MetaMonitorManager *monitor_manager =
+     meta_backend_get_monitor_manager (backend);
+   int width, height;
+ 
+-  meta_stage_native_rebuild_views (stage_native);
++  meta_stage_rebuild_views (META_STAGE (stage));
+ 
+   meta_monitor_manager_get_screen_size (monitor_manager, &width, &height);
+   clutter_actor_set_size (stage, width, height);
+diff --git a/src/backends/native/meta-stage-native.c b/src/backends/native/meta-stage-native.c
+index 80d869b920..34849e5b9c 100644
+--- a/src/backends/native/meta-stage-native.c
++++ b/src/backends/native/meta-stage-native.c
+@@ -54,18 +54,6 @@ G_DEFINE_TYPE_WITH_CODE (MetaStageNative, meta_stage_native,
+                          G_IMPLEMENT_INTERFACE (CLUTTER_TYPE_STAGE_WINDOW,
+                                                 clutter_stage_window_iface_init))
+ 
+-void
+-meta_stage_native_rebuild_views (MetaStageNative *stage_native)
+-{
+-  MetaStageImpl *stage_impl = META_STAGE_IMPL (stage_native);
+-  MetaBackend *backend = meta_stage_impl_get_backend (stage_impl);
+-  MetaRenderer *renderer = meta_backend_get_renderer (backend);
+-  ClutterActor *stage = meta_backend_get_stage (backend);
+-
+-  meta_renderer_rebuild_views (renderer);
+-  clutter_stage_clear_stage_views (CLUTTER_STAGE (stage));
+-}
+-
+ static gboolean
+ meta_stage_native_can_clip_redraws (ClutterStageWindow *stage_window)
+ {
+diff --git a/src/backends/native/meta-stage-native.h b/src/backends/native/meta-stage-native.h
+index 18ce3b14bb..cf081a32ea 100644
+--- a/src/backends/native/meta-stage-native.h
++++ b/src/backends/native/meta-stage-native.h
+@@ -28,5 +28,3 @@
+ #define META_TYPE_STAGE_NATIVE (meta_stage_native_get_type ())
+ G_DECLARE_FINAL_TYPE (MetaStageNative, meta_stage_native,
+                       META, STAGE_NATIVE, MetaStageImpl)
+-
+-void meta_stage_native_rebuild_views (MetaStageNative *stage_native);
+diff --git a/src/backends/x11/nested/meta-backend-x11-nested.c b/src/backends/x11/nested/meta-backend-x11-nested.c
+index ec82f1d1a9..09d2a91cb6 100644
+--- a/src/backends/x11/nested/meta-backend-x11-nested.c
++++ b/src/backends/x11/nested/meta-backend-x11-nested.c
+@@ -21,6 +21,7 @@
+ 
+ #include "backends/meta-input-settings-dummy.h"
+ #include "backends/meta-monitor-manager-dummy.h"
++#include "backends/meta-stage-private.h"
+ #include "backends/x11/nested/meta-backend-x11-nested.h"
+ #include "backends/x11/nested/meta-cursor-renderer-x11-nested.h"
+ #include "backends/x11/nested/meta-renderer-x11-nested.h"
+@@ -107,16 +108,8 @@ static void
+ meta_backend_x11_nested_update_stage (MetaBackend *backend)
+ {
+   ClutterActor *stage = meta_backend_get_stage (backend);
+-  MetaRenderer *renderer = meta_backend_get_renderer (backend);
+-  MetaMonitorManager *monitor_manager =
+-    meta_backend_get_monitor_manager (backend);
+-  int width, height;
+ 
+-  meta_renderer_rebuild_views (renderer);
+-  clutter_stage_clear_stage_views (CLUTTER_STAGE (stage));
+-
+-  meta_monitor_manager_get_screen_size (monitor_manager, &width, &height);
+-  clutter_actor_set_size (stage, width, height);
++  meta_stage_rebuild_views (META_STAGE (stage));
+ }
+ 
+ static void
+-- 
+2.44.0.501.g19981daefd.dirty
+

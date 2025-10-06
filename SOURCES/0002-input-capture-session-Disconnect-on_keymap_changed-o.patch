@@ -1,0 +1,41 @@
+From 05c722d66dda0c55d3c58ccf5c7c321445664a45 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Wed, 12 Feb 2025 07:52:14 +0000
+Subject: [PATCH 2/2] input-capture/session: Disconnect on_keymap_changed on
+ session finalize
+
+When Input Capture was enabled on Input Leap server startup and then
+finalized when Input Leap server was stopped, switching keymap was
+still triggering its on_keymap_changed callback, but on a freed session
+thus triggering use after free a segfault.
+
+Fixes: 2fb3bdf77 - input-capture: Hook up capturing of events to active session
+Closes: https://gitlab.gnome.org/GNOME/mutter/-/issues/3360
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4257>
+
+
+(cherry picked from commit 99dbcf1b8caba93acb5479d1c7ad754ff3fd0540)
+
+Co-authored-by: Alban Browaeys <alban.browaeys@gmail.com>
+---
+ src/backends/meta-input-capture-session.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/backends/meta-input-capture-session.c b/src/backends/meta-input-capture-session.c
+index 14973e3e75..4f9d854273 100644
+--- a/src/backends/meta-input-capture-session.c
++++ b/src/backends/meta-input-capture-session.c
+@@ -1188,6 +1188,10 @@ static void
+ meta_input_capture_session_finalize (GObject *object)
+ {
+   MetaInputCaptureSession *session = META_INPUT_CAPTURE_SESSION (object);
++  MetaBackend *backend =
++    meta_dbus_session_manager_get_backend (session->session_manager);
++
++  g_signal_handlers_disconnect_by_func (backend, on_keymap_changed, session);
+ 
+   g_clear_pointer (&session->barriers, g_hash_table_unref);
+ 
+-- 
+2.44.0.501.g19981daefd.dirty
+

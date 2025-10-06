@@ -1,0 +1,78 @@
+From 63b7d958f226b05694eeeed7d1a7bc77d84464ae Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jos=C3=A9=20Exp=C3=B3sito?= <jexposit@redhat.com>
+Date: Tue, 29 Oct 2024 12:09:21 +0100
+Subject: [PATCH 4/5] kms/connector: Rename meta_kms_connector_is_for_lease()
+
+Now that connectors can be configured as for lease, rename the function
+to meta_kms_connector_is_non_desktop() to make clear that it returns
+the hardware configuration rather than the user configuration.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4112>
+---
+ src/backends/native/meta-drm-lease.c     | 4 ++--
+ src/backends/native/meta-gpu-kms.c       | 2 +-
+ src/backends/native/meta-kms-connector.c | 2 +-
+ src/backends/native/meta-kms-connector.h | 2 +-
+ 4 files changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/src/backends/native/meta-drm-lease.c b/src/backends/native/meta-drm-lease.c
+index 7cddb6c8ed..302147e9bb 100644
+--- a/src/backends/native/meta-drm-lease.c
++++ b/src/backends/native/meta-drm-lease.c
+@@ -227,7 +227,7 @@ find_resources_to_lease (MetaDrmLeaseManager  *lease_manager,
+       MetaKmsDevice *connector_device;
+ 
+       if (!g_list_find (available_connectors, connector) ||
+-          !meta_kms_connector_is_for_lease (connector))
++          !meta_kms_connector_is_non_desktop (connector))
+         {
+           g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+                        "Failed to find connector %u (%s)",
+@@ -645,7 +645,7 @@ update_connectors (MetaDrmLeaseManager  *lease_manager,
+           kms_connector = o->data;
+           lease = NULL;
+ 
+-          if (!meta_kms_connector_is_for_lease (kms_connector))
++          if (!meta_kms_connector_is_non_desktop (kms_connector))
+             continue;
+ 
+           if (g_list_find (lease_manager->connectors, kms_connector))
+diff --git a/src/backends/native/meta-gpu-kms.c b/src/backends/native/meta-gpu-kms.c
+index 3b4356ca6b..c633d6d68e 100644
+--- a/src/backends/native/meta-gpu-kms.c
++++ b/src/backends/native/meta-gpu-kms.c
+@@ -355,7 +355,7 @@ init_outputs (MetaGpuKms *gpu_kms)
+       if (!meta_kms_connector_get_current_state (kms_connector))
+         continue;
+ 
+-      if (meta_kms_connector_is_for_lease (kms_connector))
++      if (meta_kms_connector_is_non_desktop (kms_connector))
+         continue;
+ 
+       old_output =
+diff --git a/src/backends/native/meta-kms-connector.c b/src/backends/native/meta-kms-connector.c
+index cc6cd89f56..7723416aa3 100644
+--- a/src/backends/native/meta-kms-connector.c
++++ b/src/backends/native/meta-kms-connector.c
+@@ -165,7 +165,7 @@ meta_kms_connector_get_current_state (MetaKmsConnector *connector)
+ }
+ 
+ gboolean
+-meta_kms_connector_is_for_lease (MetaKmsConnector *connector)
++meta_kms_connector_is_non_desktop (MetaKmsConnector *connector)
+ {
+   const char *lease_connectors_str;
+ 
+diff --git a/src/backends/native/meta-kms-connector.h b/src/backends/native/meta-kms-connector.h
+index 84ee7f5c26..328465d0fa 100644
+--- a/src/backends/native/meta-kms-connector.h
++++ b/src/backends/native/meta-kms-connector.h
+@@ -102,4 +102,4 @@ MetaKmsMode * meta_kms_connector_get_preferred_mode (MetaKmsConnector *connector
+ META_EXPORT_TEST
+ const MetaKmsConnectorState * meta_kms_connector_get_current_state (MetaKmsConnector *connector);
+ 
+-gboolean meta_kms_connector_is_for_lease (MetaKmsConnector *connector);
++gboolean meta_kms_connector_is_non_desktop (MetaKmsConnector *connector);
+-- 
+2.48.1
+
