@@ -10,7 +10,7 @@
 
 Name:          mutter
 Version:       40.9
-Release:       25%{?dist}.1
+Release:       26%{?dist}
 Summary:       Window and compositing manager based on Clutter
 
 License:       GPLv2+
@@ -154,6 +154,8 @@ Patch67: double-key-event-handling.patch
 
 # RHEL-101894
 Patch68: 0001-compositor-x11-sync-again-at-the-end-of-before_paint.patch
+# RHEL-117097
+Patch69: 0001-compositor-sync-ring-Allow-the-gpu_fence-to-be-moved.patch
 
 BuildRequires: chrpath
 BuildRequires: pango-devel
@@ -302,7 +304,11 @@ desktop-file-validate %{buildroot}/%{_datadir}/applications/%{name}.desktop
 %{_datadir}/mutter-%{mutter_api_version}/tests
 
 %changelog
-* Fri Jul 08 2025 Tomas Pelka <tpelka@redhat.com> - 40.9-25
+* Mon Sep 29 2025 Jonas Ådahl <jadahl@redhat.com> - 40.9-26
+- Fix input latency regression
+  Resolves: RHEL-117097
+
+* Tue Jul 08 2025 Tomas Pelka <tpelka@redhat.com> - 40.9-25
 - Bumping the release and rebuilding in correct build target
 - Backport fix for screen not refreshing properly
   Resolves: RHEL-101894
