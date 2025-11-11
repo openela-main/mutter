@@ -10,7 +10,7 @@
 
 Name:          mutter
 Version:       40.9
-Release:       28%{?dist}
+Release:       29%{?dist}
 Summary:       Window and compositing manager based on Clutter
 
 License:       GPLv2+
@@ -167,6 +167,8 @@ Patch72: fix-cogl-framebuffer-get-bits-test.patch
 
 # RHEL-89352
 Patch73: 0001-compositor-x11-sync-again-at-the-end-of-before_paint.patch
+# RHEL-113246
+Patch74: 0001-compositor-sync-ring-Allow-the-gpu_fence-to-be-moved.patch
 
 BuildRequires: chrpath
 BuildRequires: pango-devel
@@ -315,6 +317,10 @@ desktop-file-validate %{buildroot}/%{_datadir}/applications/%{name}.desktop
 %{_datadir}/mutter-%{mutter_api_version}/tests
 
 %changelog
+* Wed Sep 24 2025 Jonas Ådahl <jadahl@redhat.com> - 40.9-29
+- Fix input latency regression
+  Resolves: RHEL-117098
+
 * Tue Jul 01 2025 Jan Grulich <jgrulich@redhat.com> - 40.9-28
 - Backport fix for screen not refreshing properly
   Resolves: RHEL-89352
