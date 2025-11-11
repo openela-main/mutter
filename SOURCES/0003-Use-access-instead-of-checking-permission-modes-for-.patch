@@ -1,0 +1,34 @@
+From 58652bcf5fc379fd07d2cf9cc2b23d469df33f20 Mon Sep 17 00:00:00 2001
+From: Nathan Pratta Teodosio <nathan.teodosio@canonical.com>
+Date: Fri, 13 Jun 2025 11:24:24 +0200
+Subject: [PATCH 3/3] Use 'access' instead of checking permission modes for
+ /tmp/.X11-unix/.
+
+The previous version was missing the 200 case with the directory owned by the
+current user.
+
+C.f. https://gitlab.gnome.org/GNOME/gnome-shell/-/issues/7857,
+     https://launchpad.net/bugs/2069564.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/3984>
+(cherry picked from commit 36ca36b48e7efd6846fac7533a4f2e97959a8ad6)
+---
+ src/wayland/meta-xwayland.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/wayland/meta-xwayland.c b/src/wayland/meta-xwayland.c
+index 7db122e8da..c2e094e43c 100644
+--- a/src/wayland/meta-xwayland.c
++++ b/src/wayland/meta-xwayland.c
+@@ -693,7 +693,7 @@ ensure_x11_unix_perms (GError **error)
+     }
+ 
+   /* ... be writable ... */
+-  if ((x11_tmp.st_mode & 0022) != 0022)
++  if (access (X11_TMP_UNIX_DIR, W_OK) != 0)
+     {
+       g_set_error (error, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED,
+                    "Directory \"%s\" is not writable",
+-- 
+2.50.0
+

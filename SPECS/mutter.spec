@@ -10,7 +10,7 @@
 
 Name:          mutter
 Version:       40.9
-Release:       26%{?dist}
+Release:       28%{?dist}
 Summary:       Window and compositing manager based on Clutter
 
 License:       GPLv2+
@@ -152,10 +152,21 @@ Patch66: 0001-backend-native-Use-drmModeCloseFB-for-flicker-free-l.patch
 # RHEL-21286
 Patch67: double-key-event-handling.patch
 
-# RHEL-101894
-Patch68: 0001-compositor-x11-sync-again-at-the-end-of-before_paint.patch
-# RHEL-117097
-Patch69: 0001-compositor-sync-ring-Allow-the-gpu_fence-to-be-moved.patch
+# RHEL-31742
+Patch68: 0001-backends-Avoid-disabling-touchscreen-outside-of-touc.patch
+
+# RHEL-90588
+# https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/2261
+Patch69: 0001-xwayland-Relax-the-ownership-requirements-of-tmp-.X1.patch
+# https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/3984
+Patch70: 0002-Be-more-verbose-about-permissions-of-tmp-.X11-unix.patch
+Patch71: 0003-Use-access-instead-of-checking-permission-modes-for-.patch
+
+# RHEL-4521
+Patch72: fix-cogl-framebuffer-get-bits-test.patch
+
+# RHEL-89352
+Patch73: 0001-compositor-x11-sync-again-at-the-end-of-before_paint.patch
 
 BuildRequires: chrpath
 BuildRequires: pango-devel
@@ -304,18 +315,21 @@ desktop-file-validate %{buildroot}/%{_datadir}/applications/%{name}.desktop
 %{_datadir}/mutter-%{mutter_api_version}/tests
 
 %changelog
-* Mon Sep 29 2025 Jonas Ådahl <jadahl@redhat.com> - 40.9-26
-- Fix input latency regression
-  Resolves: RHEL-117097
-
-* Tue Jul 08 2025 Tomas Pelka <tpelka@redhat.com> - 40.9-25
-- Bumping the release and rebuilding in correct build target
+* Tue Jul 01 2025 Jan Grulich <jgrulich@redhat.com> - 40.9-28
 - Backport fix for screen not refreshing properly
-  Resolves: RHEL-101894
+  Resolves: RHEL-89352
 
-* Fri Jul 04 2025 Jonas Ådahl <jadahl@redhat.com> - 40.9-25
-- Backport fix for screen not refreshing properly
-  Resolves: RHEL-101894
+* Fri Jun 27 2025 Jonas Ådahl <jadahl@redhat.com> - 40.9-27
+- Backport fixes for cogl OpenGL conformance
+  Resolves: RHEL-4521
+
+* Mon May 12 2025 Olivier Fourdan <ofourdan@redhat.com> - 40.9-26
+- Fix polyinstantiation preventing Xwayland to start
+  Resolves: RHEL-90588
+
+* Thu Apr 24 2025 Carlos Garnacho <cgarnach@redhat.com> - 40.9-25
+- Do not disable touchscreen on DPMS off if touch-mode is disabled
+  Resolves: RHEL-31742
 
 * Tue Jan 28 2025 Carlos Garnacho <cgarnach@redhat.com> - 40.9-24
 - Fix stuck modifier keys

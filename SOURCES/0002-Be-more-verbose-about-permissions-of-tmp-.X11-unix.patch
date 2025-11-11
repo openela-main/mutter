@@ -1,0 +1,31 @@
+From 1a5015dff70c2465e0a8a3df77ace8f0fbb3b20a Mon Sep 17 00:00:00 2001
+From: Nathan Pratta Teodosio <nathan.teodosio@canonical.com>
+Date: Thu, 29 Aug 2024 09:25:13 +0200
+Subject: [PATCH 2/3] Be more verbose about permissions of /tmp/{,.X11-unix}.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/3984>
+(cherry picked from commit 4dbaa8178116649076bf542a5eaf42d4ce804e5b)
+---
+ src/wayland/meta-xwayland.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/src/wayland/meta-xwayland.c b/src/wayland/meta-xwayland.c
+index 2ca555ad65..7db122e8da 100644
+--- a/src/wayland/meta-xwayland.c
++++ b/src/wayland/meta-xwayland.c
+@@ -685,8 +685,10 @@ ensure_x11_unix_perms (GError **error)
+   if (x11_tmp.st_uid != tmp.st_uid && x11_tmp.st_uid != getuid ())
+     {
+       g_set_error (error, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED,
+-                   "Wrong ownership for directory \"%s\"",
+-                   X11_TMP_UNIX_DIR);
++                   "Wrong ownership for directory \"%s\", owned by %d but "
++                   "should be same as %s (owned by (%d)) or %d",
++                   X11_TMP_UNIX_DIR, x11_tmp.st_uid, TMP_UNIX_DIR, tmp.st_uid,
++                   getuid ());
+       return FALSE;
+     }
+ 
+-- 
+2.50.0
+

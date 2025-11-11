@@ -1,0 +1,38 @@
+From 5471f40995b71cf838951a9e2fb2672e64aec66d Mon Sep 17 00:00:00 2001
+From: rpm-build <rpm-build>
+Date: Thu, 24 Apr 2025 16:41:32 +0200
+Subject: [PATCH] backends: Avoid disabling touchscreen outside of touch mode
+
+The reasons to disable touchscreen on dpms off apply mostly to
+devices where the touch mode is useful, and not so much outside of
+those.
+---
+ src/backends/meta-input-mapper.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/backends/meta-input-mapper.c b/src/backends/meta-input-mapper.c
+index a0a4b8a..a8d7a10 100644
+--- a/src/backends/meta-input-mapper.c
++++ b/src/backends/meta-input-mapper.c
+@@ -695,6 +695,7 @@ input_mapper_power_save_mode_changed_cb (MetaMonitorManager *monitor_manager,
+ {
+   ClutterInputDevice *device;
+   MetaLogicalMonitor *logical_monitor;
++  ClutterSeat *seat;
+   MetaMonitor *builtin;
+   MetaPowerSave power_save_mode;
+   gboolean on;
+@@ -718,6 +719,10 @@ input_mapper_power_save_mode_changed_cb (MetaMonitorManager *monitor_manager,
+   if (!device)
+     return;
+ 
++  seat = clutter_input_device_get_seat (device);
++  if (!clutter_seat_get_touch_mode (seat))
++    return;
++
+   g_signal_emit (mapper, signals[DEVICE_ENABLED], 0, device, on);
+ }
+ 
+-- 
+2.49.0
+
