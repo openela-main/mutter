@@ -1,0 +1,2157 @@
+From cc92000f1f4ae6c7fcee330ffd38842365bdf811 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Luk=C3=A1=C5=A1=20Tyrychtr?= <ltyrycht@redhat.com>
+Date: Wed, 5 Feb 2025 18:36:15 +0100
+Subject: [PATCH 01/14] data: Introduce the DBus interface description for the
+ a11y manager
+
+This object will for now only provide a way for assistive technologies
+to receive keyboard events, however it is expected that it will be used for
+the new a11y communication protocol in the future.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4217>
+(cherry picked from commit 84fc62a2806b893b215fcfb287390ced07a98aa7)
+---
+ data/dbus-interfaces/org.freedesktop.a11y.xml | 92 +++++++++++++++++++
+ src/meson.build                               |  5 +
+ 2 files changed, 97 insertions(+)
+ create mode 100644 data/dbus-interfaces/org.freedesktop.a11y.xml
+
+diff --git a/data/dbus-interfaces/org.freedesktop.a11y.xml b/data/dbus-interfaces/org.freedesktop.a11y.xml
+new file mode 100644
+index 0000000000..c60480e89c
+--- /dev/null
++++ b/data/dbus-interfaces/org.freedesktop.a11y.xml
+@@ -0,0 +1,92 @@
++<!DOCTYPE node PUBLIC
++'-//freedesktop//DTD D-BUS Object Introspection 1.0//EN'
++'http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd'>
++<node>
++  <!--
++      org.freedesktop.a11y.KeyboardMonitor:
++      @short_description: interface for monitoring of keyboard input by assistive technologies
++
++      This interface is used by assistive technologies to monitor keyboard
++      input of the compositor. The compositor is expected to listen on
++      the well-known bus name "org.freedesktop.a11y.Manager" at the object
++      path "/org/freedesktop/a11y/Manager".
++  -->
++  <interface name="org.freedesktop.a11y.KeyboardMonitor">
++    <!--
++        GrabKeyboard:
++
++        Starts grabbing all key events. The client receives the events
++        through the KeyEvent signal as always, but the events aren't handled
++        normally by the compositor. This includes changes to the state
++        of toggles like Caps Lock, Num Lock, and Scroll Lock.
++
++        This behavior stays in effect until the same client calls
++        UngrabKeyboard or closes its D-Bus connection.
++    -->
++    <method name="GrabKeyboard" />
++
++    <!--
++        UngrabKeyboard:
++
++        Reverses the effect of calling GrabKeyboard. If GrabKeyboard wasn't
++        previously called, this method does nothing.
++
++        After calling this method, the key grabs specified in the last call
++        to SetKeyGrabs, if any, are still in effect.
++    -->
++    <method name="UngrabKeyboard" />
++
++    <!--
++        SetKeyGrabs:
++        @modifiers: set of custom modifiers to grab
++        @keystrokes: set of keystrokes without custom modifiers to grab
++
++        Sets the current key grabs for the calling client, overriding
++        any previous call to this method. For grabbed key events, the
++        KeyEvent signal is still emitted, but normal key event handling
++        is suppressed, including state changes for toggles like Caps Lock
++        and Num Lock.
++
++        The grabs set by this method stay in effect until the same client
++        calls this method again, or until that client closes its D-Bus
++        connection.
++
++        Each item in @modifiers is an XKB keysym. All keys in this list
++        will be grabbed, and keys pressed while any of these keys are down
++        will also be grabbed.
++
++        Each item in @keystrokes is a struct with the following fields:
++
++        - the XKB keysym of the non-modifier key
++        - the XKB modifier mask of the modifiers, if any, for this keystroke
++
++        If any of the keys in @modifiers is pressed alone, the compositor
++        is required to ignore the key press and release event if a second
++        key press of the same modifier is not received within a reasonable
++        time frame, for example, the key repeat delay.
++        If such event is received, this second event is processed normally.
++    -->
++    <method name="SetKeyGrabs">
++      <arg type="au" name="modifiers" direction="in" />
++      <arg type="a(uu)" name="keystrokes" direction="in" />
++    </method>
++
++    <!--
++        KeyEvent:
++        @released: whether this is a key-up event
++        @state: XKB modifier mask for currently pressed modifiers
++        @keysym: XKB keysym for this key
++        @unichar: Unicode character for this key, or 0 if none
++        @keycode: hardware-dependent keycode for this key
++
++        The compositor emits this signal for each key press or release.
++    -->
++    <signal name="KeyEvent">
++      <arg type="b" name="released" direction="in" />
++      <arg type="u" name="state" direction="in" />
++      <arg type="u" name="keysym" direction="in" />
++      <arg type="u" name="unichar" direction="in" />
++      <arg type="q" name="keycode" direction="in" />
++    </signal>
++  </interface>
++</node>
+diff --git a/src/meson.build b/src/meson.build
+index e3c92aaf27..6c19300b8f 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -947,6 +947,11 @@ if mutter_private_enum_sources.length() > 0
+ endif
+ 
+ dbus_interfaces = [
++  {
++    'name': 'meta-dbus-a11y',
++    'interface': 'org.freedesktop.a11y.xml',
++    'prefix': 'org.freedesktop.a11y',
++  },
+   {
+     'name': 'meta-dbus-display-config',
+     'interface': 'org.gnome.Mutter.DisplayConfig.xml',
+-- 
+2.44.0.501.g19981daefd.dirty
+
+
+From 7c4e773276b9cd87373e4231db371849157db325 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Luk=C3=A1=C5=A1=20Tyrychtr?= <ltyrycht@redhat.com>
+Date: Wed, 5 Feb 2025 18:37:28 +0100
+Subject: [PATCH 02/14] clutter: Add ClutterEventFlag to notify a11y modifier
+ click
+
+Use a Clutter event flag to communicate the the fact that the event
+is an a11y modifier first click. The accessibility modifiers will
+require special handling in the input and main threads.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4217>
+(cherry picked from commit d3a0bbdf524f160b683f5db261382c306e71c58d)
+---
+ clutter/clutter/clutter-enums.h | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/clutter/clutter/clutter-enums.h b/clutter/clutter/clutter-enums.h
+index 9bd508fb67..451e1b8c67 100644
+--- a/clutter/clutter/clutter-enums.h
++++ b/clutter/clutter/clutter-enums.h
+@@ -519,6 +519,7 @@ typedef enum /*< flags prefix=CLUTTER_EVENT >*/
+   CLUTTER_EVENT_FLAG_RELATIVE_MOTION = 1 << 3,
+   CLUTTER_EVENT_FLAG_GRAB_NOTIFY  = 1 << 4,
+   CLUTTER_EVENT_FLAG_POINTER_EMULATED = 1 << 5,
++  CLUTTER_EVENT_FLAG_A11Y_MODIFIER_FIRST_CLICK = 1 << 6,
+ } ClutterEventFlags;
+ 
+ /**
+-- 
+2.44.0.501.g19981daefd.dirty
+
+
+From 7971ccea8aa76745165cdf44f61a19b5f82a17b7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Luk=C3=A1=C5=A1=20Tyrychtr?= <ltyrycht@redhat.com>
+Date: Wed, 5 Feb 2025 18:52:00 +0100
+Subject: [PATCH 03/14] backends/native: Handle a11y modifier presses in
+ MetaSeatImpl
+
+The state handling about whether the a11y modifier is a first press (so
+could be consumed for other actions), or results in the modifier action
+(e.g. caps lock) is performed in the input thread. This information will
+be propagated through the CLUTTER_EVENT_FLAG_A11Y_MODIFIER_FIRST_CLICK
+flag in the related key events.
+
+Carlos Garnacho: Drop synchronous wait for configuration changes
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4217>
+(cherry picked from commit d86796413929bd5d5fb59cb3c2a9ab9d714f70cc)
+---
+ src/backends/native/meta-seat-impl.c | 133 ++++++++++++++++++++++++++-
+ src/backends/native/meta-seat-impl.h |   4 +
+ 2 files changed, 134 insertions(+), 3 deletions(-)
+
+diff --git a/src/backends/native/meta-seat-impl.c b/src/backends/native/meta-seat-impl.c
+index c1e46a0502..0bdf1606fc 100644
+--- a/src/backends/native/meta-seat-impl.c
++++ b/src/backends/native/meta-seat-impl.c
+@@ -103,6 +103,14 @@ static guint signals[N_SIGNALS] = { 0 };
+ typedef struct _MetaSeatImplPrivate
+ {
+   GHashTable *device_files;
++
++  struct {
++    GHashTable *grabbed_modifiers;
++    GHashTable *pressed_modifiers;
++    uint32_t last_keysym;
++    uint32_t last_keysym_time;
++    gboolean saw_first_release;
++  } a11y;
+ } MetaSeatImplPrivate;
+ 
+ static void meta_seat_impl_initable_iface_init (GInitableIface *iface);
+@@ -389,6 +397,65 @@ emit_signal (MetaSeatImpl *seat_impl,
+                                          (GDestroyNotify) signal_data_free);
+ }
+ 
++static gboolean
++is_a11y_modifier_first_click (MetaSeatImpl *seat_impl,
++                              uint32_t      keysym,
++                              uint32_t      event_time,
++                              gboolean      is_press)
++{
++  MetaSeatImplPrivate *priv = meta_seat_impl_get_instance_private (seat_impl);
++  gboolean is_same_keysym = keysym == priv->a11y.last_keysym;
++  gboolean event_soon_enough =
++    event_time - priv->a11y.last_keysym_time < seat_impl->repeat_delay;
++  gboolean is_grabbed_modifier =
++    g_hash_table_contains (priv->a11y.grabbed_modifiers, GUINT_TO_POINTER (keysym));
++
++  priv->a11y.last_keysym = keysym;
++  priv->a11y.last_keysym_time = event_time;
++
++  /* This is not an event for a grabbed modifier */
++  if (!is_grabbed_modifier)
++    return FALSE;
++
++  if (!is_press && g_hash_table_contains (priv->a11y.pressed_modifiers,
++                                          GUINT_TO_POINTER (keysym)))
++    {
++      g_hash_table_remove (priv->a11y.pressed_modifiers,
++                           GUINT_TO_POINTER (keysym));
++      /* This is a release event for a previously pressed modifier */
++      return FALSE;
++    }
++
++  if (is_same_keysym && event_soon_enough)
++    {
++      if (is_press && priv->a11y.saw_first_release)
++        {
++          priv->a11y.saw_first_release = FALSE;
++          g_hash_table_add (priv->a11y.pressed_modifiers,
++                            GUINT_TO_POINTER (keysym));
++
++          /* This is the second press event and it is on time, process
++           * it normally
++           */
++          return FALSE;
++        }
++      else
++        {
++          priv->a11y.saw_first_release = TRUE;
++          /* This is the first release event, wait for the second press event */
++          return TRUE;
++        }
++    }
++  else
++    {
++      /* This is either a different modifier, the first press
++       * event, or not on time to progress
++       */
++      priv->a11y.saw_first_release = FALSE;
++      return TRUE;
++    }
++}
++
+ void
+ meta_seat_impl_notify_key_in_impl (MetaSeatImpl       *seat_impl,
+                                    ClutterInputDevice *device,
+@@ -401,6 +468,8 @@ meta_seat_impl_notify_key_in_impl (MetaSeatImpl       *seat_impl,
+   ClutterEventFlags flags = CLUTTER_EVENT_NONE;
+   enum xkb_state_component changed_state;
+   uint32_t keycode;
++  uint32_t keysym;
++  gboolean should_ignore;
+ 
+   if (state != AUTOREPEAT_VALUE)
+     {
+@@ -421,6 +490,16 @@ meta_seat_impl_notify_key_in_impl (MetaSeatImpl       *seat_impl,
+       flags = CLUTTER_EVENT_FLAG_REPEATED;
+     }
+ 
++  keycode = meta_xkb_evdev_to_keycode (key);
++  keysym = xkb_state_key_get_one_sym (seat_impl->xkb, keycode);
++
++  should_ignore = is_a11y_modifier_first_click (seat_impl,
++                                                keysym,
++                                                time_us / 1000,
++                                                state);
++  if (should_ignore)
++    flags |= CLUTTER_EVENT_FLAG_A11Y_MODIFIER_FIRST_CLICK;
++
+   event = meta_key_event_new_from_evdev (device,
+                                          seat_impl->core_keyboard,
+                                          flags,
+@@ -428,11 +507,9 @@ meta_seat_impl_notify_key_in_impl (MetaSeatImpl       *seat_impl,
+                                          seat_impl->button_state,
+                                          time_us, key, state);
+ 
+-  keycode = meta_xkb_evdev_to_keycode (key);
+-
+   /* We must be careful and not pass multiple releases to xkb, otherwise it gets
+      confused and locks the modifiers */
+-  if (state != AUTOREPEAT_VALUE)
++  if (!should_ignore && state != AUTOREPEAT_VALUE)
+     {
+       changed_state = xkb_state_update_key (seat_impl->xkb, keycode,
+                                             state ? XKB_KEY_DOWN : XKB_KEY_UP);
+@@ -2938,6 +3015,9 @@ input_thread (MetaSeatImpl *seat_impl)
+                            NULL,
+                            (GDestroyNotify) meta_device_file_release);
+ 
++  priv->a11y.grabbed_modifiers = g_hash_table_new (NULL, NULL);
++  priv->a11y.pressed_modifiers = g_hash_table_new (NULL, NULL);
++
+   seat_impl->input_settings = meta_input_settings_native_new_in_impl (seat_impl);
+   g_signal_connect_object (seat_impl->input_settings, "kbd-a11y-changed",
+                            G_CALLBACK (kbd_a11y_changed_cb), seat_impl, 0);
+@@ -3099,6 +3179,9 @@ destroy_in_impl (GTask *task)
+ 
+   g_clear_pointer (&priv->device_files, g_hash_table_destroy);
+ 
++  g_clear_pointer (&priv->a11y.grabbed_modifiers, g_hash_table_destroy);
++  g_clear_pointer (&priv->a11y.pressed_modifiers, g_hash_table_destroy);
++
+   g_main_loop_quit (seat_impl->input_loop);
+   g_task_return_boolean (task, TRUE);
+ 
+@@ -3820,6 +3903,50 @@ meta_seat_impl_set_viewports (MetaSeatImpl     *seat_impl,
+   g_cond_clear (&data.cond);
+ }
+ 
++static gboolean
++set_a11y_modifiers (GTask *task)
++{
++  MetaSeatImpl *seat_impl = g_task_get_source_object (task);
++  MetaSeatImplPrivate *priv = meta_seat_impl_get_instance_private (seat_impl);
++  GArray *modifiers = g_task_get_task_data (task);
++  int i;
++
++  g_hash_table_remove_all (priv->a11y.grabbed_modifiers);
++
++  for (i = 0; i < modifiers->len; i++)
++    {
++      uint32_t keysym;
++
++      keysym = g_array_index (modifiers, uint32_t, i);
++      g_hash_table_add (priv->a11y.grabbed_modifiers,
++                        GUINT_TO_POINTER (keysym));
++    }
++
++  g_task_return_boolean (task, TRUE);
++
++  return G_SOURCE_REMOVE;
++}
++
++void
++meta_seat_impl_set_a11y_modifiers (MetaSeatImpl   *seat_impl,
++                                   const uint32_t *modifiers,
++                                   int             n_modifiers)
++{
++  g_autoptr (GTask) task = NULL;
++  GArray *modifiers_copy;
++
++  g_return_if_fail (META_IS_SEAT_IMPL (seat_impl));
++
++  modifiers_copy = g_array_new (FALSE, FALSE, sizeof (uint32_t));
++  g_array_append_vals (modifiers_copy, modifiers, n_modifiers);
++
++  task = g_task_new (seat_impl, NULL, NULL, NULL);
++  g_task_set_task_data (task, modifiers_copy,
++                        (GDestroyNotify) g_array_unref);
++  meta_seat_impl_run_input_task (seat_impl, task,
++                                 (GSourceFunc) set_a11y_modifiers);
++}
++
+ MetaSeatImpl *
+ meta_seat_impl_new (MetaSeatNative     *seat_native,
+                     const char         *seat_id,
+diff --git a/src/backends/native/meta-seat-impl.h b/src/backends/native/meta-seat-impl.h
+index d95fb7176b..7d85fc6fc7 100644
+--- a/src/backends/native/meta-seat-impl.h
++++ b/src/backends/native/meta-seat-impl.h
+@@ -263,3 +263,7 @@ void meta_seat_impl_add_virtual_input_device (MetaSeatImpl       *seat_impl,
+ 
+ void meta_seat_impl_remove_virtual_input_device (MetaSeatImpl       *seat_impl,
+                                                  ClutterInputDevice *device);
++
++void meta_seat_impl_set_a11y_modifiers (MetaSeatImpl   *seat_impl,
++                                        const uint32_t *modifiers,
++                                        int             n_modifiers);
+-- 
+2.44.0.501.g19981daefd.dirty
+
+
+From 4615e7ce13211ee7aea8aa83f265a4318356495e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Luk=C3=A1=C5=A1=20Tyrychtr?= <ltyrycht@redhat.com>
+Date: Wed, 5 Feb 2025 18:58:41 +0100
+Subject: [PATCH 04/14] backends/native: Plumb a11y modifiers through
+ MetaSeatNative
+
+These modifiers will be set by the backend from the main thread, and
+need to be handled specially for them to be usable as both modifier
+buttons, and their own regular action.
+
+Carlos Garnacho: pass modifiers as array+lenght instead of hashtable.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4217>
+(cherry picked from commit 8c52e243c03c03c4e1fe0c13c730fd24d84a40a6)
+---
+ src/backends/native/meta-seat-native.c | 8 ++++++++
+ src/backends/native/meta-seat-native.h | 4 ++++
+ 2 files changed, 12 insertions(+)
+
+diff --git a/src/backends/native/meta-seat-native.c b/src/backends/native/meta-seat-native.c
+index d912875684..ed3842bcf1 100644
+--- a/src/backends/native/meta-seat-native.c
++++ b/src/backends/native/meta-seat-native.c
+@@ -656,6 +656,14 @@ meta_seat_native_set_viewports (MetaSeatNative   *seat,
+   meta_seat_impl_set_viewports (seat->impl, viewports);
+ }
+ 
++void
++meta_seat_native_set_a11y_modifiers (MetaSeatNative *seat,
++                                     const uint32_t *modifiers,
++                                     int             n_modifiers)
++{
++  meta_seat_impl_set_a11y_modifiers (seat->impl, modifiers, n_modifiers);
++}
++
+ void
+ meta_seat_native_run_impl_task (MetaSeatNative *seat,
+                                 GSourceFunc     dispatch_func,
+diff --git a/src/backends/native/meta-seat-native.h b/src/backends/native/meta-seat-native.h
+index e82d0043be..cccfa6ce63 100644
+--- a/src/backends/native/meta-seat-native.h
++++ b/src/backends/native/meta-seat-native.h
+@@ -137,3 +137,7 @@ void meta_seat_native_run_impl_task (MetaSeatNative *seat,
+                                      GSourceFunc     dispatch_func,
+                                      gpointer        user_data,
+                                      GDestroyNotify  destroy_notify);
++
++void meta_seat_native_set_a11y_modifiers (MetaSeatNative *seat,
++                                          const uint32_t *modifiers,
++                                          int             n_modifiers);
+-- 
+2.44.0.501.g19981daefd.dirty
+
+
+From 893688f075578a5d8f660094105a53d20b1143fb Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Luk=C3=A1=C5=A1=20Tyrychtr?= <ltyrycht@redhat.com>
+Date: Wed, 5 Feb 2025 19:01:26 +0100
+Subject: [PATCH 05/14] backends: Add MetaA11yManager
+
+This a11y manager will handle key event emission to screen
+readers and other ATs. This initial commit only introduces
+the object.
+
+Carlos Garnacho: Make the object take a ::backend property
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4217>
+(cherry picked from commit c0c452445236d98fc4297603f269938ba255a206)
+---
+ src/backends/meta-a11y-manager.c | 102 +++++++++++++++++++++++++++++++
+ src/backends/meta-a11y-manager.h |  29 +++++++++
+ src/meson.build                  |   2 +
+ 3 files changed, 133 insertions(+)
+ create mode 100644 src/backends/meta-a11y-manager.c
+ create mode 100644 src/backends/meta-a11y-manager.h
+
+diff --git a/src/backends/meta-a11y-manager.c b/src/backends/meta-a11y-manager.c
+new file mode 100644
+index 0000000000..22de01030d
+--- /dev/null
++++ b/src/backends/meta-a11y-manager.c
+@@ -0,0 +1,102 @@
++/* -*- mode: C; c-file-style: "gnu"; indent-tabs-mode: nil; -*- */
++
++/*
++ * Copyright 2024 GNOME Foundation
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of the
++ * License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++#include "config.h"
++
++#include "backends/meta-a11y-manager.h"
++#include "meta/meta-backend.h"
++#include "meta/meta-context.h"
++#include "meta/util.h"
++
++#include "meta-dbus-a11y.h"
++
++enum
++{
++  A11Y_MODIFIERS_CHANGED,
++  N_SIGNALS
++};
++
++static guint signals[N_SIGNALS];
++
++enum
++{
++  PROP_0,
++  PROP_BACKEND,
++  N_PROPS,
++};
++
++static GParamSpec *props[N_PROPS];
++
++typedef struct _MetaA11yManager
++{
++  GObject parent;
++  MetaBackend *backend;
++} MetaA11yManager;
++
++G_DEFINE_TYPE (MetaA11yManager, meta_a11y_manager, G_TYPE_OBJECT)
++
++static void
++meta_a11y_manager_set_property (GObject      *object,
++                                guint         prop_id,
++                                const GValue *value,
++                                GParamSpec   *pspec)
++{
++  MetaA11yManager *a11y_manager = META_A11Y_MANAGER (object);
++
++  switch (prop_id)
++    {
++    case PROP_BACKEND:
++      a11y_manager->backend = g_value_get_object (value);
++      break;
++    default:
++      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
++      break;
++    }
++}
++
++static void
++meta_a11y_manager_class_init (MetaA11yManagerClass *klass)
++{
++  GObjectClass *object_class = G_OBJECT_CLASS (klass);
++
++  object_class->set_property = meta_a11y_manager_set_property;
++
++  props[PROP_BACKEND] =
++    g_param_spec_object ("backend", NULL, NULL,
++                         META_TYPE_BACKEND,
++                         G_PARAM_WRITABLE |
++                         G_PARAM_CONSTRUCT_ONLY |
++                         G_PARAM_STATIC_STRINGS);
++
++  g_object_class_install_properties (object_class, N_PROPS, props);
++}
++
++static void
++meta_a11y_manager_init (MetaA11yManager *a11y_manager)
++{
++}
++
++MetaA11yManager *
++meta_a11y_manager_new (MetaBackend *backend)
++{
++  return g_object_new (META_TYPE_A11Y_MANAGER,
++                       "backend", backend,
++                       NULL);
++}
+diff --git a/src/backends/meta-a11y-manager.h b/src/backends/meta-a11y-manager.h
+new file mode 100644
+index 0000000000..df5c9a5d21
+--- /dev/null
++++ b/src/backends/meta-a11y-manager.h
+@@ -0,0 +1,29 @@
++/*
++ * Copyright 2024 GNOME Foundation
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of the
++ * License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++#pragma once
++
++#include <glib-object.h>
++
++#include "backends/meta-backend-types.h"
++#include "clutter/clutter.h"
++
++#define META_TYPE_A11Y_MANAGER (meta_a11y_manager_get_type ())
++G_DECLARE_FINAL_TYPE (MetaA11yManager, meta_a11y_manager, META, A11Y_MANAGER, GObject)
++
++MetaA11yManager * meta_a11y_manager_new (MetaBackend *backend);
+diff --git a/src/meson.build b/src/meson.build
+index 6c19300b8f..c57fd935f6 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -193,6 +193,8 @@ mutter_sources = [
+   'backends/edid.h',
+   'backends/edid-parse.c',
+   'backends/gsm-inhibitor-flag.h',
++  'backends/meta-a11y-manager.c',
++  'backends/meta-a11y-manager.h',
+   'backends/meta-backend.c',
+   'backends/meta-backend-private.h',
+   'backends/meta-barrier.c',
+-- 
+2.44.0.501.g19981daefd.dirty
+
+
+From 3976dc0c8accf9fcd2968e5980408fca32589a69 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Luk=C3=A1=C5=A1=20Tyrychtr?= <ltyrycht@redhat.com>
+Date: Wed, 5 Feb 2025 19:03:10 +0100
+Subject: [PATCH 06/14] backends: Manage MetaA11yManager in MetaBackend
+
+The MetaBackend will own the MetaA11yManager, being actually
+put to use in backend implementations.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4217>
+(cherry picked from commit f4ce1e8a462b96e207ff0ba21040c50e91c62cc2)
+---
+ src/backends/meta-backend-private.h |  3 +++
+ src/backends/meta-backend.c         | 18 ++++++++++++++++++
+ 2 files changed, 21 insertions(+)
+
+diff --git a/src/backends/meta-backend-private.h b/src/backends/meta-backend-private.h
+index 1d2af368bd..411a0a5d57 100644
+--- a/src/backends/meta-backend-private.h
++++ b/src/backends/meta-backend-private.h
+@@ -28,6 +28,7 @@
+ #include "meta/meta-backend.h"
+ #include "meta/meta-idle-monitor.h"
+ #include "meta/meta-orientation-manager.h"
++#include "backends/meta-a11y-manager.h"
+ #include "backends/meta-backend-types.h"
+ #include "backends/meta-cursor-renderer.h"
+ #include "backends/meta-egl.h"
+@@ -159,6 +160,8 @@ MetaScreenCast * meta_backend_get_screen_cast (MetaBackend *backend);
+ 
+ MetaInputCapture * meta_backend_get_input_capture (MetaBackend *backend);
+ 
++MetaA11yManager * meta_backend_get_a11y_manager (MetaBackend *backend);
++
+ gboolean meta_backend_grab_device (MetaBackend *backend,
+                                    int          device_id,
+                                    uint32_t     timestamp);
+diff --git a/src/backends/meta-backend.c b/src/backends/meta-backend.c
+index cdca232abc..2cdc7edf6c 100644
+--- a/src/backends/meta-backend.c
++++ b/src/backends/meta-backend.c
+@@ -52,6 +52,7 @@
+ 
+ #include <stdlib.h>
+ 
++#include "backends/meta-a11y-manager.h"
+ #include "backends/meta-barrier-private.h"
+ #include "backends/meta-color-manager-private.h"
+ #include "backends/meta-cursor-renderer.h"
+@@ -154,6 +155,7 @@ struct _MetaBackendPrivate
+   MetaRemoteDesktop *remote_desktop;
+ #endif
+   MetaInputCapture *input_capture;
++  MetaA11yManager *a11y_manager;
+ 
+ #ifdef HAVE_LIBWACOM
+   WacomDeviceDatabase *wacom_db;
+@@ -226,6 +228,7 @@ meta_backend_dispose (GObject *object)
+   g_clear_object (&priv->input_capture);
+   g_clear_object (&priv->dbus_session_watcher);
+   g_clear_object (&priv->remote_access_controller);
++  g_clear_object (&priv->a11y_manager);
+   g_clear_object (&priv->dnd);
+ 
+ #ifdef HAVE_LIBWACOM
+@@ -607,6 +610,8 @@ meta_backend_real_post_init (MetaBackend *backend)
+     priv->remote_access_controller,
+     META_DBUS_SESSION_MANAGER (priv->input_capture));
+ 
++  priv->a11y_manager = meta_a11y_manager_new (backend);
++
+   if (!meta_monitor_manager_is_headless (priv->monitor_manager))
+     init_pointer_position (backend);
+ 
+@@ -1548,6 +1553,19 @@ meta_backend_get_remote_access_controller (MetaBackend *backend)
+   return priv->remote_access_controller;
+ }
+ 
++/**
++ * meta_backend_get_a11y_manager:
++ *
++ * Returns: (transfer none): the #MetaA11yManager
++ */
++MetaA11yManager *
++meta_backend_get_a11y_manager (MetaBackend *backend)
++{
++  MetaBackendPrivate *priv = meta_backend_get_instance_private (backend);
++
++  return priv->a11y_manager;
++}
++
+ /**
+  * meta_backend_is_rendering_hardware_accelerated:
+  * @backend: A #MetaBackend
+-- 
+2.44.0.501.g19981daefd.dirty
+
+
+From b6e5ec24b95f0b389b18927af0956f3b59d7b21d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Luk=C3=A1=C5=A1=20Tyrychtr?= <ltyrycht@redhat.com>
+Date: Wed, 5 Feb 2025 19:15:54 +0100
+Subject: [PATCH 07/14] backends: Implement A11y monitor interface
+
+Implement the org.freedesktop.a11y.KeyboardMonitor interface,
+allowing screen readers to interact with Mutter and grab
+shortcuts or full keyboard interaction.
+
+Carlos Garnacho: Move setup to ::constructed.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4217>
+(cherry picked from commit 0bcda4ecf47f04cb76fb642f05d498d1dd941e15)
+---
+ src/backends/meta-a11y-manager.c | 274 +++++++++++++++++++++++++++++++
+ 1 file changed, 274 insertions(+)
+
+diff --git a/src/backends/meta-a11y-manager.c b/src/backends/meta-a11y-manager.c
+index 22de01030d..5f8d5b1ee4 100644
+--- a/src/backends/meta-a11y-manager.c
++++ b/src/backends/meta-a11y-manager.c
+@@ -44,14 +44,253 @@ enum
+ 
+ static GParamSpec *props[N_PROPS];
+ 
++typedef struct _MetaA11yKeystroke
++{
++  uint32_t keysym;
++  ClutterModifierType modifiers;
++} MetaA11yKeystroke;
++
++typedef struct _MetaA11yKeyGrabber
++{
++  MetaA11yManager *manager;
++  GDBusConnection *connection;
++  char *bus_name;
++  guint bus_name_watcher_id;
++  gboolean grab_all;
++  GArray *modifiers;
++  GArray *keystrokes;
++} MetaA11yKeyGrabber;
++
+ typedef struct _MetaA11yManager
+ {
+   GObject parent;
+   MetaBackend *backend;
++  guint dbus_name_id;
++  MetaDBusKeyboardMonitor *keyboard_monitor_skeleton;
++
++  GList *key_grabbers;
++  GHashTable *grabbed_keypresses;
++  GHashTable *all_grabbed_modifiers;
+ } MetaA11yManager;
+ 
+ G_DEFINE_TYPE (MetaA11yManager, meta_a11y_manager, G_TYPE_OBJECT)
+ 
++static void
++key_grabber_free (MetaA11yKeyGrabber *grabber)
++{
++  if (grabber->bus_name_watcher_id)
++    {
++      g_bus_unwatch_name (grabber->bus_name_watcher_id);
++      grabber->bus_name_watcher_id = 0;
++    }
++
++  g_clear_pointer (&grabber->keystrokes, g_array_unref);
++  g_clear_pointer (&grabber->modifiers, g_array_unref);
++  g_clear_object (&grabber->connection);
++  g_clear_pointer (&grabber->bus_name, g_free);
++
++  g_free (grabber);
++}
++
++static void
++rebuild_all_grabbed_modifiers (MetaA11yManager    *a11y_manager,
++                               MetaA11yKeyGrabber *ignored_grabber)
++{
++  GList *l;
++  int i;
++
++  g_hash_table_remove_all (a11y_manager->all_grabbed_modifiers);
++
++  for (l = a11y_manager->key_grabbers; l; l = l->next)
++    {
++      MetaA11yKeyGrabber *grabber = l->data;
++
++      if (grabber == ignored_grabber)
++        continue;
++
++      for (i = 0; i < grabber->modifiers->len; i++)
++        {
++          uint32_t modifier_keysym = g_array_index (grabber->modifiers, uint32_t, i);
++          g_hash_table_add (a11y_manager->all_grabbed_modifiers,
++                            GUINT_TO_POINTER (modifier_keysym));
++        }
++    }
++}
++
++static void
++key_grabber_bus_name_vanished_callback (GDBusConnection *connection,
++                                        const char      *name,
++                                        gpointer         user_data)
++{
++  MetaA11yKeyGrabber *grabber = user_data;
++  MetaA11yManager *a11y_manager = grabber->manager;
++
++  grabber->manager->key_grabbers =
++    g_list_remove (grabber->manager->key_grabbers, grabber);
++
++  if (grabber->modifiers)
++    {
++      rebuild_all_grabbed_modifiers (a11y_manager, grabber);
++      g_signal_emit (grabber->manager, signals[A11Y_MODIFIERS_CHANGED], 0);
++    }
++
++  key_grabber_free (grabber);
++}
++
++static MetaA11yKeyGrabber *
++ensure_key_grabber (MetaA11yManager       *a11y_manager,
++                    GDBusMethodInvocation *invocation)
++{
++  GDBusConnection *connection =
++    g_dbus_method_invocation_get_connection (invocation);
++  const char *sender = g_dbus_method_invocation_get_sender (invocation);
++  MetaA11yKeyGrabber *grabber;
++  GList *l;
++
++  for (l = a11y_manager->key_grabbers; l; l = l->next)
++    {
++      grabber = l->data;
++
++      if (g_strcmp0 (grabber->bus_name, sender) == 0)
++        return grabber;
++    }
++
++  grabber = g_new0 (MetaA11yKeyGrabber, 1);
++  grabber->manager = a11y_manager;
++  grabber->bus_name = g_strdup (sender);
++  grabber->connection = g_object_ref (connection);
++
++  grabber->bus_name_watcher_id =
++    g_bus_watch_name_on_connection (connection,
++                                    grabber->bus_name,
++                                    G_BUS_NAME_WATCHER_FLAGS_NONE,
++                                    NULL,
++                                    key_grabber_bus_name_vanished_callback,
++                                    grabber,
++                                    NULL);
++
++  a11y_manager->key_grabbers =
++    g_list_prepend (a11y_manager->key_grabbers, grabber);
++
++  return grabber;
++}
++
++static gboolean
++handle_grab_keyboard (MetaDBusKeyboardMonitor *skeleton,
++                      GDBusMethodInvocation   *invocation,
++                      MetaA11yManager         *a11y_manager)
++{
++  MetaA11yKeyGrabber *grabber;
++
++  grabber = ensure_key_grabber (a11y_manager, invocation);
++  grabber->grab_all = TRUE;
++  meta_dbus_keyboard_monitor_complete_grab_keyboard (skeleton, invocation);
++
++  return G_DBUS_METHOD_INVOCATION_HANDLED;
++}
++
++static gboolean
++handle_ungrab_keyboard (MetaDBusKeyboardMonitor *skeleton,
++                        GDBusMethodInvocation   *invocation,
++                        MetaA11yManager         *a11y_manager)
++{
++  MetaA11yKeyGrabber *grabber;
++
++  grabber = ensure_key_grabber (a11y_manager, invocation);
++  grabber->grab_all = FALSE;
++  meta_dbus_keyboard_monitor_complete_ungrab_keyboard (skeleton, invocation);
++
++  return G_DBUS_METHOD_INVOCATION_HANDLED;
++}
++
++static gboolean
++handle_set_key_grabs (MetaDBusKeyboardMonitor *skeleton,
++                      GDBusMethodInvocation   *invocation,
++                      GVariant                *modifiers,
++                      GVariant                *keystrokes,
++                      MetaA11yManager         *a11y_manager)
++{
++  MetaA11yKeyGrabber *grabber;
++  GVariantIter iter;
++  uint32_t modifier_keysym;
++  MetaA11yKeystroke keystroke;
++
++  grabber = ensure_key_grabber (a11y_manager, invocation);
++
++  g_clear_pointer (&grabber->modifiers, g_array_unref);
++  g_clear_pointer (&grabber->keystrokes, g_array_unref);
++  grabber->modifiers = g_array_new (FALSE, FALSE, sizeof (uint32_t));
++  grabber->keystrokes = g_array_new (FALSE, FALSE, sizeof (MetaA11yKeystroke));
++
++  g_variant_iter_init (&iter, modifiers);
++  while (g_variant_iter_next (&iter, "u", &modifier_keysym))
++    g_array_append_val (grabber->modifiers, modifier_keysym);
++
++  g_variant_iter_init (&iter, keystrokes);
++  while (g_variant_iter_next (&iter, "(uu)", &keystroke.keysym,
++                              &keystroke.modifiers))
++    g_array_append_val (grabber->keystrokes, keystroke);
++
++  rebuild_all_grabbed_modifiers (a11y_manager, NULL);
++  g_signal_emit (a11y_manager, signals[A11Y_MODIFIERS_CHANGED], 0);
++  meta_dbus_keyboard_monitor_complete_set_key_grabs (skeleton, invocation);
++
++  return G_DBUS_METHOD_INVOCATION_HANDLED;
++}
++
++static void
++on_bus_acquired (GDBusConnection *connection,
++                 const char      *name,
++                 gpointer         user_data)
++{
++  MetaA11yManager *manager = user_data;
++
++  manager->keyboard_monitor_skeleton = meta_dbus_keyboard_monitor_skeleton_new ();
++
++  g_signal_connect (manager->keyboard_monitor_skeleton, "handle-grab-keyboard",
++                    G_CALLBACK (handle_grab_keyboard), manager);
++  g_signal_connect (manager->keyboard_monitor_skeleton, "handle-ungrab-keyboard",
++                    G_CALLBACK (handle_ungrab_keyboard), manager);
++  g_signal_connect (manager->keyboard_monitor_skeleton, "handle-set-key-grabs",
++                    G_CALLBACK (handle_set_key_grabs), manager);
++
++  g_dbus_interface_skeleton_export (G_DBUS_INTERFACE_SKELETON (manager->keyboard_monitor_skeleton),
++                                    connection,
++                                    "/org/freedesktop/a11y/Manager",
++                                    NULL);
++}
++
++static void
++on_name_acquired (GDBusConnection *connection,
++                  const char      *name,
++                  gpointer         user_data)
++{
++  g_debug ("Acquired name %s", name);
++}
++
++static void
++on_name_lost (GDBusConnection *connection,
++              const char      *name,
++              gpointer         user_data)
++{
++  g_debug ("Lost or failed to acquire name %s", name);
++}
++
++static void
++meta_a11y_manager_finalize (GObject *object)
++{
++  MetaA11yManager *a11y_manager = META_A11Y_MANAGER (object);
++
++  g_list_free_full (a11y_manager->key_grabbers,
++                    (GDestroyNotify) key_grabber_free);
++  g_clear_object (&a11y_manager->keyboard_monitor_skeleton);
++  g_clear_pointer (&a11y_manager->grabbed_keypresses, g_hash_table_destroy);
++  g_clear_pointer (&a11y_manager->all_grabbed_modifiers, g_hash_table_destroy);
++  g_bus_unown_name (a11y_manager->dbus_name_id);
++
++  G_OBJECT_CLASS (meta_a11y_manager_parent_class)->finalize (object);
++}
++
+ static void
+ meta_a11y_manager_set_property (GObject      *object,
+                                 guint         prop_id,
+@@ -71,12 +310,47 @@ meta_a11y_manager_set_property (GObject      *object,
+     }
+ }
+ 
++static void
++meta_a11y_manager_constructed (GObject *object)
++{
++  MetaA11yManager *a11y_manager = META_A11Y_MANAGER (object);
++  MetaContext *context;
++
++  g_assert (a11y_manager->backend);
++  context = meta_backend_get_context (a11y_manager->backend);
++
++  a11y_manager->grabbed_keypresses = g_hash_table_new (NULL, NULL);
++  a11y_manager->all_grabbed_modifiers = g_hash_table_new (NULL, NULL);
++
++  a11y_manager->dbus_name_id =
++    g_bus_own_name (G_BUS_TYPE_SESSION,
++                    "org.freedesktop.a11y.Manager",
++                    G_BUS_NAME_OWNER_FLAGS_ALLOW_REPLACEMENT |
++                    (meta_context_is_replacing (context) ?
++                     G_BUS_NAME_OWNER_FLAGS_REPLACE :
++                     G_BUS_NAME_OWNER_FLAGS_NONE),
++                    on_bus_acquired,
++                    on_name_acquired,
++                    on_name_lost,
++                    a11y_manager,
++                    NULL);
++}
++
+ static void
+ meta_a11y_manager_class_init (MetaA11yManagerClass *klass)
+ {
+   GObjectClass *object_class = G_OBJECT_CLASS (klass);
+ 
++  object_class->finalize = meta_a11y_manager_finalize;
+   object_class->set_property = meta_a11y_manager_set_property;
++  object_class->constructed = meta_a11y_manager_constructed;
++
++  signals[A11Y_MODIFIERS_CHANGED] =
++    g_signal_new ("a11y-modifiers-changed",
++                  G_TYPE_FROM_CLASS (klass),
++                  G_SIGNAL_RUN_LAST,
++                  0, NULL, NULL, NULL,
++                  G_TYPE_NONE, 0);
+ 
+   props[PROP_BACKEND] =
+     g_param_spec_object ("backend", NULL, NULL,
+-- 
+2.44.0.501.g19981daefd.dirty
+
+
+From c60b8ee816991f6ca0ccd6e1c66b19a649a563df Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Luk=C3=A1=C5=A1=20Tyrychtr?= <ltyrycht@redhat.com>
+Date: Wed, 5 Feb 2025 19:17:08 +0100
+Subject: [PATCH 08/14] backends: Add MetaA11yManager method to get configured
+ a11y modifiers
+
+The ::a11y-modifiers-change method allows tracking for changes in the
+configured modifiers, add this method to allow backends to get the
+modifiers so that they can be passed along the lower layers.
+
+Carlos Garnacho: Turn into a method instead of a signal argument, turn
+into an array+length instead of a hashtable.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4217>
+(cherry picked from commit 1498724774976fad1dbd4e5bc210205cef1faf9d)
+---
+ src/backends/meta-a11y-manager.c | 24 ++++++++++++++++++++++++
+ src/backends/meta-a11y-manager.h |  3 +++
+ 2 files changed, 27 insertions(+)
+
+diff --git a/src/backends/meta-a11y-manager.c b/src/backends/meta-a11y-manager.c
+index 5f8d5b1ee4..647962c866 100644
+--- a/src/backends/meta-a11y-manager.c
++++ b/src/backends/meta-a11y-manager.c
+@@ -374,3 +374,27 @@ meta_a11y_manager_new (MetaBackend *backend)
+                        "backend", backend,
+                        NULL);
+ }
++
++uint32_t *
++meta_a11y_manager_get_modifier_keysyms (MetaA11yManager *a11y_manager,
++                                        int             *n_modifiers)
++{
++  GArray *modifier_keysyms;
++  GHashTableIter iter;
++  gpointer key;
++
++  modifier_keysyms = g_array_new (FALSE, FALSE, sizeof (uint32_t));
++
++  g_hash_table_iter_init (&iter, a11y_manager->all_grabbed_modifiers);
++  while (g_hash_table_iter_next (&iter, &key, NULL))
++    {
++      uint32_t keysym = GPOINTER_TO_UINT (key);
++
++      g_array_append_val (modifier_keysyms, keysym);
++    }
++
++  if (n_modifiers)
++    *n_modifiers = modifier_keysyms->len;
++
++  return (uint32_t *) g_array_free (modifier_keysyms, FALSE);
++}
+diff --git a/src/backends/meta-a11y-manager.h b/src/backends/meta-a11y-manager.h
+index df5c9a5d21..df07c94de2 100644
+--- a/src/backends/meta-a11y-manager.h
++++ b/src/backends/meta-a11y-manager.h
+@@ -27,3 +27,6 @@
+ G_DECLARE_FINAL_TYPE (MetaA11yManager, meta_a11y_manager, META, A11Y_MANAGER, GObject)
+ 
+ MetaA11yManager * meta_a11y_manager_new (MetaBackend *backend);
++
++uint32_t * meta_a11y_manager_get_modifier_keysyms (MetaA11yManager *a11y_manager,
++                                                   int             *n_modifiers);
+-- 
+2.44.0.501.g19981daefd.dirty
+
+
+From 3ce02680be1fea0c488c9681e87dfafac315fc06 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Luk=C3=A1=C5=A1=20Tyrychtr?= <ltyrycht@redhat.com>
+Date: Wed, 5 Feb 2025 19:03:50 +0100
+Subject: [PATCH 09/14] backends/native: Propagate a11y modifiers from
+ MetaA11yManager
+
+Listen to changes in MetaA11yManager configured modifiers, and propagate
+these along to the MetaSeatNative. This lets the backend keep track of
+configuration changes in a11y modifiers.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4217>
+(cherry picked from commit 45f6bed7809dadb40df98308b9041fe08b453871)
+---
+ src/backends/native/meta-backend-native.c | 25 +++++++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+diff --git a/src/backends/native/meta-backend-native.c b/src/backends/native/meta-backend-native.c
+index ee02b2783a..8732f3f7d2 100644
+--- a/src/backends/native/meta-backend-native.c
++++ b/src/backends/native/meta-backend-native.c
+@@ -38,6 +38,7 @@
+ 
+ #include <stdlib.h>
+ 
++#include "backends/meta-a11y-manager.h"
+ #include "backends/meta-color-manager.h"
+ #include "backends/meta-cursor-tracker-private.h"
+ #include "backends/meta-idle-manager.h"
+@@ -183,6 +184,23 @@ update_viewports (MetaBackend *backend)
+   g_object_unref (viewports);
+ }
+ 
++static void
++on_a11y_modifiers_changed (MetaA11yManager *a11y_manager,
++                           MetaBackend     *backend)
++{
++  MetaSeatNative *seat;
++  ClutterBackend *clutter_backend;
++  g_autofree uint32_t *modifiers;
++  int n_modifiers;
++
++  clutter_backend = meta_backend_get_clutter_backend (backend);
++  seat = META_SEAT_NATIVE (clutter_backend_get_default_seat (clutter_backend));
++  modifiers = meta_a11y_manager_get_modifier_keysyms (a11y_manager,
++                                                      &n_modifiers);
++
++  meta_seat_native_set_a11y_modifiers (seat, modifiers, n_modifiers);
++}
++
+ static void
+ meta_backend_native_post_init (MetaBackend *backend)
+ {
+@@ -191,6 +209,7 @@ meta_backend_native_post_init (MetaBackend *backend)
+     meta_backend_native_get_instance_private (backend_native);
+   MetaMonitorManager *monitor_manager =
+     meta_backend_get_monitor_manager (backend);
++  MetaA11yManager *a11y_manager = meta_backend_get_a11y_manager (backend);
+ 
+   META_BACKEND_CLASS (meta_backend_native_parent_class)->post_init (backend);
+ 
+@@ -200,6 +219,12 @@ meta_backend_native_post_init (MetaBackend *backend)
+   g_signal_connect_swapped (monitor_manager, "monitors-changed-internal",
+                             G_CALLBACK (update_viewports), backend);
+   update_viewports (backend);
++
++  g_signal_connect_object (a11y_manager,
++                           "a11y-modifiers-changed",
++                           G_CALLBACK (on_a11y_modifiers_changed),
++                           backend,
++                           G_CONNECT_DEFAULT);
+ }
+ 
+ static MetaBackendCapabilities
+-- 
+2.44.0.501.g19981daefd.dirty
+
+
+From b03c4412be7fec86f43c975e418556f17398fd75 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Luk=C3=A1=C5=A1=20Tyrychtr?= <ltyrycht@redhat.com>
+Date: Wed, 5 Feb 2025 19:16:41 +0100
+Subject: [PATCH 10/14] backends: Add method to pass key events to screen
+ readers
+
+Accessibility shortcuts and keyboard grabs need to be consumed,
+and key events propagated to screen readers. Add a function that
+does it all at once.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4217>
+(cherry picked from commit 800981c40c4f18f496a79227b3d3d5f0cdc195c9)
+---
+ src/backends/meta-a11y-manager.c | 148 +++++++++++++++++++++++++++++++
+ src/backends/meta-a11y-manager.h |   3 +
+ 2 files changed, 151 insertions(+)
+
+diff --git a/src/backends/meta-a11y-manager.c b/src/backends/meta-a11y-manager.c
+index 647962c866..a6ec4f6f3a 100644
+--- a/src/backends/meta-a11y-manager.c
++++ b/src/backends/meta-a11y-manager.c
+@@ -27,6 +27,12 @@
+ 
+ #include "meta-dbus-a11y.h"
+ 
++#define MOUSE_BUTTONS_MASK (CLUTTER_BUTTON1_MASK | \
++                            CLUTTER_BUTTON2_MASK | \
++                            CLUTTER_BUTTON3_MASK | \
++                            CLUTTER_BUTTON4_MASK | \
++                            CLUTTER_BUTTON5_MASK)
++
+ enum
+ {
+   A11Y_MODIFIERS_CHANGED,
+@@ -375,6 +381,148 @@ meta_a11y_manager_new (MetaBackend *backend)
+                        NULL);
+ }
+ 
++static gboolean
++should_grab_keypress (MetaA11yManager     *a11y_manager,
++                      MetaA11yKeyGrabber  *grabber,
++                      uint32_t             keysym,
++                      ClutterModifierType  modifiers)
++{
++  int i;
++
++  if (grabber->grab_all)
++    return TRUE;
++
++  if (grabber->modifiers)
++    {
++      for (i = 0; i < grabber->modifiers->len; i++)
++        {
++          uint32_t modifier_keysym;
++
++          modifier_keysym = g_array_index (grabber->modifiers, uint32_t, i);
++
++          if (keysym == modifier_keysym ||
++              g_hash_table_contains (a11y_manager->grabbed_keypresses,
++                                     GUINT_TO_POINTER (modifier_keysym)))
++            return TRUE;
++        }
++    }
++
++  if (grabber->keystrokes)
++    {
++      for (i = 0; i < grabber->keystrokes->len; i++)
++        {
++          MetaA11yKeystroke *keystroke =
++            &(g_array_index (grabber->keystrokes, MetaA11yKeystroke, i));
++
++          if (keysym == keystroke->keysym && modifiers == keystroke->modifiers)
++            return TRUE;
++        }
++    }
++
++  return FALSE;
++}
++
++static gboolean
++is_grabbed_modifier_key (MetaA11yManager *a11y_manager,
++                         uint32_t         keysym)
++{
++  return g_hash_table_contains (a11y_manager->all_grabbed_modifiers,
++                                GUINT_TO_POINTER (keysym));
++}
++
++static void
++notify_client (MetaA11yManager     *a11y_manager,
++               MetaA11yKeyGrabber  *key_grabber,
++               gboolean             released,
++               ClutterModifierType  state,
++               uint32_t             keysym,
++               uint32_t             unichar,
++               uint32_t             keycode)
++{
++  g_autoptr (GError) error = NULL;
++
++  if (!g_dbus_connection_emit_signal (key_grabber->connection,
++                                      key_grabber->bus_name,
++                                      "/org/freedesktop/a11y/Manager",
++                                      "org.freedesktop.a11y.KeyboardMonitor",
++                                      "KeyEvent",
++                                      g_variant_new ("(buuuq)",
++                                                     released,
++                                                     state,
++                                                     keysym,
++                                                     unichar,
++                                                     (uint16_t) keycode),
++                                      &error))
++    g_warning ("Could not emit a11y KeyEvent: %s", error->message);
++}
++
++gboolean
++meta_a11y_manager_notify_clients (MetaA11yManager    *a11y_manager,
++                                  const ClutterEvent *event)
++{
++  gboolean a11y_grabbed = FALSE;
++  gboolean released = clutter_event_type (event) == CLUTTER_KEY_RELEASE;
++  /* A grabbed modifier is a11y grabbed if it was not double pressed, otherwise we process it normally */
++  gboolean is_ignorable =
++    !!(clutter_event_get_flags (event) &
++       CLUTTER_EVENT_FLAG_A11Y_MODIFIER_FIRST_CLICK);
++  /* The Clutter event modifiers mask includes mouse buttons as well,
++   * but they're not expected by ATs, so we filter them out.
++  */
++  uint32_t keysym = clutter_event_get_key_symbol (event);
++  uint32_t unichar = clutter_event_get_key_unicode (event);
++  uint32_t keycode = clutter_event_get_key_code (event);
++  ClutterModifierType state;
++  GList *l;
++
++  state = clutter_event_get_state (event) & ~MOUSE_BUTTONS_MASK;
++
++  for (l = a11y_manager->key_grabbers; l; l = l->next)
++    {
++      MetaA11yKeyGrabber *grabber = l->data;
++
++      if (should_grab_keypress (a11y_manager, grabber, keysym, state))
++        {
++          notify_client (a11y_manager, grabber, released,
++                         state, keysym, unichar, keycode);
++        }
++    }
++
++  if (is_grabbed_modifier_key (a11y_manager, keysym) && !is_ignorable)
++    return FALSE;
++
++  if (released)
++    {
++      if (g_hash_table_contains (a11y_manager->grabbed_keypresses,
++                                 GUINT_TO_POINTER (keysym)))
++        {
++          g_hash_table_remove (a11y_manager->grabbed_keypresses,
++                               GUINT_TO_POINTER (keysym));
++          a11y_grabbed = TRUE;
++        }
++    }
++  else
++    {
++      if (g_hash_table_contains (a11y_manager->grabbed_keypresses,
++                                 GUINT_TO_POINTER (keysym)))
++        a11y_grabbed = TRUE;
++
++      for (l = a11y_manager->key_grabbers; l; l = l->next)
++        {
++          MetaA11yKeyGrabber *grabber = l->data;
++
++          if (should_grab_keypress (a11y_manager, grabber, keysym, state))
++            {
++              g_hash_table_add (a11y_manager->grabbed_keypresses,
++                                GUINT_TO_POINTER (keysym));
++              a11y_grabbed = TRUE;
++            }
++        }
++    }
++
++  return a11y_grabbed;
++}
++
+ uint32_t *
+ meta_a11y_manager_get_modifier_keysyms (MetaA11yManager *a11y_manager,
+                                         int             *n_modifiers)
+diff --git a/src/backends/meta-a11y-manager.h b/src/backends/meta-a11y-manager.h
+index df07c94de2..754cb65394 100644
+--- a/src/backends/meta-a11y-manager.h
++++ b/src/backends/meta-a11y-manager.h
+@@ -28,5 +28,8 @@ G_DECLARE_FINAL_TYPE (MetaA11yManager, meta_a11y_manager, META, A11Y_MANAGER, GO
+ 
+ MetaA11yManager * meta_a11y_manager_new (MetaBackend *backend);
+ 
++gboolean meta_a11y_manager_notify_clients (MetaA11yManager    *a11y_manager,
++                                           const ClutterEvent *event);
++
+ uint32_t * meta_a11y_manager_get_modifier_keysyms (MetaA11yManager *a11y_manager,
+                                                    int             *n_modifiers);
+-- 
+2.44.0.501.g19981daefd.dirty
+
+
+From 921a010f93b4b89d50b7ba97666af367bd8719a6 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Luk=C3=A1=C5=A1=20Tyrychtr?= <ltyrycht@redhat.com>
+Date: Fri, 7 Feb 2025 14:21:17 +0100
+Subject: [PATCH 11/14] backends: Add a11y interface methods to subscribe to
+ key event input
+
+This adds a pair of methods to signal an interest in receiving
+all key events without grabbing them, e. g. the previously expected behavior
+by screen readers.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4217>
+(cherry picked from commit 20c9b8cf0c85dabbe73b5b0ce155729a92f47bb0)
+---
+ data/dbus-interfaces/org.freedesktop.a11y.xml | 31 +++++++++++-
+ src/backends/meta-a11y-manager.c              | 47 ++++++++++++++++++-
+ 2 files changed, 75 insertions(+), 3 deletions(-)
+
+diff --git a/data/dbus-interfaces/org.freedesktop.a11y.xml b/data/dbus-interfaces/org.freedesktop.a11y.xml
+index c60480e89c..4f1d210423 100644
+--- a/data/dbus-interfaces/org.freedesktop.a11y.xml
++++ b/data/dbus-interfaces/org.freedesktop.a11y.xml
+@@ -16,7 +16,7 @@
+         GrabKeyboard:
+ 
+         Starts grabbing all key events. The client receives the events
+-        through the KeyEvent signal as always, but the events aren't handled
++        through the KeyEvent signal, and in addition, the events aren't handled
+         normally by the compositor. This includes changes to the state
+         of toggles like Caps Lock, Num Lock, and Scroll Lock.
+ 
+@@ -33,9 +33,36 @@
+ 
+         After calling this method, the key grabs specified in the last call
+         to SetKeyGrabs, if any, are still in effect.
++        Also, the client will still receive key events through the KeyEvent
++        signal, if it has called WatchKeyboard.
+     -->
+     <method name="UngrabKeyboard" />
+ 
++    <!--
++        WatchKeyboard:
++
++        Starts watching all key events. The client receives the events
++        through the KeyEvent signal, but the events are still handled
++        normally by the compositor. This includes changes to the state
++        of toggles like Caps Lock, Num Lock, and Scroll Lock.
++
++        This behavior stays in effect until the same client calls
++        UnwatchKeyboard or closes its D-Bus connection.
++    -->
++    <method name="WatchKeyboard" />
++
++    <!--
++        UnwatchKeyboard:
++
++        Reverses the effect of calling WatchKeyboard. If WatchKeyboard wasn't
++        previously called, this method does nothing.
++
++        After calling this method, the key grabs specified in the last call
++        to SetKeyGrabs, if any, are still in effect,
++        but other key events are no longer reported to this client.
++    -->
++    <method name="UnwatchKeyboard" />
++
+     <!--
+         SetKeyGrabs:
+         @modifiers: set of custom modifiers to grab
+@@ -43,7 +70,7 @@
+ 
+         Sets the current key grabs for the calling client, overriding
+         any previous call to this method. For grabbed key events, the
+-        KeyEvent signal is still emitted, but normal key event handling
++        KeyEvent signal is emitted, and normal key event handling
+         is suppressed, including state changes for toggles like Caps Lock
+         and Num Lock.
+ 
+diff --git a/src/backends/meta-a11y-manager.c b/src/backends/meta-a11y-manager.c
+index a6ec4f6f3a..5001d114a2 100644
+--- a/src/backends/meta-a11y-manager.c
++++ b/src/backends/meta-a11y-manager.c
+@@ -63,6 +63,7 @@ typedef struct _MetaA11yKeyGrabber
+   char *bus_name;
+   guint bus_name_watcher_id;
+   gboolean grab_all;
++  gboolean watch_all;
+   GArray *modifiers;
+   GArray *keystrokes;
+ } MetaA11yKeyGrabber;
+@@ -209,6 +210,34 @@ handle_ungrab_keyboard (MetaDBusKeyboardMonitor *skeleton,
+   return G_DBUS_METHOD_INVOCATION_HANDLED;
+ }
+ 
++static gboolean
++handle_watch_keyboard (MetaDBusKeyboardMonitor *skeleton,
++                       GDBusMethodInvocation   *invocation,
++                       MetaA11yManager         *a11y_manager)
++{
++  MetaA11yKeyGrabber *grabber;
++
++  grabber = ensure_key_grabber (a11y_manager, invocation);
++  grabber->watch_all = TRUE;
++  meta_dbus_keyboard_monitor_complete_watch_keyboard (skeleton, invocation);
++
++  return G_DBUS_METHOD_INVOCATION_HANDLED;
++}
++
++static gboolean
++handle_unwatch_keyboard (MetaDBusKeyboardMonitor *skeleton,
++                         GDBusMethodInvocation   *invocation,
++                         MetaA11yManager         *a11y_manager)
++{
++  MetaA11yKeyGrabber *grabber;
++
++  grabber = ensure_key_grabber (a11y_manager, invocation);
++  grabber->watch_all = FALSE;
++  meta_dbus_keyboard_monitor_complete_unwatch_keyboard (skeleton, invocation);
++
++  return G_DBUS_METHOD_INVOCATION_HANDLED;
++}
++
+ static gboolean
+ handle_set_key_grabs (MetaDBusKeyboardMonitor *skeleton,
+                       GDBusMethodInvocation   *invocation,
+@@ -257,6 +286,10 @@ on_bus_acquired (GDBusConnection *connection,
+                     G_CALLBACK (handle_grab_keyboard), manager);
+   g_signal_connect (manager->keyboard_monitor_skeleton, "handle-ungrab-keyboard",
+                     G_CALLBACK (handle_ungrab_keyboard), manager);
++  g_signal_connect (manager->keyboard_monitor_skeleton, "handle-watch-keyboard",
++                    G_CALLBACK (handle_watch_keyboard), manager);
++  g_signal_connect (manager->keyboard_monitor_skeleton, "handle-unwatch-keyboard",
++                    G_CALLBACK (handle_unwatch_keyboard), manager);
+   g_signal_connect (manager->keyboard_monitor_skeleton, "handle-set-key-grabs",
+                     G_CALLBACK (handle_set_key_grabs), manager);
+ 
+@@ -422,6 +455,18 @@ should_grab_keypress (MetaA11yManager     *a11y_manager,
+   return FALSE;
+ }
+ 
++static gboolean
++should_watch_keypress (MetaA11yManager     *a11y_manager,
++                       MetaA11yKeyGrabber  *grabber,
++                       uint32_t             keysym,
++                       ClutterModifierType  modifiers)
++{
++  if (grabber->watch_all)
++    return TRUE;
++
++  return should_grab_keypress (a11y_manager, grabber, keysym, modifiers);
++}
++
+ static gboolean
+ is_grabbed_modifier_key (MetaA11yManager *a11y_manager,
+                          uint32_t         keysym)
+@@ -481,7 +526,7 @@ meta_a11y_manager_notify_clients (MetaA11yManager    *a11y_manager,
+     {
+       MetaA11yKeyGrabber *grabber = l->data;
+ 
+-      if (should_grab_keypress (a11y_manager, grabber, keysym, state))
++      if (should_watch_keypress (a11y_manager, grabber, keysym, state))
+         {
+           notify_client (a11y_manager, grabber, released,
+                          state, keysym, unichar, keycode);
+-- 
+2.44.0.501.g19981daefd.dirty
+
+
+From 0abd8b0de03c9125a0a7e4871eedd9c9d7376357 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Luk=C3=A1=C5=A1=20Tyrychtr?= <ltyrycht@redhat.com>
+Date: Mon, 10 Feb 2025 16:26:49 +0100
+Subject: [PATCH 12/14] backends: Add D-Bus access control helper
+
+Track unique DBus senders and allow only thse which own a (at least so far)
+pre-defined set of well known DBus names.
+
+Carlos Garnacho: Renamed to a more generic helper, use g_bus_watch_name().
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4217>
+(cherry picked from commit 1c34794b1390ab9d00ab7b7cf47b5017346e36ef)
+---
+ src/backends/meta-a11y-manager.c        |  33 ++++
+ src/backends/meta-dbus-access-checker.c | 212 ++++++++++++++++++++++++
+ src/backends/meta-dbus-access-checker.h |  39 +++++
+ src/core/meta-context-private.h         |   2 +
+ src/core/meta-context.c                 |   8 +
+ src/meson.build                         |   2 +
+ 6 files changed, 296 insertions(+)
+ create mode 100644 src/backends/meta-dbus-access-checker.c
+ create mode 100644 src/backends/meta-dbus-access-checker.h
+
+diff --git a/src/backends/meta-a11y-manager.c b/src/backends/meta-a11y-manager.c
+index 5001d114a2..c51e2f712a 100644
+--- a/src/backends/meta-a11y-manager.c
++++ b/src/backends/meta-a11y-manager.c
+@@ -21,6 +21,7 @@
+ #include "config.h"
+ 
+ #include "backends/meta-a11y-manager.h"
++#include "backends/meta-dbus-access-checker.h"
+ #include "meta/meta-backend.h"
+ #include "meta/meta-context.h"
+ #include "meta/util.h"
+@@ -78,6 +79,8 @@ typedef struct _MetaA11yManager
+   GList *key_grabbers;
+   GHashTable *grabbed_keypresses;
+   GHashTable *all_grabbed_modifiers;
++
++  MetaDbusAccessChecker *access_checker;
+ } MetaA11yManager;
+ 
+ G_DEFINE_TYPE (MetaA11yManager, meta_a11y_manager, G_TYPE_OBJECT)
+@@ -182,6 +185,28 @@ ensure_key_grabber (MetaA11yManager       *a11y_manager,
+   return grabber;
+ }
+ 
++static gboolean
++check_access (GDBusInterfaceSkeleton *skeleton,
++              GDBusMethodInvocation  *invocation,
++              gpointer                user_data)
++{
++  MetaA11yManager *a11y_manager = META_A11Y_MANAGER (user_data);
++  const char *sender =
++    g_dbus_method_invocation_get_sender (invocation);
++
++  if (!meta_dbus_access_checker_is_sender_allowed (a11y_manager->access_checker,
++                                                   sender))
++    {
++      g_dbus_method_invocation_return_error (invocation,
++                                             G_DBUS_ERROR,
++                                             G_DBUS_ERROR_ACCESS_DENIED,
++                                             "Access denied");
++      return FALSE;
++    }
++
++  return TRUE;
++}
++
+ static gboolean
+ handle_grab_keyboard (MetaDBusKeyboardMonitor *skeleton,
+                       GDBusMethodInvocation   *invocation,
+@@ -279,9 +304,12 @@ on_bus_acquired (GDBusConnection *connection,
+                  gpointer         user_data)
+ {
+   MetaA11yManager *manager = user_data;
++  MetaContext *context = meta_backend_get_context (manager->backend);
+ 
+   manager->keyboard_monitor_skeleton = meta_dbus_keyboard_monitor_skeleton_new ();
+ 
++  g_signal_connect (manager->keyboard_monitor_skeleton, "g-authorize-method",
++                    G_CALLBACK (check_access), manager);
+   g_signal_connect (manager->keyboard_monitor_skeleton, "handle-grab-keyboard",
+                     G_CALLBACK (handle_grab_keyboard), manager);
+   g_signal_connect (manager->keyboard_monitor_skeleton, "handle-ungrab-keyboard",
+@@ -297,6 +325,10 @@ on_bus_acquired (GDBusConnection *connection,
+                                     connection,
+                                     "/org/freedesktop/a11y/Manager",
+                                     NULL);
++
++  manager->access_checker = meta_dbus_access_checker_new (connection, context);
++  meta_dbus_access_checker_allow_sender (manager->access_checker,
++                                         "org.gnome.Orca.KeyboardMonitor");
+ }
+ 
+ static void
+@@ -323,6 +355,7 @@ meta_a11y_manager_finalize (GObject *object)
+   g_list_free_full (a11y_manager->key_grabbers,
+                     (GDestroyNotify) key_grabber_free);
+   g_clear_object (&a11y_manager->keyboard_monitor_skeleton);
++  g_clear_object (&a11y_manager->access_checker);
+   g_clear_pointer (&a11y_manager->grabbed_keypresses, g_hash_table_destroy);
+   g_clear_pointer (&a11y_manager->all_grabbed_modifiers, g_hash_table_destroy);
+   g_bus_unown_name (a11y_manager->dbus_name_id);
+diff --git a/src/backends/meta-dbus-access-checker.c b/src/backends/meta-dbus-access-checker.c
+new file mode 100644
+index 0000000000..0ace126077
+--- /dev/null
++++ b/src/backends/meta-dbus-access-checker.c
+@@ -0,0 +1,212 @@
++/* -*- mode: C; c-file-style: "gnu"; indent-tabs-mode: nil; -*- */
++/*
++ * Copyright 2024 GNOME Foundation
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of the
++ * License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++#include "config.h"
++
++#include "meta-dbus-access-checker.h"
++
++#include "core/meta-context-private.h"
++
++enum
++{
++  PROP_0,
++  PROP_CONNECTION,
++  PROP_CONTEXT,
++  N_PROPS
++};
++
++static GParamSpec *props[N_PROPS];
++
++typedef struct _AllowedSender AllowedSender;
++
++struct _AllowedSender
++{
++  char *name;
++  char *name_owner;
++  guint watch_id;
++};
++
++struct _MetaDbusAccessChecker
++{
++  GObject parent_instance;
++  GDBusConnection *connection;
++  GPtrArray *allowed_senders;
++  MetaContext *context;
++};
++
++G_DEFINE_TYPE (MetaDbusAccessChecker, meta_dbus_access_checker, G_TYPE_OBJECT)
++
++static void
++name_appeared_cb (GDBusConnection *connection,
++                  const char      *name,
++                  const char      *name_owner,
++                  gpointer         user_data)
++{
++  AllowedSender *allowed_sender = user_data;
++
++  allowed_sender->name_owner = g_strdup (name_owner);
++}
++
++static void
++name_vanished_cb (GDBusConnection *connection,
++                  const char      *name,
++                  gpointer         user_data)
++{
++  AllowedSender *allowed_sender = user_data;
++
++  g_clear_pointer (&allowed_sender->name_owner, g_free);
++}
++
++static AllowedSender *
++allowed_sender_new (MetaDbusAccessChecker *self,
++                    const char            *name)
++{
++  AllowedSender *allowed_sender;
++
++  allowed_sender = g_new0 (AllowedSender, 1);
++  allowed_sender->name = g_strdup (name);
++  allowed_sender->watch_id =
++    g_bus_watch_name_on_connection (self->connection,
++                                    name,
++                                    G_BUS_NAME_WATCHER_FLAGS_NONE,
++                                    name_appeared_cb,
++                                    name_vanished_cb,
++                                    allowed_sender,
++                                    NULL);
++
++  return allowed_sender;
++}
++
++static void
++allowed_sender_free (AllowedSender *allowed_sender)
++{
++  g_clear_pointer (&allowed_sender->name, g_free);
++  g_clear_pointer (&allowed_sender->name_owner, g_free);
++  g_bus_unwatch_name (allowed_sender->watch_id);
++  g_free (allowed_sender);
++}
++
++static void
++meta_dbus_access_checker_init (MetaDbusAccessChecker *self)
++{
++  self->allowed_senders =
++    g_ptr_array_new_with_free_func ((GDestroyNotify) allowed_sender_free);
++}
++
++static void
++meta_dbus_access_checker_finalize (GObject *object)
++{
++  MetaDbusAccessChecker *self =
++    META_DBUS_ACCESS_CHECKER (object);
++
++  g_clear_pointer (&self->allowed_senders, g_ptr_array_unref);
++  g_clear_object (&self->connection);
++
++  G_OBJECT_CLASS (meta_dbus_access_checker_parent_class)->finalize (object);
++}
++
++static void
++meta_dbus_access_checker_set_property (GObject      *object,
++                                       guint         prop_id,
++                                       const GValue *value,
++                                       GParamSpec   *pspec)
++{
++  MetaDbusAccessChecker *self = META_DBUS_ACCESS_CHECKER (object);
++
++  switch (prop_id)
++    {
++    case PROP_CONNECTION:
++      self->connection = g_value_dup_object (value);
++      break;
++    case PROP_CONTEXT:
++      self->context = g_value_get_object (value);
++      break;
++    default:
++      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
++      break;
++    }
++}
++
++static void
++meta_dbus_access_checker_class_init (MetaDbusAccessCheckerClass *klass)
++{
++  GObjectClass *object_class = G_OBJECT_CLASS (klass);
++
++  object_class->finalize = meta_dbus_access_checker_finalize;
++  object_class->set_property = meta_dbus_access_checker_set_property;
++
++  props[PROP_CONNECTION] =
++    g_param_spec_object ("connection", NULL, NULL,
++                         G_TYPE_DBUS_CONNECTION,
++                         G_PARAM_WRITABLE |
++                         G_PARAM_CONSTRUCT_ONLY |
++                         G_PARAM_STATIC_STRINGS);
++
++  props[PROP_CONTEXT] =
++    g_param_spec_object ("context", NULL, NULL,
++                         META_TYPE_CONTEXT,
++                         G_PARAM_WRITABLE |
++                         G_PARAM_CONSTRUCT_ONLY |
++                         G_PARAM_STATIC_STRINGS);
++
++  g_object_class_install_properties (object_class, N_PROPS, props);
++}
++
++MetaDbusAccessChecker *
++meta_dbus_access_checker_new (GDBusConnection *connection,
++                              MetaContext     *context)
++{
++  return g_object_new (META_TYPE_DBUS_ACCESS_CHECKER,
++                       "connection", connection,
++                       "context", context,
++                       NULL);
++}
++
++void
++meta_dbus_access_checker_allow_sender (MetaDbusAccessChecker *self,
++                                       const char            *name)
++{
++  AllowedSender *allowed_sender;
++
++  allowed_sender = allowed_sender_new (self, name);
++  g_ptr_array_add (self->allowed_senders, allowed_sender);
++}
++
++gboolean
++meta_dbus_access_checker_is_sender_allowed (MetaDbusAccessChecker *self,
++                                            const char            *sender_name)
++{
++  int i;
++
++  if (meta_context_get_unsafe_mode (self->context))
++    return TRUE;
++
++  for (i = 0; i < self->allowed_senders->len; i++)
++    {
++      AllowedSender *allowed_sender;
++
++      allowed_sender = g_ptr_array_index (self->allowed_senders, i);
++
++      if (sender_name &&
++          g_strcmp0 (allowed_sender->name_owner, sender_name) == 0)
++        return TRUE;
++    }
++
++  return FALSE;
++}
+diff --git a/src/backends/meta-dbus-access-checker.h b/src/backends/meta-dbus-access-checker.h
+new file mode 100644
+index 0000000000..acbb942c0c
+--- /dev/null
++++ b/src/backends/meta-dbus-access-checker.h
+@@ -0,0 +1,39 @@
++/*
++ * Copyright 2024 GNOME Foundation
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of the
++ * License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++#pragma once
++
++#include <glib-object.h>
++#include <gio/gio.h>
++
++#include "meta/meta-context.h"
++
++#define META_TYPE_DBUS_ACCESS_CHECKER (meta_dbus_access_checker_get_type())
++G_DECLARE_FINAL_TYPE (MetaDbusAccessChecker,
++                      meta_dbus_access_checker,
++                      META, DBUS_ACCESS_CHECKER,
++                      GObject)
++
++MetaDbusAccessChecker * meta_dbus_access_checker_new (GDBusConnection *connection,
++                                                      MetaContext     *context);
++
++void meta_dbus_access_checker_allow_sender (MetaDbusAccessChecker *self,
++                                            const char            *name);
++
++gboolean meta_dbus_access_checker_is_sender_allowed (MetaDbusAccessChecker *self,
++                                                     const char            *sender_name);
+diff --git a/src/core/meta-context-private.h b/src/core/meta-context-private.h
+index a53f901fb6..c5120f2e37 100644
+--- a/src/core/meta-context-private.h
++++ b/src/core/meta-context-private.h
+@@ -70,6 +70,8 @@ const char * meta_context_get_gnome_wm_keybindings (MetaContext *context);
+ void meta_context_set_unsafe_mode (MetaContext *context,
+                                    gboolean     enable);
+ 
++gboolean meta_context_get_unsafe_mode (MetaContext *context);
++
+ #ifdef HAVE_WAYLAND
+ META_EXPORT_TEST
+ MetaServiceChannel * meta_context_get_service_channel (MetaContext *context);
+diff --git a/src/core/meta-context.c b/src/core/meta-context.c
+index 996dcdd078..b5c51009a6 100644
+--- a/src/core/meta-context.c
++++ b/src/core/meta-context.c
+@@ -620,6 +620,14 @@ meta_context_destroy (MetaContext *context)
+   g_object_unref (context);
+ }
+ 
++gboolean
++meta_context_get_unsafe_mode (MetaContext *context)
++{
++  MetaContextPrivate *priv = meta_context_get_instance_private (context);
++
++  return priv->unsafe_mode;
++}
++
+ void
+ meta_context_set_unsafe_mode (MetaContext *context,
+                               gboolean     enable)
+diff --git a/src/meson.build b/src/meson.build
+index c57fd935f6..47c1d0575d 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -220,6 +220,8 @@ mutter_sources = [
+   'backends/meta-cursor-sprite-xcursor.h',
+   'backends/meta-cursor-tracker.c',
+   'backends/meta-cursor-tracker-private.h',
++  'backends/meta-dbus-access-checker.c',
++  'backends/meta-dbus-access-checker.h',
+   'backends/meta-dbus-session-manager.c',
+   'backends/meta-dbus-session-manager.h',
+   'backends/meta-dbus-session-watcher.c',
+-- 
+2.44.0.501.g19981daefd.dirty
+
+
+From 71a2979a5382b1b5dc986c717a228ce8c97c0f9e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Luk=C3=A1=C5=A1=20Tyrychtr?= <ltyrycht@redhat.com>
+Date: Mon, 17 Feb 2025 16:34:21 +0100
+Subject: [PATCH 13/14] core: Add a debug control override to disable the a11y
+ manager ACL
+
+This commit adds another way how to disable the a11y manager ACL in development.
+Setting the unsafe mode might not be as straightforward as setting an
+environment variable for the session, and you can control it invidually too.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4217>
+(cherry picked from commit a817d7c1377e422e43d28fc1d5ab4e2c5e77b9cf)
+---
+ .../org.gnome.Mutter.DebugControl.xml             |  2 +-
+ src/backends/meta-a11y-manager.c                  |  8 ++++++++
+ src/core/meta-debug-control-private.h             |  2 ++
+ src/core/meta-debug-control.c                     | 15 +++++++++++++++
+ 4 files changed, 26 insertions(+), 1 deletion(-)
+
+diff --git a/data/dbus-interfaces/org.gnome.Mutter.DebugControl.xml b/data/dbus-interfaces/org.gnome.Mutter.DebugControl.xml
+index 14142a1d91..63dbf645f9 100644
+--- a/data/dbus-interfaces/org.gnome.Mutter.DebugControl.xml
++++ b/data/dbus-interfaces/org.gnome.Mutter.DebugControl.xml
+@@ -11,7 +11,7 @@
+     <property name="LuminancePercentage" type="u" access="readwrite" />
+     <property name="SessionManagementProtocol" type="b" access="readwrite" />
+     <property name="InhibitHwCursor" type="b" access="readwrite" />
+-
++    <property name="A11yManagerWithoutAccessControl" type="b" access="readwrite" />
+   </interface>
+ 
+ </node>
+diff --git a/src/backends/meta-a11y-manager.c b/src/backends/meta-a11y-manager.c
+index c51e2f712a..c30f7c3911 100644
+--- a/src/backends/meta-a11y-manager.c
++++ b/src/backends/meta-a11y-manager.c
+@@ -22,6 +22,7 @@
+ 
+ #include "backends/meta-a11y-manager.h"
+ #include "backends/meta-dbus-access-checker.h"
++#include "core/meta-debug-control-private.h"
+ #include "meta/meta-backend.h"
+ #include "meta/meta-context.h"
+ #include "meta/util.h"
+@@ -191,8 +192,15 @@ check_access (GDBusInterfaceSkeleton *skeleton,
+               gpointer                user_data)
+ {
+   MetaA11yManager *a11y_manager = META_A11Y_MANAGER (user_data);
++  MetaContext *context =
++    meta_backend_get_context (a11y_manager->backend);
+   const char *sender =
+     g_dbus_method_invocation_get_sender (invocation);
++  MetaDebugControl *debug_control =
++    meta_context_get_debug_control (context);
++
++  if (meta_debug_control_is_a11y_manager_without_access_control (debug_control))
++    return TRUE;
+ 
+   if (!meta_dbus_access_checker_is_sender_allowed (a11y_manager->access_checker,
+                                                    sender))
+diff --git a/src/core/meta-debug-control-private.h b/src/core/meta-debug-control-private.h
+index 8aeae09999..1e1cf49278 100644
+--- a/src/core/meta-debug-control-private.h
++++ b/src/core/meta-debug-control-private.h
+@@ -31,3 +31,5 @@ unsigned int meta_debug_control_get_luminance_percentage (MetaDebugControl *debu
+ gboolean meta_debug_control_is_session_management_protocol_enabled (MetaDebugControl *debug_control);
+ 
+ gboolean meta_debug_control_is_hw_cursor_inhibited (MetaDebugControl *debug_control);
++
++gboolean meta_debug_control_is_a11y_manager_without_access_control (MetaDebugControl *debug_control);
+diff --git a/src/core/meta-debug-control.c b/src/core/meta-debug-control.c
+index 8824ebf540..b71cccac97 100644
+--- a/src/core/meta-debug-control.c
++++ b/src/core/meta-debug-control.c
+@@ -171,6 +171,7 @@ meta_debug_control_init (MetaDebugControl *debug_control)
+   gboolean enable_hdr, force_linear_blending, color_management_protocol;
+   gboolean session_management_protocol;
+   gboolean inhibit_hw_cursor;
++  gboolean a11y_manager_without_access_control;
+ 
+   color_management_protocol =
+     g_strcmp0 (getenv ("MUTTER_DEBUG_COLOR_MANAGEMENT_PROTOCOL"), "1") == 0;
+@@ -196,6 +197,11 @@ meta_debug_control_init (MetaDebugControl *debug_control)
+     g_strcmp0 (getenv ("MUTTER_DEBUG_INHIBIT_HW_CURSOR"), "1") == 0;
+   meta_dbus_debug_control_set_inhibit_hw_cursor (dbus_debug_control,
+                                                  inhibit_hw_cursor);
++
++  a11y_manager_without_access_control =
++    g_strcmp0 (getenv ("MUTTER_DEBUG_A11Y_MANAGER_WITHOUT_ACCESS_CONTROL"), "1") == 0;
++  meta_dbus_debug_control_set_a11y_manager_without_access_control (dbus_debug_control,
++                                                                   a11y_manager_without_access_control);
+ }
+ 
+ gboolean
+@@ -279,3 +285,12 @@ meta_debug_control_is_hw_cursor_inhibited (MetaDebugControl *debug_control)
+ 
+   return meta_dbus_debug_control_get_inhibit_hw_cursor (dbus_debug_control);
+ }
++
++gboolean
++meta_debug_control_is_a11y_manager_without_access_control (MetaDebugControl *debug_control)
++{
++  MetaDBusDebugControl *dbus_debug_control =
++    META_DBUS_DEBUG_CONTROL (debug_control);
++
++  return meta_dbus_debug_control_get_a11y_manager_without_access_control (dbus_debug_control);
++}
+-- 
+2.44.0.501.g19981daefd.dirty
+
+
+From 5c489358384a16f7a2372a1088761d1c54bf8174 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Luk=C3=A1=C5=A1=20Tyrychtr?= <ltyrycht@redhat.com>
+Date: Wed, 5 Feb 2025 19:04:34 +0100
+Subject: [PATCH 14/14] core: Let the MetaA11yManager handle keyboard events
+
+Plumb the MetaA11yManager into key event handling. This manager
+is partly in control of keyboard event propagation, depending on
+the screen readers connected.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4217>
+(cherry picked from commit 5eaed6e3f3a1e14694580dbaa0585c5610c72836)
+---
+ src/core/events.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/src/core/events.c b/src/core/events.c
+index fb4c7574c8..b0b30839ad 100644
+--- a/src/core/events.c
++++ b/src/core/events.c
+@@ -24,6 +24,7 @@
+ 
+ #include "core/events.h"
+ 
++#include "backends/meta-a11y-manager.h"
+ #include "backends/meta-cursor-tracker-private.h"
+ #include "backends/meta-dnd-private.h"
+ #include "backends/meta-idle-manager.h"
+@@ -228,6 +229,7 @@ meta_display_handle_event (MetaDisplay        *display,
+ {
+   MetaContext *context = meta_display_get_context (display);
+   MetaBackend *backend = meta_context_get_backend (context);
++  MetaA11yManager *a11y_manager = meta_backend_get_a11y_manager (backend);
+   MetaCompositor *compositor = meta_display_get_compositor (display);
+   ClutterInputDevice *device;
+   MetaWindow *window = NULL;
+@@ -235,6 +237,7 @@ meta_display_handle_event (MetaDisplay        *display,
+   ClutterEventSequence *sequence;
+   ClutterEventType event_type;
+   gboolean has_grab;
++  gboolean a11y_grabbed;
+   MetaTabletActionMapper *mapper;
+ #ifdef HAVE_WAYLAND
+   MetaWaylandCompositor *wayland_compositor;
+@@ -263,6 +266,13 @@ meta_display_handle_event (MetaDisplay        *display,
+   if (meta_display_process_captured_input (display, event))
+     return CLUTTER_EVENT_STOP;
+ 
++  if (IS_KEY_EVENT (event_type))
++    {
++      a11y_grabbed = meta_a11y_manager_notify_clients (a11y_manager, event);
++      if (a11y_grabbed)
++        return CLUTTER_EVENT_STOP;
++    }
++
+   device = clutter_event_get_device (event);
+   clutter_input_pointer_a11y_update (device, event);
+ 
+-- 
+2.44.0.501.g19981daefd.dirty
+

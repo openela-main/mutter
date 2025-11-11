@@ -1,0 +1,304 @@
+From 427e528f20d5f45075112341fb3dc2a7952cc9b0 Mon Sep 17 00:00:00 2001
+From: Bilal Elmoussaoui <belmouss@redhat.com>
+Date: Mon, 28 Oct 2024 10:03:02 +0100
+Subject: [PATCH 02/10] window: Use getter for fullscreen state
+
+Avoids going through struct field directly as we might replace that with
+a WindowConfiguration type soon-ish.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4111>
+(cherry picked from commit 0f5ec2ec16da933272833322023578aa029b888a)
+---
+ src/core/constraints.c | 23 +++++++++++++----------
+ src/core/display.c     |  2 +-
+ src/core/keybindings.c |  2 +-
+ src/core/place.c       |  2 +-
+ src/core/window.c      | 22 ++++++++++++----------
+ src/x11/window-x11.c   | 11 ++++++-----
+ 6 files changed, 34 insertions(+), 28 deletions(-)
+
+diff --git a/src/core/constraints.c b/src/core/constraints.c
+index 6f20d087e2..200da009db 100644
+--- a/src/core/constraints.c
++++ b/src/core/constraints.c
+@@ -461,7 +461,8 @@ setup_constraint_info (MetaBackend         *backend,
+                                                  logical_monitor,
+                                                  &info->work_area_monitor);
+ 
+-  if (window->fullscreen && meta_window_has_fullscreen_monitors (window))
++  if (meta_window_is_fullscreen (window) &&
++      meta_window_has_fullscreen_monitors (window))
+     {
+       info->entire_monitor = window->fullscreen_monitors.top->rect;
+       mtk_rectangle_union (&info->entire_monitor,
+@@ -482,7 +483,7 @@ setup_constraint_info (MetaBackend         *backend,
+   else
+     {
+       info->entire_monitor = logical_monitor->rect;
+-      if (window->fullscreen)
++      if (meta_window_is_fullscreen (window))
+         meta_window_adjust_fullscreen_monitor_rect (window, &info->entire_monitor);
+     }
+ 
+@@ -551,7 +552,7 @@ place_window_if_needed (MetaWindow     *window,
+       !(window->maximized_horizontally ||
+         window->maximized_vertically) &&
+       !window->minimized &&
+-      !window->fullscreen)
++      !meta_window_is_fullscreen (window))
+     {
+       MetaMonitorManager *monitor_manager =
+         meta_backend_get_monitor_manager (info->backend);
+@@ -670,7 +671,7 @@ update_onscreen_requirements (MetaWindow     *window,
+    * the application sends a bunch of configurerequest events).  See
+    * #353699.
+    */
+-  if (window->fullscreen)
++  if (meta_window_is_fullscreen (window))
+     return;
+ 
+   /* USABILITY NOTE: Naturally, I only want the require_fully_onscreen,
+@@ -1166,7 +1167,7 @@ constrain_modal_dialog (MetaWindow         *window,
+       meta_window_get_placement_rule (window))
+     return TRUE;
+ 
+-  if (window->fullscreen)
++  if (meta_window_is_fullscreen (window))
+     return TRUE;
+ 
+   /* We want to center the dialog on the parent, including the decorations
+@@ -1354,7 +1355,7 @@ constrain_fullscreen (MetaWindow         *window,
+     return TRUE;
+ 
+   /* Determine whether constraint applies; exit if it doesn't */
+-  if (!window->fullscreen)
++  if (!meta_window_is_fullscreen (window))
+     return TRUE;
+ 
+   monitor = info->entire_monitor;
+@@ -1392,7 +1393,8 @@ constrain_size_increments (MetaWindow         *window,
+     return TRUE;
+ 
+   /* Determine whether constraint applies; exit if it doesn't */
+-  if (meta_window_is_maximized (window) || window->fullscreen ||
++  if (meta_window_is_maximized (window) ||
++      meta_window_is_fullscreen (window) ||
+       meta_window_is_tiled_side_by_side (window) ||
+       info->action_type == ACTION_MOVE)
+     return TRUE;
+@@ -1523,7 +1525,8 @@ constrain_aspect_ratio (MetaWindow         *window,
+          (double)window->size_hints.max_aspect.y;
+   constraints_are_inconsistent = minr > maxr;
+   if (constraints_are_inconsistent ||
+-      meta_window_is_maximized (window) || window->fullscreen ||
++      meta_window_is_maximized (window) ||
++      meta_window_is_fullscreen (window) ||
+       meta_window_is_tiled_side_by_side (window) ||
+       info->action_type == ACTION_MOVE)
+     return TRUE;
+@@ -1765,7 +1768,7 @@ constrain_fully_onscreen (MetaWindow         *window,
+    */
+   if (window->type == META_WINDOW_DESKTOP ||
+       window->type == META_WINDOW_DOCK    ||
+-      window->fullscreen                  ||
++      meta_window_is_fullscreen (window)  ||
+       !window->require_fully_onscreen     ||
+       info->is_user_action                ||
+       meta_window_get_placement_rule (window))
+@@ -1828,7 +1831,7 @@ constrain_titlebar_visible (MetaWindow         *window,
+    */
+   if (window->type == META_WINDOW_DESKTOP ||
+       window->type == META_WINDOW_DOCK    ||
+-      window->fullscreen                  ||
++      meta_window_is_fullscreen (window)  ||
+       !window->require_titlebar_visible   ||
+       unconstrained_user_action           ||
+       user_nonnorthern_resize             ||
+diff --git a/src/core/display.c b/src/core/display.c
+index 2ab30028fc..6e38d1979d 100644
+--- a/src/core/display.c
++++ b/src/core/display.c
+@@ -3156,7 +3156,7 @@ check_fullscreen_func (gpointer data)
+       if (window->hidden)
+         continue;
+ 
+-      if (window->fullscreen)
++      if (meta_window_is_fullscreen (window))
+         {
+           covers_monitors = TRUE;
+         }
+diff --git a/src/core/keybindings.c b/src/core/keybindings.c
+index 41559c9719..614c96423c 100644
+--- a/src/core/keybindings.c
++++ b/src/core/keybindings.c
+@@ -2170,7 +2170,7 @@ handle_toggle_fullscreen (MetaDisplay           *display,
+                           MetaKeyBinding        *binding,
+                           gpointer               user_data)
+ {
+-  if (window->fullscreen)
++  if (meta_window_is_fullscreen (window))
+     meta_window_unmake_fullscreen (window);
+   else if (window->has_fullscreen_func)
+     meta_window_make_fullscreen (window);
+diff --git a/src/core/place.c b/src/core/place.c
+index d420479b5e..1c84994666 100644
+--- a/src/core/place.c
++++ b/src/core/place.c
+@@ -945,7 +945,7 @@ meta_window_place (MetaWindow        *window,
+    * be maximized.
+    */
+   if (window->has_maximize_func && window->decorated &&
+-      !window->fullscreen)
++      !meta_window_is_fullscreen (window))
+     {
+       MtkRectangle workarea;
+       MtkRectangle frame_rect;
+diff --git a/src/core/window.c b/src/core/window.c
+index b1d6426987..1782c884fa 100644
+--- a/src/core/window.c
++++ b/src/core/window.c
+@@ -1461,7 +1461,7 @@ meta_window_unmanage (MetaWindow  *window,
+     meta_window_on_all_workspaces_changed (window);
+ 
+ #ifdef HAVE_X11_CLIENT
+-  if (window->fullscreen)
++  if (meta_window_is_fullscreen (window))
+     {
+       MetaGroup *group = NULL;
+       /* If the window is fullscreen, it may be forcing
+@@ -2695,7 +2695,9 @@ ensure_size_hints_satisfied (MtkRectangle        *rect,
+ static void
+ meta_window_save_rect (MetaWindow *window)
+ {
+-  if (!(meta_window_is_maximized (window) || meta_window_is_tiled_side_by_side (window) || window->fullscreen))
++  if (!(meta_window_is_maximized (window) ||
++        meta_window_is_tiled_side_by_side (window) ||
++        meta_window_is_fullscreen (window)))
+     {
+       /* save size/pos as appropriate args for move_resize */
+       if (!window->maximized_horizontally)
+@@ -2897,7 +2899,7 @@ meta_window_is_monitor_sized (MetaWindow *window)
+   if (!window->monitor)
+     return FALSE;
+ 
+-  if (window->fullscreen)
++  if (meta_window_is_fullscreen (window))
+     return TRUE;
+ 
+   if (meta_window_is_screen_sized (window))
+@@ -3396,7 +3398,7 @@ meta_window_set_above (MetaWindow *window,
+ void
+ meta_window_make_fullscreen_internal (MetaWindow  *window)
+ {
+-  if (!window->fullscreen)
++  if (!meta_window_is_fullscreen (window))
+     {
+       meta_topic (META_DEBUG_WINDOW_OPS,
+                   "Fullscreening %s", window->desc);
+@@ -3426,7 +3428,7 @@ meta_window_make_fullscreen (MetaWindow  *window)
+   g_return_if_fail (META_IS_WINDOW (window));
+   g_return_if_fail (!window->override_redirect);
+ 
+-  if (!window->fullscreen)
++  if (!meta_window_is_fullscreen (window))
+     {
+       MtkRectangle old_frame_rect, old_buffer_rect;
+ 
+@@ -3453,7 +3455,7 @@ meta_window_unmake_fullscreen (MetaWindow  *window)
+   g_return_if_fail (META_IS_WINDOW (window));
+   g_return_if_fail (!window->override_redirect);
+ 
+-  if (window->fullscreen)
++  if (meta_window_is_fullscreen (window))
+     {
+       MtkRectangle old_frame_rect, old_buffer_rect, target_rect;
+       gboolean has_target_size;
+@@ -3526,7 +3528,7 @@ meta_window_update_fullscreen_monitors (MetaWindow         *window,
+       meta_window_clear_fullscreen_monitors (window);
+     }
+ 
+-  if (window->fullscreen)
++  if (meta_window_is_fullscreen (window))
+     {
+       meta_window_queue(window, META_QUEUE_MOVE_RESIZE);
+     }
+@@ -4291,7 +4293,7 @@ meta_window_move_to_monitor (MetaWindow  *window,
+   window->preferred_logical_monitor =
+     meta_logical_monitor_dup_id (window->monitor);
+ 
+-  if (window->fullscreen || window->override_redirect)
++  if (meta_window_is_fullscreen (window) || window->override_redirect)
+     meta_display_queue_check_fullscreen (window->display);
+ }
+ 
+@@ -5740,7 +5742,7 @@ meta_window_recalc_features (MetaWindow *window)
+    * is not resizable purely due to fullscreen, we don't want to
+    * disable fullscreen mode.
+    */
+-  if (window->fullscreen)
++  if (meta_window_is_fullscreen (window))
+     {
+       window->has_move_func = FALSE;
+       window->has_resize_func = FALSE;
+@@ -5762,7 +5764,7 @@ meta_window_recalc_features (MetaWindow *window)
+   meta_topic (META_DEBUG_WINDOW_OPS,
+               "Window %s fullscreen = %d not resizable, maximizable = %d fullscreenable = %d min size %dx%d max size %dx%d",
+               window->desc,
+-              window->fullscreen,
++              meta_window_is_fullscreen (window),
+               window->has_maximize_func, window->has_fullscreen_func,
+               window->size_hints.min_width,
+               window->size_hints.min_height,
+diff --git a/src/x11/window-x11.c b/src/x11/window-x11.c
+index b4a5472c61..8157b1c013 100644
+--- a/src/x11/window-x11.c
++++ b/src/x11/window-x11.c
+@@ -2362,7 +2362,7 @@ meta_window_x11_set_net_wm_state (MetaWindow *window)
+       data[i] = x11_display->atom__NET_WM_STATE_MAXIMIZED_VERT;
+       ++i;
+     }
+-  if (window->fullscreen)
++  if (meta_window_is_fullscreen (window))
+     {
+       data[i] = x11_display->atom__NET_WM_STATE_FULLSCREEN;
+       ++i;
+@@ -2417,7 +2417,7 @@ meta_window_x11_set_net_wm_state (MetaWindow *window)
+ 
+   mtk_x11_error_trap_pop (x11_display->xdisplay);
+ 
+-  if (window->fullscreen)
++  if (meta_window_is_fullscreen (window))
+     {
+       if (meta_window_has_fullscreen_monitors (window))
+         {
+@@ -2993,7 +2993,7 @@ meta_window_move_resize_request (MetaWindow  *window,
+               (window->decorated || !priv->has_custom_frame_extents) &&
+               mtk_rectangle_equal (&rect, &monitor_rect) &&
+               window->has_fullscreen_func &&
+-              !window->fullscreen)
++              !meta_window_is_fullscreen (window))
+             {
+               /*
+               meta_topic (META_DEBUG_GEOMETRY,
+@@ -3432,7 +3432,8 @@ meta_window_x11_client_message (MetaWindow *window,
+           gboolean make_fullscreen;
+ 
+           make_fullscreen = (action == _NET_WM_STATE_ADD ||
+-                             (action == _NET_WM_STATE_TOGGLE && !window->fullscreen));
++                             (action == _NET_WM_STATE_TOGGLE &&
++                              !meta_window_is_fullscreen (window)));
+           if (make_fullscreen && window->has_fullscreen_func)
+             meta_window_make_fullscreen (window);
+           else
+@@ -4602,7 +4603,7 @@ meta_window_x11_can_unredirect (MetaWindowX11 *window_x11)
+   if (!window->monitor)
+     return FALSE;
+ 
+-  if (window->fullscreen)
++  if (meta_window_is_fullscreen (window))
+     return TRUE;
+ 
+   if (meta_window_is_screen_sized (window))
+-- 
+2.49.0
+

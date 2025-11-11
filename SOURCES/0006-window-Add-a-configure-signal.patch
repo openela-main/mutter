@@ -1,0 +1,94 @@
+From e3c023240a6bc7479e9e7a95b083afbfaa08b98b Mon Sep 17 00:00:00 2001
+From: Olivier Fourdan <ofourdan@redhat.com>
+Date: Wed, 2 Oct 2024 17:21:40 +0200
+Subject: [PATCH 06/10] window: Add a "configure" signal
+
+This conveys the initial window configuration.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4076>
+(cherry picked from commit d44fd167bb62dc541c6b6215d14d26e84733ab5f)
+---
+ src/core/window-private.h |  4 ++++
+ src/core/window.c         | 23 +++++++++++++++++++++++
+ 2 files changed, 27 insertions(+)
+
+diff --git a/src/core/window-private.h b/src/core/window-private.h
+index a03b156d67..f7ebb2ad91 100644
+--- a/src/core/window-private.h
++++ b/src/core/window-private.h
+@@ -34,6 +34,7 @@
+ #include "backends/meta-logical-monitor.h"
+ #include "clutter/clutter.h"
+ #include "core/stack.h"
++#include "meta/meta-window-config.h"
+ #include "meta/compositor.h"
+ #include "meta/meta-close-dialog.h"
+ #include "meta/util.h"
+@@ -812,6 +813,9 @@ void meta_window_ensure_close_dialog_timeout (MetaWindow *window);
+ 
+ void meta_window_emit_size_changed (MetaWindow *window);
+ 
++void meta_window_emit_configure (MetaWindow       *window,
++                                 MetaWindowConfig *window_config);
++
+ MetaPlacementRule *meta_window_get_placement_rule (MetaWindow *window);
+ 
+ void meta_window_force_placement (MetaWindow    *window,
+diff --git a/src/core/window.c b/src/core/window.c
+index e9c005aeca..9a70f79f95 100644
+--- a/src/core/window.c
++++ b/src/core/window.c
+@@ -81,6 +81,7 @@
+ #include "meta/meta-cursor-tracker.h"
+ #include "meta/meta-enum-types.h"
+ #include "meta/prefs.h"
++#include "meta/meta-window-config.h"
+ 
+ #ifdef HAVE_X11_CLIENT
+ #include "mtk/mtk-x11.h"
+@@ -241,6 +242,7 @@ enum
+   POSITION_CHANGED,
+   SHOWN,
+   HIGHEST_SCALE_MONITOR_CHANGED,
++  CONFIGURE,
+ 
+   LAST_SIGNAL
+ };
+@@ -733,6 +735,20 @@ meta_window_class_init (MetaWindowClass *klass)
+                   0,
+                   NULL, NULL, NULL,
+                   G_TYPE_NONE, 0);
++
++  /**
++   * MetaWindow::configure:
++   * @window: a #MetaWindow
++   * @window_config: a #MetaWindowConfig
++   */
++  window_signals[CONFIGURE] =
++    g_signal_new ("configure",
++                  G_TYPE_FROM_CLASS (object_class),
++                  G_SIGNAL_RUN_LAST,
++                  0,
++                  NULL, NULL, NULL,
++                  G_TYPE_NONE, 1,
++                  META_TYPE_WINDOW_CONFIG);
+ }
+ 
+ static void
+@@ -7590,6 +7606,13 @@ meta_window_get_placement_rule (MetaWindow *window)
+   return window->placement.rule;
+ }
+ 
++void
++meta_window_emit_configure (MetaWindow       *window,
++                            MetaWindowConfig *window_config)
++{
++  g_signal_emit (window, window_signals[CONFIGURE], 0, window_config);
++}
++
+ void
+ meta_window_force_restore_shortcuts (MetaWindow         *window,
+                                      ClutterInputDevice *source)
+-- 
+2.49.0
+

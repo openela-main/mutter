@@ -1,0 +1,47 @@
+From 21be0a065c983a1c515414e233813b10944db419 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Mon, 31 Mar 2025 13:49:08 +0200
+Subject: [PATCH 1/5] drm-lease: Avoid copying list of connectors
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The copied list will be freed, and the copy will be returned, meaning we
+can just return the original list directly.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4378>
+(cherry picked from commit e1271f5d546a890c78d8a29e84680adcb73750bc)
+---
+ src/backends/native/meta-drm-lease.c | 9 +--------
+ 1 file changed, 1 insertion(+), 8 deletions(-)
+
+diff --git a/src/backends/native/meta-drm-lease.c b/src/backends/native/meta-drm-lease.c
+index 7cddb6c8ed..a135558a0b 100644
+--- a/src/backends/native/meta-drm-lease.c
++++ b/src/backends/native/meta-drm-lease.c
+@@ -668,13 +668,6 @@ update_connectors (MetaDrmLeaseManager  *lease_manager,
+         }
+     }
+ 
+-  for (l = lease_manager->connectors; l; l = l->next)
+-    {
+-      kms_connector = l->data;
+-
+-      removed_connectors = g_list_append (removed_connectors, kms_connector);
+-    }
+-
+   g_hash_table_iter_init (&iter, lease_manager->leased_connectors);
+   while (g_hash_table_iter_next (&iter, (gpointer *)&kms_connector, NULL))
+     {
+@@ -684,7 +677,7 @@ update_connectors (MetaDrmLeaseManager  *lease_manager,
+         leases_to_revoke = g_list_append (leases_to_revoke, lease);
+     }
+ 
+-  g_list_free (g_steal_pointer (&lease_manager->connectors));
++  removed_connectors = g_steal_pointer (&lease_manager->connectors);
+   lease_manager->connectors = new_connectors;
+ 
+   g_clear_pointer (&lease_manager->leased_connectors, g_hash_table_unref);
+-- 
+2.49.0
+

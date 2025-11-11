@@ -1,0 +1,166 @@
+From 0c5e21e30ae375fda7a146833c7f412a5c2bd22b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Mon, 31 Mar 2025 13:56:13 +0200
+Subject: [PATCH 3/5] tests: Add drm lease test for non non-desktop hotplugs
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This tests that https://gitlab.gnome.org/GNOME/mutter/-/issues/3943
+doesn't reproduce by triggering hotplugs in a certain way.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4378>
+(cherry picked from commit 2ae93f69eb7228b28519c823cb38b3640a1225e9)
+---
+ src/backends/native/meta-backend-native.h |   2 +
+ src/tests/drm-lease-monitor-test.c        | 104 ++++++++++++++++++++++
+ src/tests/meson.build                     |   7 ++
+ 3 files changed, 113 insertions(+)
+ create mode 100644 src/tests/drm-lease-monitor-test.c
+
+diff --git a/src/backends/native/meta-backend-native.h b/src/backends/native/meta-backend-native.h
+index 34115d1ba4..6d63a24966 100644
+--- a/src/backends/native/meta-backend-native.h
++++ b/src/backends/native/meta-backend-native.h
+@@ -39,8 +39,10 @@ gboolean meta_backend_native_activate_vt (MetaBackendNative  *backend_native,
+                                           int                 vt,
+                                           GError            **error);
+ 
++META_EXPORT_TEST
+ void meta_backend_native_pause (MetaBackendNative *backend_native);
+ 
++META_EXPORT_TEST
+ void meta_backend_native_resume (MetaBackendNative *backend_native);
+ 
+ MetaLauncher * meta_backend_native_get_launcher (MetaBackendNative *native);
+diff --git a/src/tests/drm-lease-monitor-test.c b/src/tests/drm-lease-monitor-test.c
+new file mode 100644
+index 0000000000..d35f5ba83a
+--- /dev/null
++++ b/src/tests/drm-lease-monitor-test.c
+@@ -0,0 +1,104 @@
++/*
++ * Copyright (C) 2025 Red Hat, Inc.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of the
++ * License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "config.h"
++
++#include <glib.h>
++
++#include "backends/meta-monitor-config-manager.h"
++#include "backends/native/meta-backend-native.h"
++#include "backends/native/meta-kms.h"
++#include "backends/native/meta-kms-device.h"
++#include "meta-test/meta-context-test.h"
++#include "tests/drm-mock/drm-mock.h"
++#include "tests/meta-test-utils.h"
++
++static MetaContext *test_context;
++
++static void
++fake_udev_hotplug (void)
++{
++  MetaBackend *backend = meta_context_get_backend (test_context);
++  MetaBackendNative *backend_native = META_BACKEND_NATIVE (backend);
++  MetaUdev *udev = meta_backend_native_get_udev (backend_native);
++  g_autolist (GUdevDevice) devices = NULL;
++  g_autoptr (GError) error = NULL;
++  GList *l;
++
++  devices = meta_udev_list_drm_devices (udev,
++                                        META_UDEV_DEVICE_TYPE_CARD,
++                                        &error);
++  g_assert_no_error (error);
++  g_assert_nonnull (devices);
++
++  for (l = devices; l; l = l->next)
++    {
++      GUdevDevice *device = l->data;
++
++      g_signal_emit_by_name (udev, "hotplug", device);
++    }
++}
++
++static void
++disconnect_connector_filter (gpointer resource,
++                             gpointer user_data)
++{
++  drmModeConnector *drm_connector = resource;
++
++  drm_connector->connection = DRM_MODE_DISCONNECTED;
++}
++
++static void
++test_drm_lease_lease_suspend_resume (void)
++{
++  MetaBackend *backend = meta_context_get_backend (test_context);
++  MetaBackendNative *backend_native = META_BACKEND_NATIVE (backend);
++
++  meta_backend_native_pause (backend_native);
++  drm_mock_set_resource_filter (DRM_MOCK_CALL_FILTER_GET_CONNECTOR,
++                                disconnect_connector_filter, NULL);
++  fake_udev_hotplug ();
++  meta_backend_native_resume (backend_native);
++
++  drm_mock_unset_resource_filter (DRM_MOCK_CALL_FILTER_GET_CONNECTOR);
++  fake_udev_hotplug ();
++}
++
++static void
++init_tests (void)
++{
++  g_test_add_func ("/wayland/drm-lease/suspend-resume",
++                   test_drm_lease_lease_suspend_resume);
++}
++
++int
++main (int   argc,
++      char *argv[])
++{
++  g_autoptr (MetaContext) context = NULL;
++
++  context = meta_create_test_context (META_CONTEXT_TEST_TYPE_VKMS,
++                                      META_CONTEXT_TEST_FLAG_NO_X11);
++  g_assert_true (meta_context_configure (context, &argc, &argv, NULL));
++
++  test_context = context;
++
++  init_tests ();
++
++  return meta_context_test_run_tests (META_CONTEXT_TEST (context),
++                                      META_TEST_RUN_FLAG_CAN_SKIP);
++}
+diff --git a/src/tests/meson.build b/src/tests/meson.build
+index 41218e130e..139baad7a1 100644
+--- a/src/tests/meson.build
++++ b/src/tests/meson.build
+@@ -634,6 +634,13 @@ kms_test_cases = [
+       wayland_test_utils,
+     ],
+   },
++  {
++    'name': 'drm-lease-monitor',
++    'suite': 'backends/native',
++    'sources': [
++      'drm-lease-monitor-test.c',
++    ],
++  },
+ ]
+ 
+ privileged_test_cases += kms_test_cases
+-- 
+2.49.0
+

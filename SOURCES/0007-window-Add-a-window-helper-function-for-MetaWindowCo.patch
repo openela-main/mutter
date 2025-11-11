@@ -1,0 +1,61 @@
+From 05f341932f693e6776074ff7892eae7a1ca33b8c Mon Sep 17 00:00:00 2001
+From: Olivier Fourdan <ofourdan@redhat.com>
+Date: Tue, 12 Nov 2024 14:59:38 +0100
+Subject: [PATCH 07/10] window: Add a window helper function for
+ MetaWindowConfig
+
+The MetaWindowConfig can indicate whether the configuration reflects on
+the initial configuration, before the window is first mapped.
+
+Add a smaller helper (private) window function to create the appropriate
+"type" of MetaWindowConfig depending whether the window was already
+showed or not.
+
+This is preparation work for the following commits where this function
+will be used.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4076>
+(cherry picked from commit 5a231a4d2789e84d3222354b3fef0718a94c9561)
+---
+ src/core/window-private.h |  2 ++
+ src/core/window.c         | 10 ++++++++++
+ 2 files changed, 12 insertions(+)
+
+diff --git a/src/core/window-private.h b/src/core/window-private.h
+index f7ebb2ad91..ba1973bd95 100644
+--- a/src/core/window-private.h
++++ b/src/core/window-private.h
+@@ -896,3 +896,5 @@ gboolean meta_window_is_tiled_side_by_side (MetaWindow *window);
+ gboolean meta_window_is_tiled_left (MetaWindow *window);
+ 
+ gboolean meta_window_is_tiled_right (MetaWindow *window);
++
++MetaWindowConfig * meta_window_new_window_config (MetaWindow *window);
+diff --git a/src/core/window.c b/src/core/window.c
+index 9a70f79f95..b0d937dc0e 100644
+--- a/src/core/window.c
++++ b/src/core/window.c
+@@ -72,6 +72,7 @@
+ #include "core/boxes-private.h"
+ #include "core/constraints.h"
+ #include "core/keybindings-private.h"
++#include "core/meta-window-config-private.h"
+ #include "core/meta-workspace-manager-private.h"
+ #include "core/place.h"
+ #include "core/stack.h"
+@@ -8246,3 +8247,12 @@ meta_window_get_client_content_rect (MetaWindow   *window,
+     meta_window_frame_rect_to_client_rect (window, rect, rect);
+ #endif
+ }
++
++MetaWindowConfig *
++meta_window_new_window_config (MetaWindow *window)
++{
++  if (window->showing_for_first_time)
++    return meta_window_config_initial_new ();
++  else
++    return meta_window_config_new ();
++}
+-- 
+2.49.0
+

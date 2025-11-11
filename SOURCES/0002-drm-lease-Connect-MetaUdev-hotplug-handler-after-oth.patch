@@ -1,0 +1,48 @@
+From 6bf9926f1c80ad37c38e0412d11014ca95845ddc Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Mon, 31 Mar 2025 13:50:17 +0200
+Subject: [PATCH 2/5] drm-lease: Connect MetaUdev::hotplug handler after other
+ handles
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+When we receive a hotplug signal emission, we update the state of leased
+and leasable resources. Some of this state depends on the current state
+of any potential associated monitor (MetaOutput & MetaMonitor). In order
+to have an up to date association of MetaOutput's and MetaMonitor's, we
+must only update our own state after MetaMonitorManager has had a chance
+to. To achieve this, make sure the MetaUdev::hotplug signal handler is
+dispatched after MetaMonitorManager's handler by using
+g_signal_connect_after().
+
+Closes: https://gitlab.gnome.org/GNOME/mutter/-/issues/3943
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4378>
+(cherry picked from commit 3ae8a307ffe2580eff7b5dbaa2fab9ca697e51aa)
+---
+ src/backends/native/meta-drm-lease.c | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/src/backends/native/meta-drm-lease.c b/src/backends/native/meta-drm-lease.c
+index 9b9c6449a0..c6bd2d7380 100644
+--- a/src/backends/native/meta-drm-lease.c
++++ b/src/backends/native/meta-drm-lease.c
+@@ -871,10 +871,12 @@ meta_drm_lease_manager_constructed (GObject *object)
+   MetaMonitorManager *monitor_manager =
+     meta_backend_get_monitor_manager (backend);
+ 
++  /* Connect to MetaKms::resources-changed using G_CONNECT_AFTER to make sure
++   * MetaMonitorManager state is up to date. */
+   lease_manager->resources_changed_handler_id =
+-    g_signal_connect (kms, "resources-changed",
+-                      G_CALLBACK (on_resources_changed),
+-                      lease_manager);
++    g_signal_connect_after (kms, "resources-changed",
++                            G_CALLBACK (on_resources_changed),
++                            lease_manager);
+   lease_manager->lease_changed_handler_id =
+     g_signal_connect (kms, "lease-changed",
+                       G_CALLBACK (on_lease_changed),
+-- 
+2.49.0
+
