@@ -1,0 +1,118 @@
+From baee8ef5d24609d77c4fb3b897998f5c2a06147c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Michel=20D=C3=A4nzer?= <mdaenzer@redhat.com>
+Date: Sat, 20 Dec 2025 17:25:14 +0100
+Subject: [PATCH] mtk: Take explicit reference for
+ mtk_extrapolate_next_interval_boundary
+
+This avoids spurious failures of the time-utils test due to it taking
+longer than expected, and an additional g_get_monotonic_time call in
+meta_kms_crtc_determine_deadline.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4821>
+---
+ clutter/clutter/clutter-frame-clock.c |  1 +
+ mtk/mtk/mtk-time-utils.c              | 10 +++++-----
+ mtk/mtk/mtk-time-utils.h              |  3 ++-
+ src/backends/native/meta-kms-crtc.c   |  1 +
+ src/tests/mtk/time-utils-tests.c      |  8 +++++---
+ 5 files changed, 14 insertions(+), 9 deletions(-)
+
+diff --git a/clutter/clutter/clutter-frame-clock.c b/clutter/clutter/clutter-frame-clock.c
+index e612227419..13c0a51705 100644
+--- a/clutter/clutter/clutter-frame-clock.c
++++ b/clutter/clutter/clutter-frame-clock.c
+@@ -885,6 +885,7 @@ calculate_next_update_time_us (ClutterFrameClock *frame_clock,
+    */
+   next_presentation_time_us =
+     mtk_extrapolate_next_interval_boundary (next_smooth_presentation_time_us,
++                                            now_us,
+                                             refresh_interval_us);
+ 
+   if (last_presentation->target_presentation_time_us > 0)
+diff --git a/mtk/mtk/mtk-time-utils.c b/mtk/mtk/mtk-time-utils.c
+index 1538af627e..1d4669973e 100644
+--- a/mtk/mtk/mtk-time-utils.c
++++ b/mtk/mtk/mtk-time-utils.c
+@@ -24,13 +24,13 @@
+ #include "mtk-time-utils.h"
+ 
+ int64_t
+-mtk_extrapolate_next_interval_boundary (int64_t base_us,
++mtk_extrapolate_next_interval_boundary (int64_t boundary_us,
++                                        int64_t reference_us,
+                                         int64_t interval_us)
+ {
+-  int64_t now_us;
+   int64_t num_intervals;
+ 
+-  now_us = g_get_monotonic_time ();
+-  num_intervals = MAX ((now_us - base_us + interval_us - 1) / interval_us, 0);
+-  return base_us + num_intervals * interval_us;
++  num_intervals = MAX ((reference_us - boundary_us + interval_us - 1) /
++                       interval_us, 0);
++  return boundary_us + num_intervals * interval_us;
+ }
+diff --git a/mtk/mtk/mtk-time-utils.h b/mtk/mtk/mtk-time-utils.h
+index 1c8e836c65..a4b418a922 100644
+--- a/mtk/mtk/mtk-time-utils.h
++++ b/mtk/mtk/mtk-time-utils.h
+@@ -28,7 +28,8 @@
+ #include "mtk/mtk-macros.h"
+ 
+ MTK_EXPORT
+-int64_t mtk_extrapolate_next_interval_boundary (int64_t base_us,
++int64_t mtk_extrapolate_next_interval_boundary (int64_t boundary_us,
++                                                int64_t base_us,
+                                                 int64_t interval_us);
+ 
+ static inline uint64_t
+diff --git a/src/backends/native/meta-kms-crtc.c b/src/backends/native/meta-kms-crtc.c
+index cefaf17403..93463531ee 100644
+--- a/src/backends/native/meta-kms-crtc.c
++++ b/src/backends/native/meta-kms-crtc.c
+@@ -712,6 +712,7 @@ meta_kms_crtc_determine_deadline (MetaKmsCrtc  *crtc,
+ 
+               skip_us =
+                 mtk_extrapolate_next_interval_boundary (next_deadline_us,
++                                                        now_us,
+                                                         refresh_interval_us) -
+                 next_deadline_us;
+ 
+diff --git a/src/tests/mtk/time-utils-tests.c b/src/tests/mtk/time-utils-tests.c
+index 792f82d056..3f54f6bdc6 100644
+--- a/src/tests/mtk/time-utils-tests.c
++++ b/src/tests/mtk/time-utils-tests.c
+@@ -31,25 +31,27 @@ test_extrapolate_interval_boundary (void)
+   now_us = g_get_monotonic_time ();
+ 
+   next_interval_boundary_us =
+-    mtk_extrapolate_next_interval_boundary (now_us - 1, interval_us);
++    mtk_extrapolate_next_interval_boundary (now_us - 1, now_us, interval_us);
+   g_assert_cmpint (next_interval_boundary_us, ==, now_us + interval_us - 1);
+ 
+   next_interval_boundary_us =
+     mtk_extrapolate_next_interval_boundary (now_us - interval_us - 1,
++                                            now_us,
+                                             interval_us);
+   g_assert_cmpint (next_interval_boundary_us, ==, now_us + interval_us - 1);
+ 
+   next_interval_boundary_us =
+-    mtk_extrapolate_next_interval_boundary (now_us, interval_us);
++    mtk_extrapolate_next_interval_boundary (now_us, now_us + 1, interval_us);
+   g_assert_cmpint (next_interval_boundary_us, ==, now_us + interval_us);
+ 
+   next_interval_boundary_us =
+     mtk_extrapolate_next_interval_boundary (now_us + interval_us - 1,
++                                            now_us,
+                                             interval_us);
+   g_assert_cmpint (next_interval_boundary_us, ==, now_us + interval_us - 1);
+ 
+   next_interval_boundary_us =
+-    mtk_extrapolate_next_interval_boundary (0, interval_us);
++    mtk_extrapolate_next_interval_boundary (0, now_us, interval_us);
+   g_assert_cmpint (next_interval_boundary_us, >=, now_us);
+ }
+ 
+-- 
+2.51.0
+

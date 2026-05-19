@@ -1,0 +1,790 @@
+From 4b4bfed2a0ff7bf9581a2b993c588740ff4eea34 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Fri, 13 Feb 2026 16:14:24 +0100
+Subject: [PATCH] Revert "tests/monitor-backlight: Add tests for the sysfs
+ backlight"
+
+This reverts commit f7338dfe1cd4d33646a619d83853e2b968793632.
+---
+ .gitlab-ci.yml                              |   2 -
+ meson.build                                 |   2 -
+ src/backends/meta-backlight-private.h       |   3 -
+ src/backends/meta-backlight-sysfs-private.h |   1 -
+ src/backends/meta-backlight.c               |   8 -
+ src/backends/meta-launcher.h                |   2 -
+ src/tests/dbusmock-templates/logind.py      |  23 --
+ src/tests/meson.build                       |  50 ++--
+ src/tests/meta-context-test-private.h       |  28 --
+ src/tests/meta-context-test.c               |  17 +-
+ src/tests/meta-monitor-test-utils.c         |  59 ----
+ src/tests/meta-monitor-test-utils.h         |   1 -
+ src/tests/monitor-backlight-tests.c         | 284 +-------------------
+ src/tests/mutter_dbusrunner.py              |   3 -
+ 14 files changed, 32 insertions(+), 451 deletions(-)
+ delete mode 100644 src/tests/meta-context-test-private.h
+
+diff --git a/.gitlab-ci.yml b/.gitlab-ci.yml
+index cab1daccc5..cea2448ef5 100644
+--- a/.gitlab-ci.yml
++++ b/.gitlab-ci.yml
+@@ -133,7 +133,6 @@ variables:
+       gnome-desktop-testing
+       ruff
+       mypy
+-      umockdev-devel
+       libheif-devel
+       libjxl-devel
+       lcms2-devel
+@@ -152,7 +151,6 @@ variables:
+       'pkgconfig(xrender)'
+       'pkgconfig(xtst)'
+ 
+-
+     FDO_DISTRIBUTION_EXEC: |
+       set -e
+ 
+diff --git a/meson.build b/meson.build
+index 2afc0774b8..f77badb9ae 100644
+--- a/meson.build
++++ b/meson.build
+@@ -44,7 +44,6 @@ libdisplay_info_req = '>= 0.2'
+ # optional version requirements
+ udev_req = '>= 228'
+ gudev_req = '>= 238'
+-umockdev_req = '>= 0.3.0'
+ 
+ # wayland version requirements
+ wayland_server_req = '>= 1.24'
+@@ -409,7 +408,6 @@ if have_tests
+   gtk3_dep = dependency('gtk+-3.0', version: gtk3_req)
+   dbusmock_dep = python.find_installation('python3', modules: ['dbusmock'], required: false)
+   libevdev_dep = dependency('libevdev', required: false)
+-  umockdev_dep = dependency('umockdev-1.0', version: umockdev_req)
+ 
+   if not have_native_backend
+     error('Tests require the native backend to be enabled')
+diff --git a/src/backends/meta-backlight-private.h b/src/backends/meta-backlight-private.h
+index 0010751bbb..2740932dcd 100644
+--- a/src/backends/meta-backlight-private.h
++++ b/src/backends/meta-backlight-private.h
+@@ -42,6 +42,3 @@ const char * meta_backlight_get_name (MetaBacklight *backlight);
+ 
+ void meta_backlight_update_brightness_target (MetaBacklight *backlight,
+                                               int            brightness);
+-
+-META_EXPORT_TEST
+-gboolean meta_backlight_has_pending (MetaBacklight *backlight);
+diff --git a/src/backends/meta-backlight-sysfs-private.h b/src/backends/meta-backlight-sysfs-private.h
+index 2045d8c50a..1f58c2959d 100644
+--- a/src/backends/meta-backlight-sysfs-private.h
++++ b/src/backends/meta-backlight-sysfs-private.h
+@@ -29,7 +29,6 @@ G_DECLARE_FINAL_TYPE (MetaBacklightSysfs,
+                       META, BACKLIGHT_SYSFS,
+                       MetaBacklight)
+ 
+-META_EXPORT_TEST
+ MetaBacklightSysfs * meta_backlight_sysfs_new (MetaBackend           *backend,
+                                                const MetaOutputInfo  *output_info,
+                                                GError               **error);
+diff --git a/src/backends/meta-backlight.c b/src/backends/meta-backlight.c
+index c01935ac18..88f1626851 100644
+--- a/src/backends/meta-backlight.c
++++ b/src/backends/meta-backlight.c
+@@ -72,14 +72,6 @@ meta_backlight_get_name (MetaBacklight *backlight)
+   return priv->name;
+ }
+ 
+-gboolean
+-meta_backlight_has_pending (MetaBacklight *backlight)
+-{
+-  MetaBacklightPrivate *priv = meta_backlight_get_instance_private (backlight);
+-
+-  return priv->pending;
+-}
+-
+ void
+ meta_backlight_update_brightness_target (MetaBacklight *backlight,
+                                          int            brightness)
+diff --git a/src/backends/meta-launcher.h b/src/backends/meta-launcher.h
+index 9e8b177ff3..d9e882a395 100644
+--- a/src/backends/meta-launcher.h
++++ b/src/backends/meta-launcher.h
+@@ -20,7 +20,6 @@
+ #include <glib-object.h>
+ 
+ #include "backends/meta-backend-types.h"
+-#include "core/util-private.h"
+ 
+ #define META_TYPE_LAUNCHER (meta_launcher_get_type ())
+ G_DECLARE_FINAL_TYPE (MetaLauncher,
+@@ -44,7 +43,6 @@ gboolean meta_launcher_take_control (MetaLauncher  *launcher,
+ 
+ const char * meta_launcher_get_seat_id (MetaLauncher *launcher);
+ 
+-META_EXPORT_TEST
+ MetaDBusLogin1Session * meta_launcher_get_session_proxy (MetaLauncher *launcher);
+ 
+ MetaBackend * meta_launcher_get_backend (MetaLauncher *launcher);
+diff --git a/src/tests/dbusmock-templates/logind.py b/src/tests/dbusmock-templates/logind.py
+index cdec8e1a25..5e5878f6c7 100644
+--- a/src/tests/dbusmock-templates/logind.py
++++ b/src/tests/dbusmock-templates/logind.py
+@@ -89,8 +89,6 @@ class Login1Session(mockobject.DBusMockObject):
+         bus = kwargs.get('mock_data')
+         self.host_session = bus.get_object(self.bus_name.get_name(), self.path) if bus else None
+ 
+-        self.backlights = {}
+-
+     @staticmethod
+     def add_new(manager, session_id, seat_id, host_bus):
+         session_path = f'{MAIN_OBJ}/session/{session_id}'
+@@ -149,27 +147,6 @@ class Login1Session(mockobject.DBusMockObject):
+             return self.host_session.ReleaseControl(dbus_interface=SESSION_IFACE)
+         # noop
+ 
+-    @dbus.service.method(SESSION_IFACE, in_signature='ssu', out_signature='')
+-    def SetBrightness(self, subsystem, name, brightness):
+-        self.backlights[subsystem][name] = brightness
+-        pass
+-
+-    @dbus.service.method(MOCK_IFACE, in_signature='ssu', out_signature='')
+-    def CreateBacklight(self, subsystem, name, brightness):
+-        if not subsystem in self.backlights:
+-            self.backlights[subsystem] = {}
+-
+-        self.backlights[subsystem][name] = brightness
+-
+-    @dbus.service.method(MOCK_IFACE, in_signature='ss', out_signature='')
+-    def DestroyBacklight(self, subsystem, name):
+-        if subsystem in self.backlights and name in self.backlights[subsystem]:
+-            del self.backlights[subsystem][name]
+-
+-    @dbus.service.method(MOCK_IFACE, in_signature='ss', out_signature='u')
+-    def GetBacklight(self, subsystem, name):
+-        return self.backlights[subsystem][name]
+-
+ 
+ @dbus.service.method(MANAGER_IFACE, in_signature='u', out_signature='o')
+ def GetUser(self, uid):
+diff --git a/src/tests/meson.build b/src/tests/meson.build
+index dd1230b47f..efd97ef24f 100644
+--- a/src/tests/meson.build
++++ b/src/tests/meson.build
+@@ -58,7 +58,6 @@ tests_deps = [
+   locally_compiled_schemas_dep,
+   wayland_client_dep,
+   gvdb_dep,
+-  umockdev_dep,
+ ]
+ 
+ if libevdev_dep.found()
+@@ -264,23 +263,6 @@ privileged_test_cases = []
+ 
+ subdir('mtk')
+ 
+-backlight_client = executable('monitor-backlight-client',
+-  sources: [
+-    'monitor-backlight-client.c',
+-    built_dbus_sources['meta-dbus-display-config'],
+-  ],
+-  include_directories: tests_includes,
+-  c_args: [
+-    tests_c_args,
+-    '-DG_LOG_DOMAIN="mutter-monitor-backlight-test-client"',
+-  ],
+-  dependencies: [
+-    gio_dep,
+-  ],
+-  install: have_installed_tests,
+-  install_dir: mutter_installed_tests_libexecdir,
+-)
+-
+ test_cases += [
+   {
+     'name': 'unit',
+@@ -430,10 +412,7 @@ test_cases += [
+   {
+     'name': 'monitor-backlight',
+     'suite': 'backend',
+-    'sources': [ 'monitor-backlight-tests.c', ],
+-    'depends': [
+-      backlight_client,
+-    ],
++    'sources': [ 'monitor-backlight-tests.c', ]
+   },
+   {
+     'name': 'monitor-gdctl',
+@@ -543,6 +522,23 @@ screen_cast_client_driver = executable('mutter-screen-cast-client-driver',
+   install_rpath: pkglibdir,
+ )
+ 
++backlight_client = executable('monitor-backlight-client',
++  sources: [
++    'monitor-backlight-client.c',
++    built_dbus_sources['meta-dbus-display-config'],
++  ],
++  include_directories: tests_includes,
++  c_args: [
++    tests_c_args,
++    '-DG_LOG_DOMAIN="mutter-monitor-backlight-test-client"',
++  ],
++  dependencies: [
++    gio_dep,
++  ],
++  install: have_installed_tests,
++  install_dir: mutter_installed_tests_libexecdir,
++)
++
+ input_capture_client = executable('mutter-input-capture-test-client',
+   sources: [
+     'input-capture-test-client.c',
+@@ -1225,13 +1221,9 @@ if have_kvm_tests or have_tty_tests
+     )
+ 
+     foreach variant: variants
+-      variables = variant[1] + {
+-        'META_DBUS_RUNNER_DISABLE_UMOCKDEV': '1',
+-        'META_DBUS_RUNNER_DISABLE_LOGIND_PASSTHROUGH': '1',
+-      }
+-
+       variant_env = environment()
+-      foreach name, value: variables
++      variant_env.set('META_DBUS_RUNNER_DISABLE_LOGIND_PASSTHROUGH', '1')
++      foreach name, value: variant[1]
+         variant_env.set(name, value)
+       endforeach
+       privileged_tests += [
+@@ -1239,7 +1231,7 @@ if have_kvm_tests or have_tty_tests
+           'name': '@0@@1@'.format(test_case['name'], variant[0]),
+           'suite': test_case['suite'],
+           'executable': test_executable,
+-          'variables': variables,
++          'variables': variant[1],
+           'env': variant_env,
+         },
+       ]
+diff --git a/src/tests/meta-context-test-private.h b/src/tests/meta-context-test-private.h
+deleted file mode 100644
+index ebd7275350..0000000000
+--- a/src/tests/meta-context-test-private.h
++++ /dev/null
+@@ -1,28 +0,0 @@
+-/*
+- * Copyright (C) 2025 Red Hat Inc.
+- *
+- * This program is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU General Public License as
+- * published by the Free Software Foundation; either version 2 of the
+- * License, or (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful, but
+- * WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+- * General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with this program; if not, see <http://www.gnu.org/licenses/>.
+- *
+- */
+-
+-#pragma once
+-
+-#include "config.h"
+-
+-#include "meta-test/meta-context-test.h"
+-
+-#include <umockdev.h>
+-
+-META_EXPORT
+-UMockdevTestbed * meta_context_test_get_udev_testbed (MetaContextTest *context_test);
+diff --git a/src/tests/meta-context-test.c b/src/tests/meta-context-test.c
+index 8558c6b969..81fcb7afc2 100644
+--- a/src/tests/meta-context-test.c
++++ b/src/tests/meta-context-test.c
+@@ -18,7 +18,7 @@
+ 
+ #include "config.h"
+ 
+-#include "tests/meta-context-test-private.h"
++#include "meta-test/meta-context-test.h"
+ 
+ #include <glib.h>
+ #include <gio/gio.h>
+@@ -57,7 +57,6 @@ typedef struct _MetaContextTestPrivate
+   MetaContextTestFlag flags;
+   MetaSessionManager *session_manager;
+   CoglColor *background_color;
+-  UMockdevTestbed *udev_testbed;
+ } MetaContextTestPrivate;
+ 
+ struct _MetaContextTestClass
+@@ -101,7 +100,6 @@ meta_context_test_finalize (GObject *object)
+ 
+   g_clear_pointer (&priv->background_color, cogl_color_free);
+   g_clear_object (&priv->session_manager);
+-  g_clear_object (&priv->udev_testbed);
+ 
+   G_OBJECT_CLASS (meta_context_test_parent_class)->finalize (object);
+ }
+@@ -396,18 +394,6 @@ meta_context_test_wait_for_x11_display (MetaContextTest *context_test)
+   g_assert_nonnull (meta_display_get_x11_display (display));
+ }
+ 
+-/**
+- * meta_context_test_get_udev_testbed: (skip)
+- */
+-UMockdevTestbed *
+-meta_context_test_get_udev_testbed (MetaContextTest *context_test)
+-{
+-  MetaContextTestPrivate *priv =
+-    meta_context_test_get_instance_private (context_test);
+-
+-  return priv->udev_testbed;
+-}
+-
+ /**
+  * meta_create_test_context: (skip)
+  */
+@@ -424,7 +410,6 @@ meta_create_test_context (MetaContextTestType type,
+   priv = meta_context_test_get_instance_private (context_test);
+   priv->type = type;
+   priv->flags = flags;
+-  priv->udev_testbed = umockdev_testbed_new ();
+ 
+   return META_CONTEXT (context_test);
+ }
+diff --git a/src/tests/meta-monitor-test-utils.c b/src/tests/meta-monitor-test-utils.c
+index 31133e09d2..35328ba5ec 100644
+--- a/src/tests/meta-monitor-test-utils.c
++++ b/src/tests/meta-monitor-test-utils.c
+@@ -24,12 +24,10 @@
+ #include <float.h>
+ 
+ #include "backends/meta-backend-private.h"
+-#include "backends/meta-backlight-sysfs-private.h"
+ #include "backends/meta-crtc.h"
+ #include "backends/meta-logical-monitor-private.h"
+ #include "backends/meta-monitor-config-manager.h"
+ #include "backends/meta-monitor-config-store.h"
+-#include "tests/meta-context-test-private.h"
+ #include "tests/meta-crtc-test.h"
+ #include "tests/meta-output-test.h"
+ #include "tests/meta-test-utils.h"
+@@ -651,8 +649,6 @@ meta_create_monitor_test_setup (MetaBackend          *backend,
+                                 MonitorTestCaseSetup *setup,
+                                 MonitorTestFlag       flags)
+ {
+-  MetaContextTest *context_test =
+-    META_CONTEXT_TEST (meta_backend_get_context (backend));
+   MetaMonitorTestSetup *test_setup;
+   int i;
+ #define META_N_CONNECTOR_TYPES 21
+@@ -836,61 +832,6 @@ meta_create_monitor_test_setup (MetaBackend          *backend,
+                           NULL);
+         }
+ 
+-      if (setup->outputs[i].sysfs_backlight)
+-        {
+-          UMockdevTestbed *udev_testbed =
+-            meta_context_test_get_udev_testbed (context_test);
+-          g_autofree char *max_str = NULL;
+-          g_autofree char *connector_name = NULL;
+-          g_autofree char *connector_udev = NULL;
+-          g_autofree char *backlight_udev = NULL;
+-          int min;
+-
+-          g_assert_true (umockdev_in_mock_environment ());
+-
+-          umockdev_testbed_clear (udev_testbed);
+-
+-          max_str = g_strdup_printf ("%i", setup->outputs[i].backlight_max);
+-          connector_name = g_strdup_printf ("card0-%s", output_info->name);
+-
+-          /* add an enabled drm connector which will be the parent of the backlight */
+-          connector_udev = umockdev_testbed_add_device (udev_testbed,
+-                                                        /* subsystem */
+-                                                        "drm",
+-                                                        /* name */
+-                                                        connector_name,
+-                                                        /* parent */
+-                                                        NULL,
+-                                                        /* attributes */
+-                                                        "enabled", "enabled",
+-                                                        NULL,
+-                                                        /* properties */
+-                                                        NULL);
+-
+-          backlight_udev = umockdev_testbed_add_device (udev_testbed,
+-                                                        /* subsystem */
+-                                                        "backlight",
+-                                                        /* name */
+-                                                        setup->outputs[i].sysfs_backlight,
+-                                                        /* parent */
+-                                                        connector_udev,
+-                                                        /* attributes */
+-                                                        "type", "raw",
+-                                                        "max_brightness", max_str,
+-                                                        "brightness", max_str,
+-                                                        NULL,
+-                                                        /* properties */
+-                                                        NULL);
+-
+-          backlight = META_BACKLIGHT (meta_backlight_sysfs_new (backend,
+-                                                                output_info,
+-                                                                NULL));
+-          g_assert_nonnull (backlight);
+-
+-          meta_backlight_get_brightness_info (backlight, &min, NULL);
+-          g_assert_cmpint (min, ==, setup->outputs[i].backlight_min);
+-        }
+-
+       output = g_object_new (META_TYPE_OUTPUT_TEST,
+                              "id", (uint64_t) i,
+                              "gpu", meta_test_get_gpu (backend),
+diff --git a/src/tests/meta-monitor-test-utils.h b/src/tests/meta-monitor-test-utils.h
+index 4760315263..5098f67cf5 100644
+--- a/src/tests/meta-monitor-test-utils.h
++++ b/src/tests/meta-monitor-test-utils.h
+@@ -117,7 +117,6 @@ typedef struct _MonitorTestCaseOutput
+   int suggested_y;
+   int backlight_min;
+   int backlight_max;
+-  const char *sysfs_backlight;
+   gboolean has_edid_info;
+   MetaEdidInfo edid_info;
+   uint64_t supported_color_spaces;
+diff --git a/src/tests/monitor-backlight-tests.c b/src/tests/monitor-backlight-tests.c
+index 652e63b583..511b9fbe76 100644
+--- a/src/tests/monitor-backlight-tests.c
++++ b/src/tests/monitor-backlight-tests.c
+@@ -19,7 +19,6 @@
+ 
+ #include <stdio.h>
+ 
+-#include "backends/meta-backlight-private.h"
+ #include "tests/meta-test/meta-context-test.h"
+ #include "tests/meta-monitor-test-utils.h"
+ 
+@@ -71,55 +70,16 @@ static MonitorTestCaseSetup initial_test_case_setup = {
+   .n_crtcs = 2
+ };
+ 
+-static MonitorTestCaseSetup sysfs_test_case_setup = {
+-  .modes = {
+-    {
+-      .width = 1024,
+-      .height = 768,
+-      .refresh_rate = 60.0
+-    }
+-  },
+-  .n_modes = 1,
+-  .outputs = {
+-     {
+-      .crtc = 0,
+-      .modes = { 0 },
+-      .n_modes = 1,
+-      .preferred_mode = 0,
+-      .possible_crtcs = { 0 },
+-      .n_possible_crtcs = 1,
+-      .width_mm = 222,
+-      .height_mm = 125,
+-      .connector_type = META_CONNECTOR_TYPE_eDP,
+-      .sysfs_backlight = "backlight1",
+-      .backlight_min = 0,
+-      .backlight_max = 90,
+-    },
+-    {
+-      .crtc = 1,
+-      .modes = { 0 },
+-      .n_modes = 1,
+-      .preferred_mode = 0,
+-      .possible_crtcs = { 1 },
+-      .n_possible_crtcs = 1,
+-      .width_mm = 220,
+-      .height_mm = 124
+-    }
+-  },
+-  .n_outputs = 2,
+-  .crtcs = {
+-    {
+-      .current_mode = 0
+-    },
+-    {
+-      .current_mode = 0
+-    }
+-  },
+-  .n_crtcs = 2
+-};
+-
+ static MetaContext *test_context;
+ 
++static MetaMonitorTestSetup *
++create_test_setup (MetaBackend *backend)
++{
++  return meta_create_monitor_test_setup (backend,
++                                         &initial_test_case_setup,
++                                         MONITOR_TEST_FLAG_NO_STORED);
++}
++
+ static void
+ meta_test_backlight_sanity (void)
+ {
+@@ -209,228 +169,6 @@ meta_test_backlight_api (void)
+     g_main_context_iteration (NULL, TRUE);
+ }
+ 
+-static void
+-meta_test_backlight_sysfs_sanity (void)
+-{
+-  MetaBackend *backend = meta_context_get_backend (test_context);
+-  MetaMonitorManager *monitor_manager =
+-    meta_backend_get_monitor_manager (backend);
+-  MetaMonitorManagerTest *monitor_manager_test =
+-    META_MONITOR_MANAGER_TEST (monitor_manager);
+-  MetaMonitorTestSetup *test_setup;
+-  GList *monitors;
+-  MetaMonitor *first_monitor;
+-  MetaBacklight *backlight;
+-  int backlight_min;
+-  int backlight_max;
+-  int backlight_value;
+-
+-  test_setup = meta_create_monitor_test_setup (backend,
+-                                               &sysfs_test_case_setup,
+-                                               MONITOR_TEST_FLAG_NO_STORED);
+-  meta_monitor_manager_test_emulate_hotplug (monitor_manager_test, test_setup);
+-
+-  monitors = meta_monitor_manager_get_monitors (monitor_manager);
+-  g_assert_cmpuint (g_list_length (monitors), ==, 2);
+-  first_monitor = g_list_nth_data (monitors, 0);
+-
+-  backlight = meta_monitor_get_backlight (first_monitor);
+-  g_assert_nonnull (backlight);
+-
+-  meta_backlight_get_brightness_info (backlight, &backlight_min, &backlight_max);
+-  backlight_value = meta_backlight_get_brightness (backlight);
+-  g_assert_cmpint (backlight_min, ==, 0);
+-  g_assert_cmpint (backlight_max, ==, 90);
+-  g_assert_cmpint (backlight_value, >=, 0);
+-  g_assert_cmpint (backlight_value, <=, 90);
+-}
+-
+-static GDBusProxy *
+-get_logind_mock_proxy (MetaBackend *backend)
+-{
+-  GDBusProxy *proxy;
+-  g_autoptr (GError) error = NULL;
+-
+-  MetaLauncher *launcher = meta_backend_get_launcher (backend);
+-  MetaDBusLogin1Session *session_proxy = meta_launcher_get_session_proxy (launcher);
+-  const char *session_path = g_dbus_proxy_get_object_path (G_DBUS_PROXY (session_proxy));
+-
+-  proxy =
+-    g_dbus_proxy_new_for_bus_sync (G_BUS_TYPE_SYSTEM,
+-                                   G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START |
+-                                   G_DBUS_PROXY_FLAGS_DO_NOT_CONNECT_SIGNALS,
+-                                   NULL,
+-                                   "org.freedesktop.login1",
+-                                   session_path,
+-                                   "org.freedesktop.DBus.Mock",
+-                                   NULL, &error);
+-  if (!proxy)
+-    {
+-      g_error ("Failed to find mocked color manager system service, %s",
+-               error->message);
+-    }
+-
+-  return proxy;
+-}
+-
+-static void
+-create_logind_backlight (MetaBackend *backend,
+-                         const char  *name,
+-                         int          brightness)
+-{
+-
+-  g_autoptr (GDBusProxy) mock_proxy = NULL;
+-  g_autoptr (GError) error = NULL;
+-  GVariantBuilder params_builder;
+-
+-  mock_proxy = get_logind_mock_proxy (backend);
+-
+-  g_variant_builder_init (&params_builder, G_VARIANT_TYPE ("(ssu)"));
+-  g_variant_builder_add (&params_builder, "s", "backlight");
+-  g_variant_builder_add (&params_builder, "s", name);
+-  g_variant_builder_add (&params_builder, "u", brightness);
+-
+-  if (!g_dbus_proxy_call_sync (mock_proxy,
+-                               "CreateBacklight",
+-                               g_variant_builder_end (&params_builder),
+-                               G_DBUS_CALL_FLAGS_NO_AUTO_START, -1, NULL,
+-                               &error))
+-    g_error ("Failed to create logind backlight: %s", error->message);
+-}
+-
+-static void
+-destroy_logind_backlight (MetaBackend *backend,
+-                          const char  *name)
+-{
+-
+-  g_autoptr (GDBusProxy) mock_proxy = NULL;
+-  g_autoptr (GError) error = NULL;
+-  GVariantBuilder params_builder;
+-
+-  mock_proxy = get_logind_mock_proxy (backend);
+-
+-  g_variant_builder_init (&params_builder, G_VARIANT_TYPE ("(ss)"));
+-  g_variant_builder_add (&params_builder, "s", "backlight");
+-  g_variant_builder_add (&params_builder, "s", name);
+-
+-  if (!g_dbus_proxy_call_sync (mock_proxy,
+-                               "DestroyBacklight",
+-                               g_variant_builder_end (&params_builder),
+-                               G_DBUS_CALL_FLAGS_NO_AUTO_START, -1, NULL,
+-                               &error))
+-    g_error ("Failed to destroy logind backlight: %s", error->message);
+-}
+-
+-static int
+-get_logind_backlight (MetaBackend *backend,
+-                      const char  *name)
+-{
+-
+-  g_autoptr (GDBusProxy) mock_proxy = NULL;
+-  g_autoptr (GError) error = NULL;
+-  GVariantBuilder params_builder;
+-  g_autoptr (GVariant) result = NULL;
+-  int backlight_value;
+-
+-  mock_proxy = get_logind_mock_proxy (backend);
+-
+-  g_variant_builder_init (&params_builder, G_VARIANT_TYPE ("(ss)"));
+-  g_variant_builder_add (&params_builder, "s", "backlight");
+-  g_variant_builder_add (&params_builder, "s", name);
+-
+-  result = g_dbus_proxy_call_sync (mock_proxy,
+-                                   "GetBacklight",
+-                                   g_variant_builder_end (&params_builder),
+-                                   G_DBUS_CALL_FLAGS_NO_AUTO_START, -1, NULL,
+-                                   &error);
+-  if (!result)
+-    g_error ("Failed to destroy logind backlight: %s", error->message);
+-
+-  g_variant_get (result, "(u)", &backlight_value);
+-  return backlight_value;
+-}
+-
+-static void
+-meta_test_backlight_sysfs_set (void)
+-{
+-  MetaBackend *backend = meta_context_get_backend (test_context);
+-  MetaMonitorManager *monitor_manager =
+-    meta_backend_get_monitor_manager (backend);
+-  MetaMonitorManagerTest *monitor_manager_test =
+-    META_MONITOR_MANAGER_TEST (monitor_manager);
+-  MetaMonitorTestSetup *test_setup;
+-  GList *monitors;
+-  MetaMonitor *first_monitor;
+-  MetaBacklight *backlight;
+-  int backlight_value;
+-
+-  destroy_logind_backlight (backend, "backlight1");
+-  create_logind_backlight (backend, "backlight1", 90);
+-
+-  test_setup = meta_create_monitor_test_setup (backend,
+-                                               &sysfs_test_case_setup,
+-                                               MONITOR_TEST_FLAG_NO_STORED);
+-  meta_monitor_manager_test_emulate_hotplug (monitor_manager_test, test_setup);
+-
+-  monitors = meta_monitor_manager_get_monitors (monitor_manager);
+-  first_monitor = g_list_nth_data (monitors, 0);
+-
+-  backlight = meta_monitor_get_backlight (first_monitor);
+-  g_assert_nonnull (backlight);
+-
+-  backlight_value = meta_backlight_get_brightness (backlight);
+-  g_assert_cmpint (backlight_value, ==, 90);
+-  g_assert_cmpint (get_logind_backlight (backend, "backlight1"), ==, 90);
+-
+-  meta_backlight_set_brightness (backlight, 30);
+-
+-  while (meta_backlight_has_pending (backlight))
+-    g_main_context_iteration (NULL, TRUE);
+-
+-  backlight_value = meta_backlight_get_brightness (backlight);
+-  g_assert_cmpint (backlight_value, ==, 30);
+-  g_assert_cmpint (get_logind_backlight (backend, "backlight1"), ==, 30);
+-}
+-
+-static MetaMonitorTestSetup *
+-create_test_setup (MetaBackend *backend)
+-{
+-  return meta_create_monitor_test_setup (backend,
+-                                         &initial_test_case_setup,
+-                                         MONITOR_TEST_FLAG_NO_STORED);
+-}
+-
+-static void
+-prepare_backlight_test (void)
+-{
+-  MetaBackend *backend = meta_context_get_backend (test_context);
+-  MetaMonitorManager *monitor_manager =
+-    meta_backend_get_monitor_manager (backend);
+-  MetaMonitorManagerTest *monitor_manager_test =
+-    META_MONITOR_MANAGER_TEST (monitor_manager);
+-  MetaMonitorTestSetup *test_setup;
+-
+-  test_setup = meta_create_monitor_test_setup (backend,
+-                                               &initial_test_case_setup,
+-                                               MONITOR_TEST_FLAG_NO_STORED);
+-  meta_monitor_manager_test_emulate_hotplug (monitor_manager_test, test_setup);
+-}
+-
+-static void
+-finish_backlight_test (void)
+-{
+-}
+-
+-static void
+-add_test (const char *test_path,
+-          GTestFunc   test_func)
+-{
+-  g_test_add_vtable (test_path, 0, NULL,
+-                     (GTestFixtureFunc) prepare_backlight_test,
+-                     (GTestFixtureFunc) test_func,
+-                     (GTestFixtureFunc) finish_backlight_test);
+-}
+-
+ int
+ main (int   argc,
+       char *argv[])
+@@ -444,10 +182,8 @@ main (int   argc,
+   test_context = context;
+ 
+   meta_init_monitor_test_setup (create_test_setup);
+-  add_test ("/backends/backlight/sanity", meta_test_backlight_sanity);
+-  add_test ("/backends/backlight/api", meta_test_backlight_api);
+-  add_test ("/backends/backlight/sysfs/sanity", meta_test_backlight_sysfs_sanity);
+-  add_test ("/backends/backlight/sysfs/set", meta_test_backlight_sysfs_set);
++  g_test_add_func ("/backends/backlight/sanity", meta_test_backlight_sanity);
++  g_test_add_func ("/backends/backlight/api", meta_test_backlight_api);
+ 
+   return meta_context_test_run_tests (META_CONTEXT_TEST (context),
+                                       META_TEST_RUN_FLAG_NONE);
+diff --git a/src/tests/mutter_dbusrunner.py b/src/tests/mutter_dbusrunner.py
+index 215ab8ac57..47ec5fa4cc 100644
+--- a/src/tests/mutter_dbusrunner.py
++++ b/src/tests/mutter_dbusrunner.py
+@@ -275,9 +275,6 @@ def run_test(args, extra_env):
+ 
+     wrapper = os.getenv('META_DBUS_RUNNER_WRAPPER')
+ 
+-    if not os.getenv('META_DBUS_RUNNER_DISABLE_UMOCKDEV'):
+-        args = ['umockdev-wrapper'] + args
+-
+     if wrapper == 'gdb':
+         args = ['gdb', '-ex', 'r', '-ex', 'bt full', '--args'] + args
+     elif wrapper == 'rr':
+-- 
+2.51.0
+

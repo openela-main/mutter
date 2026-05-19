@@ -1,8 +1,8 @@
 ## START: Set by rpmautospec
-## (rpmautospec version 0.6.5)
+## (rpmautospec version 0.8.3)
 ## RPMAUTOSPEC: autorelease, autochangelog
 %define autorelease(e:s:pb:n) %{?-p:0.}%{lua:
-    release_number = 13;
+    release_number = 4;
     base_release_number = tonumber(rpm.expand("%{?-b*}%{!?-b:1}"));
     print(release_number + base_release_number - 1);
 }%{?-e:.%{-e*}}%{?-s:.%{-s*}}%{!?-n:%{?dist}}
@@ -12,108 +12,56 @@
 %global gtk3_version 3.19.8
 %global gtk4_version 4.0.0
 %global gsettings_desktop_schemas_version 47~beta
-%global libinput_version 1.19.0
-%global pipewire_version 0.3.33
+%global libinput_version 1.27.0
+%global pipewire_version 1.2.7
 %global lcms2_version 2.6
 %global colord_version 1.4.5
-%global libei_version 1.0.901
-%global mutter_api_version 15
+%global libei_version 1.3.901
+%global mutter_api_version 17
 
+%global major_version %%(echo %{version} | cut -d '.' -f1 | cut -d '~' -f 1)
 %global tarball_version %%(echo %{version} | tr '~' '.')
 
 Name:          mutter
-Version:       47.5
+Version:       49.4
 Release:       %autorelease
 Summary:       Window and compositing manager based on Clutter
 
-License:       GPLv2+
+License:       GPL-2.0-or-later
 URL:           http://www.gnome.org
-Source0:       http://download.gnome.org/sources/%{name}/47/%{name}-%{tarball_version}.tar.xz
+Source0:       http://download.gnome.org/sources/%{name}/%{major_version}/%{name}-%{tarball_version}.tar.xz
 
-# Work-around for OpenJDK's compliance test
-Patch:         0001-window-actor-Special-case-shaped-Java-windows.patch
+# meson >= 1.5.0 is required
+%global meson_ver 1.5.0
+Source2: https://github.com/mesonbuild/meson/releases/download/%{meson_ver}/meson-%{meson_ver}.tar.gz
 
 # https://bugzilla.redhat.com/show_bug.cgi?id=1936991
 Patch:         0001-Test-deny-atomic-KMS-for-tegra-RHBZ-1936991.patch
 
-# https://pagure.io/fedora-workstation/issue/79
-Patch:         0001-place-Always-center-initial-setup-fedora-welcome.patch
-
-# https://bugzilla.redhat.com/show_bug.cgi?id=2239128
-# https://gitlab.gnome.org/GNOME/mutter/-/issues/3068
-# not upstreamed because for upstream we'd really want to find a way
-# to fix *both* problems
-Patch:         0001-Revert-x11-window-Compare-input-shape-to-client-rect.patch
-Patch:         0002-Revert-x11-window-Update-comment-and-variable-name-t.patch
-Patch:         0003-Revert-x11-window-Use-correct-bounding-rect-to-deter.patch
-
 # Revert deprecation fix to avoid newer glib requirement
 Patch:         0001-Revert-Replace-deprecated-g_qsort_with_data-with-g_s.patch
 
-# RHEL-74359
-Patch:         0001-cursor-renderer-native-Pass-destination-format-to-sc.patch
-Patch:         0002-cursor-renderer-native-Store-formats-in-MetaCursorRe.patch
-Patch:         0003-cursor-renderer-native-Probe-formats-supported-by-cu.patch
-Patch:         0001-cursor-renderer-native-Skip-init_hw_cursor_support_f.patch
-Patch:         0001-cursor-renderer-native-Fix-crash-with-MUTTER_DEBUG_D.patch
-Patch:         0001-cursor-renderer-native-Cast-MetaGpu-to-MetaGpuKms-on.patch
+# Avoid glycin dependency (only needed for HDR backgrounds)
+Patch:         0001-Revert-background-Port-from-gdk-pixbuf-to-glycin.patch
+Patch:         0002-Revert-background-Plumb-color-state-through-backgrou.patch
 
-# RHEL-62220
-# DRM lease configuration via monitors.xml and D-Bus:
-# https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4112
-Patch:         0001-monitor-manager-Add-forlease-config-to-monitors.xml.patch
-Patch:         0002-monitor-Keep-track-of-the-for-lease-status.patch
-Patch:         0003-output-kms-Add-meta_output_kms_from_kms_connector.patch
-Patch:         0004-kms-connector-Rename-meta_kms_connector_is_for_lease.patch
-Patch:         0005-native-drm-lease-Handle-monitors-configured-for-leas.patch
-# https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4121
-Patch:         0001-monitor-manager-Return-for-lease-status-in-GetCurren.patch
-Patch:         0002-monitor-manager-Allow-to-check-if-config-has-a-visib.patch
-Patch:         0003-monitor-manager-Configure-for-lease-monitors-in-Appl.patch
+# Revert upstream devkit commit that depends on newer gtk4
+Patch:         0001-Revert-mdk-Use-PipeWire-damage-region-for-minimizing.patch
 
-# Backports from gnome-47 branch between 47.5 and 47.6
-Patch:         0001-wayland-Fix-refresh-interval-reporting-in-presentati.patch
-Patch:         0002-input-capture-session-Disconnect-on_keymap_changed-o.patch
+# Revert upstream test suite patch that depends on umockdev, which isn't
+# available in the appropriate repository.
+Patch:         0001-Revert-tests-monitor-backlight-Add-tests-for-the-sys.patch
 
-# Overlay cursor damage fix: RHEL-58079, RHEL-81897
-Patch:         0001-backends-Update-stage-views-and-stage-dimension-from.patch
-Patch:         0002-stage-Track-overlay-damage-per-view.patch
+# Fix flaky tests
+Patch:         0001-mtk-Take-explicit-reference-for-mtk_extrapolate_next.patch
+Patch:         0001-tests-test-runner-Do-a-client-roundtrip-after-popup-.patch
 
-# Backport Accessibility manager patches. (RHEL-82072)
-Patch:         a11y-manager.patch
-Patch:         0001-backend-native-Fetch-a11y-manager-after-parent-post-.patch
-
-# Backport pre-configure mechanism (RHEL-84702) from:
-# https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4076
-# https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4111
-Patch:         0001-window-Replace-barely-used-macros-with-func-equivale.patch
-Patch:         0002-window-Use-getter-for-fullscreen-state.patch
-Patch:         0003-window-Add-a-MetaWindowConfig-type.patch
-Patch:         0004-window-Use-the-fullscreen-API.patch
-Patch:         0005-window-Use-the-MetaWindowConfig.patch
-Patch:         0006-window-Add-a-configure-signal.patch
-Patch:         0007-window-Add-a-window-helper-function-for-MetaWindowCo.patch
-Patch:         0008-wayland-window-configuration-Add-MetaWindowConfig-su.patch
-Patch:         0009-wayland-Emit-the-configure-signal.patch
-Patch:         0010-window-x11-Emit-the-configure-signal.patch
-
-# Backport "Fix race hotplug race conditions in DRM lease manager" (RHEL-84842)
-Patch:         0001-drm-lease-Avoid-copying-list-of-connectors.patch
-Patch:         0002-drm-lease-Connect-MetaUdev-hotplug-handler-after-oth.patch
-Patch:         0003-tests-Add-drm-lease-test-for-non-non-desktop-hotplug.patch
-Patch:         0004-output-Add-pause-resume-signals.patch
-Patch:         0005-drm-lease-Treat-connectors-as-unleasable-when-inacti.patch
-
-# Backport 'Write access checks for /tmp/.X11-unix/' (RHEL-91324)
-Patch:         0001-Be-more-verbose-about-permissions-of-tmp-.X11-unix.patch
-Patch:         0002-Use-access-instead-of-checking-permission-modes-for-.patch
-
-# Backport gdctl (RHEL-108048)
-Patch:         gdctl-patches.patch
-Patch:         0001-tests-Vary-the-gdctl-path-used-for-installed-tests.patch
-
+# Handle unmaximize when headless
+# https://redhat.atlassian.net/browse/RHEL-156728
+Patch:         unmaximize-when-headless.patch
 BuildRequires: pkgconfig(gobject-introspection-1.0) >= 1.41.0
 BuildRequires: pkgconfig(sm)
+BuildRequires: pkgconfig(libadwaita-1)
 BuildRequires: pkgconfig(libwacom)
 BuildRequires: pkgconfig(x11)
 BuildRequires: pkgconfig(xdamage)
@@ -149,7 +97,7 @@ BuildRequires: python3-docutils
 # Bootstrap requirements
 BuildRequires: gettext-devel git-core
 BuildRequires: pkgconfig(libcanberra)
-BuildRequires: gsettings-desktop-schemas-devel >= %{gsettings_desktop_schemas_version}
+BuildRequires: pkgconfig(gsettings-desktop-schemas) >= %{gsettings_desktop_schemas_version}
 BuildRequires: pkgconfig(gnome-settings-daemon)
 BuildRequires: meson
 BuildRequires: pkgconfig(gbm)
@@ -166,8 +114,12 @@ BuildRequires: pkgconfig(libeis-1.0) >= %{libei_version}
 
 BuildRequires: pkgconfig(libinput) >= %{libinput_version}
 BuildRequires: pkgconfig(xwayland)
+BuildRequires: pkgconfig(bash-completion)
 
 BuildRequires: python3-dbusmock
+
+# for meson
+BuildRequires: python3-devel
 
 Requires: control-center-filesystem
 Requires: gsettings-desktop-schemas%{?_isa} >= %{gsettings_desktop_schemas_version}
@@ -240,12 +192,38 @@ the functionality of the installed %{name} package.
 %prep
 %autosetup -S git -n %{name}-%{tarball_version}
 
+# Extract meson
+tar -xvf %{SOURCE2}
+
 %build
-%meson -Degl_device=true
+# Build meson
+cd meson-%{meson_ver}
+%py3_build
+%py3_install
+%global __meson %{buildroot}%{_bindir}/meson
+export PYTHONPATH=%{buildroot}%{python3_sitelib}:%{python3_sitelib}
+cd -
+
+%meson -Degl_device=true -Dx11=true
 %meson_build
 
 %install
+cd meson-%{meson_ver}
+%py3_build
+%py3_install
+%global __meson %{buildroot}%{_bindir}/meson
+export PYTHONPATH=%{buildroot}%{python3_sitelib}:%{python3_sitelib}
+cd -
+
 %meson_install
+
+# Delete files installed by meson
+rm -f  %{buildroot}%{_bindir}/meson
+rm -rf %{buildroot}%{_mandir}/man1/meson.1*
+rm -f  %{buildroot}%{_datadir}/polkit-1/actions/com.mesonbuild.install.policy
+rm -f  %{buildroot}%{_datadir}/bash-completion/completions/meson
+rm -f  %{buildroot}%{_datadir}/zsh/site-functions/_meson
+rm -rf %{buildroot}%{python3_sitelib}
 
 %find_lang %{name}
 
@@ -253,14 +231,18 @@ the functionality of the installed %{name} package.
 %license COPYING
 %doc NEWS
 %{_bindir}/mutter
+%{_datadir}/polkit-1/actions/org.gnome.mutter.*.policy
+%{_bindir}/gdctl
+%{_bindir}/gnome-service-client
+%{_datadir}/bash-completion/completions/gdctl
 %{_libdir}/lib*.so.*
 %{_libdir}/mutter-%{mutter_api_version}/
+%{_libexecdir}/mutter-backlight-helper
 %{_libexecdir}/mutter-restart-helper
 %{_libexecdir}/mutter-x11-frames
 %{_mandir}/man1/mutter.1*
-%{_bindir}/gdctl
 %{_mandir}/man1/gdctl.1*
-%{_sysconfdir}/bash_completion.d/gdctl
+%{_mandir}/man1/gnome-service-client.1*
 
 %files common
 %{_datadir}/GConf/gsettings/mutter-schemas.convert
@@ -270,9 +252,14 @@ the functionality of the installed %{name} package.
 %{_udevrulesdir}/61-mutter.rules
 
 %files devel
+%{_datadir}/applications/org.gnome.Mutter.Mdk.desktop
+%{_datadir}/glib-2.0/schemas/org.gnome.mutter.devkit.gschema.xml
+%{_datadir}/icons/hicolor/*/apps/org.gnome.Mutter.Mdk*
 %{_includedir}/*
 %{_libdir}/lib*.so
+%{_libdir}/mutter-%{mutter_api_version}/*.gir
 %{_libdir}/pkgconfig/*
+%{_libexecdir}/mutter-devkit
 
 %files tests
 %{_libexecdir}/installed-tests/mutter-%{mutter_api_version}
@@ -281,6 +268,30 @@ the functionality of the installed %{name} package.
 
 %changelog
 ## START: Generated by rpmautospec
+* Thu Apr 23 2026 Tomas Pelka <tpelka@redhat.com> - 49.4-4
+- Handle unmaximize when headless
+
+* Tue Feb 17 2026 Jonas Ådahl <jadahl@redhat.com> - 49.4-3
+- Fix flaky popup test
+
+* Mon Feb 16 2026 Jonas Ådahl <jadahl@redhat.com> - 49.4-2
+- Fix flaky test case
+
+* Fri Feb 13 2026 Jonas Ådahl <jadahl@redhat.com> - 49.4-1
+- Update to 49.4
+
+* Tue Nov 11 2025 Florian Müllner <fmuellner@redhat.com> - 49.1.1-1
+- Update to 49.1.1
+
+* Mon Nov 10 2025 Florian Müllner <fmuellner@redhat.com> - 47.5-16
+- Bundle newer meson
+
+* Fri Nov 07 2025 Florian Müllner <fmuellner@redhat.com> - 47.5-15
+- Use SPDX license
+
+* Fri Nov 07 2025 Florian Müllner <fmuellner@redhat.com> - 47.5-14
+- Deduce source URL from version
+
 * Mon Aug 18 2025 Jonas Ådahl <jadahl@redhat.com> - 47.5-13
 - Fix path to gdctl when running installed test
 
