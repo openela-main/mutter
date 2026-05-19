@@ -1,0 +1,98 @@
+From 15168d00affa1e05fd1307abef196b6e395a14bb Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Thu, 5 Aug 2021 16:03:26 +0200
+Subject: [PATCH 06/18] wayland/surface: Remove unnecessary NULL check
+
+This check has caused repeated confusion, as there are no current code
+paths where this can ever end up in the true-branch.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/1959>
+(cherry picked from commit 90076cf268bde6c18e49908514d7dc7af4b3a92e)
+---
+ src/wayland/meta-wayland-surface.c | 28 ----------------------------
+ 1 file changed, 28 deletions(-)
+
+diff --git a/src/wayland/meta-wayland-surface.c b/src/wayland/meta-wayland-surface.c
+index 6e6457b249..e033b7b911 100644
+--- a/src/wayland/meta-wayland-surface.c
++++ b/src/wayland/meta-wayland-surface.c
+@@ -1027,10 +1027,6 @@ wl_surface_attach (struct wl_client *client,
+   MetaWaylandSurfaceState *pending = surface->pending_state;
+   MetaWaylandBuffer *buffer;
+ 
+-  /* X11 unmanaged window */
+-  if (!surface)
+-    return;
+-
+   if (buffer_resource)
+     buffer = meta_wayland_buffer_from_resource (buffer_resource);
+   else
+@@ -1068,10 +1064,6 @@ wl_surface_damage (struct wl_client   *client,
+   MetaWaylandSurfaceState *pending = surface->pending_state;
+   cairo_rectangle_int_t rectangle;
+ 
+-  /* X11 unmanaged window */
+-  if (!surface)
+-    return;
+-
+   rectangle = (cairo_rectangle_int_t) {
+     .x = x,
+     .y = y,
+@@ -1100,10 +1092,6 @@ wl_surface_frame (struct wl_client *client,
+   MetaWaylandSurface *surface = wl_resource_get_user_data (surface_resource);
+   MetaWaylandSurfaceState *pending = surface->pending_state;
+ 
+-  /* X11 unmanaged window */
+-  if (!surface)
+-    return;
+-
+   callback = g_new0 (MetaWaylandFrameCallback, 1);
+   callback->surface = surface;
+   callback->resource = wl_resource_create (client,
+@@ -1124,10 +1112,6 @@ wl_surface_set_opaque_region (struct wl_client *client,
+   MetaWaylandSurface *surface = wl_resource_get_user_data (surface_resource);
+   MetaWaylandSurfaceState *pending = surface->pending_state;
+ 
+-  /* X11 unmanaged window */
+-  if (!surface)
+-    return;
+-
+   g_clear_pointer (&pending->opaque_region, cairo_region_destroy);
+   if (region_resource)
+     {
+@@ -1146,10 +1130,6 @@ wl_surface_set_input_region (struct wl_client *client,
+   MetaWaylandSurface *surface = wl_resource_get_user_data (surface_resource);
+   MetaWaylandSurfaceState *pending = surface->pending_state;
+ 
+-  /* X11 unmanaged window */
+-  if (!surface)
+-    return;
+-
+   g_clear_pointer (&pending->input_region, cairo_region_destroy);
+   if (region_resource)
+     {
+@@ -1166,10 +1146,6 @@ wl_surface_commit (struct wl_client *client,
+ {
+   MetaWaylandSurface *surface = wl_resource_get_user_data (resource);
+ 
+-  /* X11 unmanaged window */
+-  if (!surface)
+-    return;
+-
+   meta_wayland_surface_commit (surface);
+ }
+ 
+@@ -1257,10 +1233,6 @@ wl_surface_damage_buffer (struct wl_client   *client,
+   MetaWaylandSurfaceState *pending = surface->pending_state;
+   cairo_rectangle_int_t rectangle;
+ 
+-  /* X11 unmanaged window */
+-  if (!surface)
+-    return;
+-
+   rectangle = (cairo_rectangle_int_t) {
+     .x = x,
+     .y = y,
+-- 
+2.51.1
+

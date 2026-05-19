@@ -1,0 +1,75 @@
+From 2890b4a152f1efbc1492626a4ee055083cc40159 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Fri, 6 Aug 2021 17:07:21 +0200
+Subject: [PATCH 10/18] wayland/dma-buf: Move should_send_modifiers() to the
+ top
+
+It's very much an auxiliary method; lets move it to where it belongs,
+according to HACKING.md.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/1959>
+(cherry picked from commit 4c54b36126a610c43b05f36f4aab33f302fdc021)
+---
+ src/wayland/meta-wayland-dma-buf.c | 39 ++++++++++++++++--------------
+ 1 file changed, 21 insertions(+), 18 deletions(-)
+
+diff --git a/src/wayland/meta-wayland-dma-buf.c b/src/wayland/meta-wayland-dma-buf.c
+index a255158993..c9e4671074 100644
+--- a/src/wayland/meta-wayland-dma-buf.c
++++ b/src/wayland/meta-wayland-dma-buf.c
+@@ -134,6 +134,27 @@ G_DEFINE_TYPE (MetaWaylandDmaBufBuffer, meta_wayland_dma_buf_buffer, G_TYPE_OBJE
+ G_DEFINE_TYPE (MetaWaylandDmaBufManager, meta_wayland_dma_buf_manager,
+                G_TYPE_OBJECT)
+ 
++static gboolean
++should_send_modifiers (MetaBackend *backend)
++{
++  MetaSettings *settings = meta_backend_get_settings (backend);
++
++  if (meta_settings_is_experimental_feature_enabled (
++        settings, META_EXPERIMENTAL_FEATURE_KMS_MODIFIERS))
++    return TRUE;
++
++#ifdef HAVE_NATIVE_BACKEND
++  if (META_IS_BACKEND_NATIVE (backend))
++    {
++      MetaRenderer *renderer = meta_backend_get_renderer (backend);
++      MetaRendererNative *renderer_native = META_RENDERER_NATIVE (renderer);
++      return meta_renderer_native_use_modifiers (renderer_native);
++    }
++#endif
++
++  return FALSE;
++}
++
+ static gint
+ compare_tranches (gconstpointer a,
+                   gconstpointer b)
+@@ -861,24 +882,6 @@ static const struct zwp_linux_dmabuf_v1_interface dma_buf_implementation =
+   dma_buf_handle_get_surface_feedback,
+ };
+ 
+-static gboolean
+-should_send_modifiers (MetaBackend *backend)
+-{
+-  MetaSettings *settings = meta_backend_get_settings (backend);
+-
+-#ifdef HAVE_NATIVE_BACKEND
+-  if (META_IS_BACKEND_NATIVE (backend))
+-    {
+-      MetaRenderer *renderer = meta_backend_get_renderer (backend);
+-      MetaRendererNative *renderer_native = META_RENDERER_NATIVE (renderer);
+-      return meta_renderer_native_use_modifiers (renderer_native);
+-    }
+-#endif
+-
+-  return meta_settings_is_experimental_feature_enabled (
+-           settings, META_EXPERIMENTAL_FEATURE_KMS_MODIFIERS);
+-}
+-
+ static void
+ send_modifiers (struct wl_resource      *resource,
+                 MetaWaylandDmaBufFormat *format,
+-- 
+2.51.1
+

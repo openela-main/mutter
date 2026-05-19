@@ -1,0 +1,45 @@
+From ba94be928ecf77bd202bd57bbcc5dc5dffb4aee5 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Michel=20D=C3=A4nzer?= <mdaenzer@redhat.com>
+Date: Thu, 16 Jun 2022 12:17:36 +0200
+Subject: [PATCH 14/18] wayland/dma-buf: Free feedback in
+ surface_feedback_surface_destroyed_cb
+
+Fixes leak:
+
+==14889== 2,168 (16 direct, 2,152 indirect) bytes in 1 blocks are definitely lost in loss record 15,308 of 15,584
+==14889==    at 0x48445EF: calloc (vg_replace_malloc.c:1328)
+==14889==    by 0x4BAC1D0: g_malloc0 (gmem.c:155)
+==14889==    by 0x4AAFF60: meta_wayland_dma_buf_feedback_new (meta-wayland-dma-buf.c:298)
+==14889==    by 0x4AAFFE0: meta_wayland_dma_buf_feedback_copy (meta-wayland-dma-buf.c:317)
+==14889==    by 0x4AB16B6: ensure_surface_feedback (meta-wayland-dma-buf.c:1121)
+==14889==    by 0x4AB1848: dma_buf_handle_get_surface_feedback (meta-wayland-dma-buf.c:1169)
+==14889==    by 0x66F77E9: ??? (in /usr/lib/x86_64-linux-gnu/libffi.so.8.1.0)
+==14889==    by 0x66F6922: ??? (in /usr/lib/x86_64-linux-gnu/libffi.so.8.1.0)
+==14889==    by 0x5318750: ??? (in /usr/lib/x86_64-linux-gnu/libwayland-server.so.0.20.0)
+==14889==    by 0x5313B99: ??? (in /usr/lib/x86_64-linux-gnu/libwayland-server.so.0.20.0)
+==14889==    by 0x5316649: wl_event_loop_dispatch (in /usr/lib/x86_64-linux-gnu/libwayland-server.so.0.20.0)
+==14889==    by 0x4AA7C19: wayland_event_source_dispatch (meta-wayland.c:110)
+
+Fixes: 64e6bedb6bcd ("wayland/dma-buf: Add support for scanout surface feedback")
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/2469>
+(cherry picked from commit 4af54225de3a653e7b44ab1905b64ebddf57da4a)
+---
+ src/wayland/meta-wayland-dma-buf.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/src/wayland/meta-wayland-dma-buf.c b/src/wayland/meta-wayland-dma-buf.c
+index f28070da80..3a1d92ecf6 100644
+--- a/src/wayland/meta-wayland-dma-buf.c
++++ b/src/wayland/meta-wayland-dma-buf.c
+@@ -1067,6 +1067,8 @@ surface_feedback_surface_destroyed_cb (gpointer user_data)
+                   NULL);
+   g_list_free (surface_feedback->resources);
+ 
++  meta_wayland_dma_buf_feedback_free (surface_feedback->feedback);
++
+   g_free (surface_feedback);
+ }
+ 
+-- 
+2.51.1
+

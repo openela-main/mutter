@@ -1,0 +1,30 @@
+From 405673317976d578d7b228f4ab5ceea0e1366d99 Mon Sep 17 00:00:00 2001
+From: Robert Mader <robert.mader@collabora.com>
+Date: Tue, 15 Feb 2022 20:56:27 +0100
+Subject: [PATCH 12/18] wayland/dma-buf: Add missing wl_array_release()
+
+So we don't leak the array.
+
+Fixes 7acecb1c7233dad0b9b314f59121882a518901d7
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/2297>
+(cherry picked from commit 5b9abecc1bbe6acf8f65f976c660d5eefead16d8)
+---
+ src/wayland/meta-wayland-dma-buf.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/wayland/meta-wayland-dma-buf.c b/src/wayland/meta-wayland-dma-buf.c
+index 385012f1ab..4e21632159 100644
+--- a/src/wayland/meta-wayland-dma-buf.c
++++ b/src/wayland/meta-wayland-dma-buf.c
+@@ -271,6 +271,7 @@ meta_wayland_dma_buf_feedback_send (MetaWaylandDmaBufFeedback *feedback,
+   device_id_ptr = wl_array_add (&main_device_buf, sizeof (*device_id_ptr));
+   *device_id_ptr = feedback->main_device_id;
+   zwp_linux_dmabuf_feedback_v1_send_main_device (resource, &main_device_buf);
++  wl_array_release (&main_device_buf);
+ 
+   g_list_foreach (feedback->tranches,
+                   (GFunc) meta_wayland_dma_buf_tranche_send,
+-- 
+2.51.1
+

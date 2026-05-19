@@ -1,0 +1,72 @@
+From b61fc8eb57186dd4fb2f83383f69673a06b0104c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Wed, 12 Jan 2022 12:11:01 +0100
+Subject: [PATCH 18/18] wayland/dma-buf: Don't warn if there was no render node
+
+When running in KVM, the EGL driver supports querying the render node
+path, but it returns NULL. Handle that better by falling back to
+querying the device main device file, instead of falling back on v3 of
+the protocol and logging a warning.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/2151>
+(cherry picked from commit a2382f325117dbfc4dede55f72fc5b9942c3ffb9)
+---
+ src/wayland/meta-wayland-dma-buf.c | 33 +++++++++++++++++-------------
+ 1 file changed, 19 insertions(+), 14 deletions(-)
+
+diff --git a/src/wayland/meta-wayland-dma-buf.c b/src/wayland/meta-wayland-dma-buf.c
+index c59b767b4c..75b0bbe858 100644
+--- a/src/wayland/meta-wayland-dma-buf.c
++++ b/src/wayland/meta-wayland-dma-buf.c
+@@ -1459,29 +1459,34 @@ meta_wayland_dma_buf_manager_new (MetaWaylandCompositor  *compositor,
+       device_path = meta_egl_query_device_string (egl, egl_device,
+                                                   EGL_DRM_RENDER_NODE_FILE_EXT,
+                                                   &local_error);
++      if (local_error)
++        {
++          g_warning ("Failed to query EGL render node path: %s",
++                     local_error->message);
++          g_clear_error (&local_error);
++        }
+     }
+-  else if (meta_egl_egl_device_has_extensions (egl, egl_device, NULL,
+-                                               "EGL_EXT_device_drm",
+-                                               NULL))
++
++  if (!device_path &&
++      meta_egl_egl_device_has_extensions (egl, egl_device, NULL,
++                                          "EGL_EXT_device_drm",
++                                          NULL))
+     {
+       device_path = meta_egl_query_device_string (egl, egl_device,
+                                                   EGL_DRM_DEVICE_FILE_EXT,
+                                                   &local_error);
+-    }
+-  else
+-    {
+-      meta_topic (META_DEBUG_WAYLAND,
+-                  "Only advertising zwp_linux_dmabuf_v1 interface version 3 "
+-                  "support, missing 'EGL_EXT_device_drm' and "
+-                  "'EGL_EXT_device_drm_render_node'");
+-      protocol_version = 3;
+-      goto initialize;
++      if (local_error)
++        {
++          g_warning ("Failed to query EGL render node path: %s",
++                     local_error->message);
++        }
+     }
+ 
+   if (!device_path)
+     {
+-      g_warning ("Failed to query EGL device path: %s",
+-                 local_error->message);
++      meta_topic (META_DEBUG_WAYLAND,
++                  "Only advertising zwp_linux_dmabuf_v1 interface version 3 "
++                  "support, no suitable device path could be found");
+       protocol_version = 3;
+       goto initialize;
+     }
+-- 
+2.51.1
+

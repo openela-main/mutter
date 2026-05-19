@@ -1,0 +1,72 @@
+From e4d494916c1045dd24ae44a82c8e398feed2179d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Tue, 7 Dec 2021 22:12:57 +0100
+Subject: [PATCH 05/18] wayland/dma-buf: Always advertise non-modifier fallback
+
+This is done to explicitly tell clients that the compositor supports
+implicit modifier paths (i.e. using modifier unaware API).
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/1959>
+(cherry picked from commit 2a16a750c556a916a6792adf10adbe4499d5e092)
+---
+ src/wayland/meta-wayland-dma-buf.c | 17 ++++++++++++-----
+ 1 file changed, 12 insertions(+), 5 deletions(-)
+
+diff --git a/src/wayland/meta-wayland-dma-buf.c b/src/wayland/meta-wayland-dma-buf.c
+index 7155d07dcf..ca9be5d601 100644
+--- a/src/wayland/meta-wayland-dma-buf.c
++++ b/src/wayland/meta-wayland-dma-buf.c
+@@ -851,12 +851,18 @@ should_send_modifiers (MetaBackend *backend)
+ 
+ static void
+ send_modifiers (struct wl_resource      *resource,
+-                MetaWaylandDmaBufFormat *format)
++                MetaWaylandDmaBufFormat *format,
++                GHashTable              *sent_formats)
+ {
+   g_assert (wl_resource_get_version (resource) <
+             ZWP_LINUX_DMABUF_V1_GET_DEFAULT_FEEDBACK_SINCE_VERSION);
+ 
+-  zwp_linux_dmabuf_v1_send_format (resource, format->drm_format);
++  if (!g_hash_table_contains (sent_formats,
++                              GUINT_TO_POINTER (format->drm_format)))
++    {
++      g_hash_table_add (sent_formats, GUINT_TO_POINTER (format->drm_format));
++      zwp_linux_dmabuf_v1_send_format (resource, format->drm_format);
++    }
+ 
+   if (wl_resource_get_version (resource) <
+       ZWP_LINUX_DMABUF_V1_MODIFIER_SINCE_VERSION)
+@@ -884,8 +890,11 @@ dma_buf_bind (struct wl_client *client,
+ 
+   if (version < ZWP_LINUX_DMABUF_V1_GET_DEFAULT_FEEDBACK_SINCE_VERSION)
+     {
++      g_autoptr (GHashTable) sent_formats = NULL;
+       unsigned int i;
+ 
++      sent_formats = g_hash_table_new (NULL, NULL);
++
+       for (i = 0; i < dma_buf_manager->formats->len; i++)
+         {
+           MetaWaylandDmaBufFormat *format =
+@@ -893,7 +902,7 @@ dma_buf_bind (struct wl_client *client,
+                             MetaWaylandDmaBufFormat,
+                             i);
+ 
+-          send_modifiers (resource, format);
++          send_modifiers (resource, format, sent_formats);
+         }
+     }
+ }
+@@ -943,8 +952,6 @@ add_format (MetaWaylandDmaBufManager *dma_buf_manager,
+       g_array_append_val (dma_buf_manager->formats, format);
+     }
+ 
+-  return;
+-
+ add_fallback:
+   format = (MetaWaylandDmaBufFormat) {
+     .drm_format = drm_format,
+-- 
+2.51.1
+

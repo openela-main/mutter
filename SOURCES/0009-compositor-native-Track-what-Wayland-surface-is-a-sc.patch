@@ -1,0 +1,302 @@
+From f928306ebbec7bcbdb80a456b07e7db0219da36c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Fri, 6 Aug 2021 17:00:19 +0200
+Subject: [PATCH 09/18] compositor/native: Track what Wayland surface is a
+ scanout candidate
+
+For the current candidate, set the candidate CRTC on that surface. This
+will later be used to send DMA buffer feedback for direct scanout purposes.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/1959>
+(cherry picked from commit 43161c66602febd5bf635f8dea927da1b282c757)
+---
+ src/compositor/meta-compositor-native.c     | 69 +++++++++++++++++----
+ src/compositor/meta-surface-actor-wayland.c |  3 +-
+ src/wayland/meta-wayland-surface.c          | 60 ++++++++++++++++++
+ src/wayland/meta-wayland-surface.h          |  8 +++
+ 4 files changed, 127 insertions(+), 13 deletions(-)
+
+diff --git a/src/compositor/meta-compositor-native.c b/src/compositor/meta-compositor-native.c
+index 00f66b70d4..7822789a3e 100644
+--- a/src/compositor/meta-compositor-native.c
++++ b/src/compositor/meta-compositor-native.c
+@@ -23,11 +23,14 @@
+ #include "compositor/meta-compositor-native.h"
+ 
+ #include "backends/meta-logical-monitor.h"
++#include "backends/native/meta-crtc-kms.h"
+ #include "compositor/meta-surface-actor-wayland.h"
+ 
+ struct _MetaCompositorNative
+ {
+   MetaCompositorServer parent;
++
++  MetaWaylandSurface *current_scanout_candidate;
+ };
+ 
+ G_DEFINE_TYPE (MetaCompositorNative, meta_compositor_native,
+@@ -62,57 +65,88 @@ get_window_view (MetaRenderer *renderer,
+ static void
+ maybe_assign_primary_plane (MetaCompositor *compositor)
+ {
++  MetaCompositorNative *compositor_native = META_COMPOSITOR_NATIVE (compositor);
+   MetaBackend *backend = meta_get_backend ();
+   MetaRenderer *renderer = meta_backend_get_renderer (backend);
+   MetaWindowActor *window_actor;
+   MetaWindow *window;
+   MetaRendererView *view;
++  MetaCrtc *crtc;
+   CoglFramebuffer *framebuffer;
+   CoglOnscreen *onscreen;
+   MetaSurfaceActor *surface_actor;
+   MetaSurfaceActorWayland *surface_actor_wayland;
++  MetaWaylandSurface *surface;
++  MetaWaylandSurface *old_candidate =
++    compositor_native->current_scanout_candidate;
++  MetaWaylandSurface *new_candidate = NULL;
+   g_autoptr (CoglScanout) scanout = NULL;
+ 
+   if (meta_compositor_is_unredirect_inhibited (compositor))
+-    return;
++    goto done;
+ 
+   window_actor = meta_compositor_get_top_window_actor (compositor);
+   if (!window_actor)
+-    return;
++    goto done;
+ 
+   if (meta_window_actor_effect_in_progress (window_actor))
+-    return;
++    goto done;
+ 
+   if (clutter_actor_has_transitions (CLUTTER_ACTOR (window_actor)))
+-    return;
++    goto done;
+ 
+   if (clutter_actor_get_n_children (CLUTTER_ACTOR (window_actor)) != 1)
+-    return;
++    goto done;
+ 
+   window = meta_window_actor_get_meta_window (window_actor);
+   if (!window)
+-    return;
++    goto done;
+ 
+   view = get_window_view (renderer, window);
+   if (!view)
+-    return;
++    goto done;
++
++  crtc = meta_renderer_view_get_crtc (META_RENDERER_VIEW (view));
++  if (!META_IS_CRTC_KMS (crtc))
++    goto done;
+ 
+   framebuffer = clutter_stage_view_get_framebuffer (CLUTTER_STAGE_VIEW (view));
+   if (!COGL_IS_ONSCREEN (framebuffer))
+-    return;
++    goto done;
+ 
+   surface_actor = meta_window_actor_get_surface (window_actor);
+   if (!META_IS_SURFACE_ACTOR_WAYLAND (surface_actor))
+-    return;
+-
++    goto done;
+   surface_actor_wayland = META_SURFACE_ACTOR_WAYLAND (surface_actor);
++
++  surface = meta_surface_actor_wayland_get_surface (surface_actor_wayland);
++  if (!surface)
++    goto done;
++
++  new_candidate = surface;
++
+   onscreen = COGL_ONSCREEN (framebuffer);
+   scanout = meta_surface_actor_wayland_try_acquire_scanout (surface_actor_wayland,
+                                                             onscreen);
+   if (!scanout)
+-    return;
++    goto done;
+ 
+   clutter_stage_view_assign_next_scanout (CLUTTER_STAGE_VIEW (view), scanout);
++
++done:
++
++  if (old_candidate && old_candidate != new_candidate)
++    {
++      meta_wayland_surface_set_scanout_candidate (old_candidate, NULL);
++      g_clear_weak_pointer (&compositor_native->current_scanout_candidate);
++    }
++
++  if (new_candidate)
++    {
++      meta_wayland_surface_set_scanout_candidate (surface, crtc);
++      g_set_weak_pointer (&compositor_native->current_scanout_candidate,
++                          surface);
++    }
+ }
+ 
+ static void
+@@ -137,6 +171,16 @@ meta_compositor_native_new (MetaDisplay *display,
+                        NULL);
+ }
+ 
++static void
++meta_compositor_native_finalize (GObject *object)
++{
++  MetaCompositorNative *compositor_native = META_COMPOSITOR_NATIVE (object);
++
++  g_clear_weak_pointer (&compositor_native->current_scanout_candidate);
++
++  G_OBJECT_CLASS (meta_compositor_native_parent_class)->finalize (object);
++}
++
+ static void
+ meta_compositor_native_init (MetaCompositorNative *compositor_native)
+ {
+@@ -145,7 +189,10 @@ meta_compositor_native_init (MetaCompositorNative *compositor_native)
+ static void
+ meta_compositor_native_class_init (MetaCompositorNativeClass *klass)
+ {
++  GObjectClass *object_class = G_OBJECT_CLASS (klass);
+   MetaCompositorClass *compositor_class = META_COMPOSITOR_CLASS (klass);
+ 
++  object_class->finalize = meta_compositor_native_finalize;
++
+   compositor_class->before_paint = meta_compositor_native_before_paint;
+ }
+diff --git a/src/compositor/meta-surface-actor-wayland.c b/src/compositor/meta-surface-actor-wayland.c
+index 8c2a93da1e..4e131b0ba6 100644
+--- a/src/compositor/meta-surface-actor-wayland.c
++++ b/src/compositor/meta-surface-actor-wayland.c
+@@ -80,8 +80,7 @@ meta_surface_actor_wayland_try_acquire_scanout (MetaSurfaceActorWayland *self,
+     return NULL;
+ 
+   surface = meta_surface_actor_wayland_get_surface (self);
+-  if (!surface)
+-    return NULL;
++  g_return_val_if_fail (surface, NULL);
+ 
+   scanout = meta_wayland_surface_try_acquire_scanout (surface, onscreen);
+   if (!scanout)
+diff --git a/src/wayland/meta-wayland-surface.c b/src/wayland/meta-wayland-surface.c
+index e033b7b911..c69433352e 100644
+--- a/src/wayland/meta-wayland-surface.c
++++ b/src/wayland/meta-wayland-surface.c
+@@ -79,6 +79,17 @@ typedef struct _MetaWaylandSurfaceRolePrivate
+   MetaWaylandSurface *surface;
+ } MetaWaylandSurfaceRolePrivate;
+ 
++enum
++{
++  PROP_0,
++
++  PROP_SCANOUT_CANDIDATE,
++
++  N_PROPS
++};
++
++static GParamSpec *obj_props[N_PROPS];
++
+ G_DEFINE_TYPE (MetaWaylandSurface, meta_wayland_surface, G_TYPE_OBJECT);
+ 
+ G_DEFINE_ABSTRACT_TYPE_WITH_PRIVATE (MetaWaylandSurfaceRole,
+@@ -1413,6 +1424,7 @@ wl_surface_destructor (struct wl_resource *resource)
+ 
+   g_signal_emit (surface, surface_signals[SURFACE_DESTROY], 0);
+ 
++  g_clear_object (&surface->scanout_candidate);
+   g_clear_object (&surface->role);
+ 
+   if (surface->unassigned.buffer)
+@@ -1697,11 +1709,41 @@ meta_wayland_surface_init (MetaWaylandSurface *surface)
+     g_node_prepend_data (surface->subsurface_branch_node, surface);
+ }
+ 
++static void
++meta_wayland_surface_get_property (GObject    *object,
++                                   guint       prop_id,
++                                   GValue     *value,
++                                   GParamSpec *pspec)
++{
++  MetaWaylandSurface *surface = META_WAYLAND_SURFACE (object);
++
++  switch (prop_id)
++    {
++    case PROP_SCANOUT_CANDIDATE:
++      g_value_set_object (value, surface->scanout_candidate);
++      break;
++    default:
++      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
++      break;
++    }
++}
++
+ static void
+ meta_wayland_surface_class_init (MetaWaylandSurfaceClass *klass)
+ {
+   GObjectClass *object_class = G_OBJECT_CLASS (klass);
+ 
++  object_class->get_property = meta_wayland_surface_get_property;
++
++  obj_props[PROP_SCANOUT_CANDIDATE] =
++    g_param_spec_object ("scanout-candidate",
++                         "scanout-candidate",
++                         "Scanout candidate for given CRTC",
++                         META_TYPE_CRTC,
++                         G_PARAM_READABLE |
++                         G_PARAM_STATIC_STRINGS);
++  g_object_class_install_properties (object_class, N_PROPS, obj_props);
++
+   surface_signals[SURFACE_DESTROY] =
+     g_signal_new ("destroy",
+                   G_TYPE_FROM_CLASS (object_class),
+@@ -2104,3 +2146,21 @@ meta_wayland_surface_try_acquire_scanout (MetaWaylandSurface *surface,
+ 
+   return scanout;
+ }
++
++MetaCrtc *
++meta_wayland_surface_get_scanout_candidate (MetaWaylandSurface *surface)
++{
++  return surface->scanout_candidate;
++}
++
++void
++meta_wayland_surface_set_scanout_candidate (MetaWaylandSurface *surface,
++                                            MetaCrtc           *crtc)
++{
++  if (surface->scanout_candidate == crtc)
++    return;
++
++  g_set_object (&surface->scanout_candidate, crtc);
++  g_object_notify_by_pspec (G_OBJECT (surface),
++                            obj_props[PROP_SCANOUT_CANDIDATE]);
++}
+diff --git a/src/wayland/meta-wayland-surface.h b/src/wayland/meta-wayland-surface.h
+index f0153b23b9..7e90cf095c 100644
+--- a/src/wayland/meta-wayland-surface.h
++++ b/src/wayland/meta-wayland-surface.h
+@@ -247,6 +247,9 @@ struct _MetaWaylandSurface
+      */
+     uint64_t sequence;
+   } presentation_time;
++
++  /* dma-buf feedback */
++  MetaCrtc *scanout_candidate;
+ };
+ 
+ void                meta_wayland_shell_init     (MetaWaylandCompositor *compositor);
+@@ -362,6 +365,11 @@ int                 meta_wayland_surface_get_height (MetaWaylandSurface *surface
+ CoglScanout *       meta_wayland_surface_try_acquire_scanout (MetaWaylandSurface *surface,
+                                                               CoglOnscreen       *onscreen);
+ 
++MetaCrtc * meta_wayland_surface_get_scanout_candidate (MetaWaylandSurface *surface);
++
++void meta_wayland_surface_set_scanout_candidate (MetaWaylandSurface *surface,
++                                                 MetaCrtc           *crtc);
++
+ static inline GNode *
+ meta_get_next_subsurface_sibling (GNode *n)
+ {
+-- 
+2.51.1
+

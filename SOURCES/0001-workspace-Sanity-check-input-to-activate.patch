@@ -1,0 +1,31 @@
+From 73a66065cacfe9bb953592562cb7946c1c2802e3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Wed, 23 Nov 2022 10:26:55 +0100
+Subject: [PATCH] workspace: Sanity check input to activate*()
+
+The passed argument should be a workspace, and it should not have been
+removed.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/2707>
+(cherry picked from commit e709853ad3d043ee2ed72e75fbda0c225e30eda7)
+---
+ src/core/workspace.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/src/core/workspace.c b/src/core/workspace.c
+index 321d3efb0a..9e0cf93d65 100644
+--- a/src/core/workspace.c
++++ b/src/core/workspace.c
+@@ -537,6 +537,9 @@ meta_workspace_activate_with_focus (MetaWorkspace *workspace,
+   gint num_workspaces, current_space, new_space;
+   MetaMotionDirection direction;
+ 
++  g_return_if_fail (META_IS_WORKSPACE (workspace));
++  g_return_if_fail (meta_workspace_index (workspace) != -1);
++
+   meta_verbose ("Activating workspace %d",
+                 meta_workspace_index (workspace));
+ 
+-- 
+2.47.3
+

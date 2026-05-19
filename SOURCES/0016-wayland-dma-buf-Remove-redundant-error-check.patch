@@ -1,0 +1,29 @@
+From d7bf34fc6d9b9dd876c665c9e8b84270de86e34e Mon Sep 17 00:00:00 2001
+From: Robert Mader <robert.mader@posteo.de>
+Date: Tue, 26 Apr 2022 20:27:57 +0200
+Subject: [PATCH 16/18] wayland/dma-buf: Remove redundant error check
+
+`meta_egl_*` functions are assumed to set an error on failure.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/2386>
+(cherry picked from commit aa8d2d6fffbcb4ccf16ff527311e101fa75d4d3c)
+---
+ src/wayland/meta-wayland-dma-buf.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/wayland/meta-wayland-dma-buf.c b/src/wayland/meta-wayland-dma-buf.c
+index 145fd0cdab..c59b767b4c 100644
+--- a/src/wayland/meta-wayland-dma-buf.c
++++ b/src/wayland/meta-wayland-dma-buf.c
+@@ -1252,7 +1252,7 @@ add_format (MetaWaylandDmaBufManager *dma_buf_manager,
+                                          &num_modifiers, &error))
+     {
+       g_warning ("Failed to query modifiers for format 0x%" PRIu32 ": %s",
+-                 drm_format, error ? error->message : "unknown error");
++                 drm_format, error->message);
+       goto add_fallback;
+     }
+ 
+-- 
+2.51.1
+

@@ -1,0 +1,144 @@
+From 43feafa1c2c061acb226a8df0a6b6a1f5a9b1ba0 Mon Sep 17 00:00:00 2001
+From: Robert Mader <robert.mader@posteo.de>
+Date: Mon, 25 Apr 2022 18:00:50 +0200
+Subject: [PATCH 15/18] wayland/dma-buf: Only advertise supported formats
+
+Analogous to how we use `eglQueryDmaBufModifiersEXT()` to query
+supported modifiers, use `eglQueryDmaBufFormatsEXT()` to ensure
+we only advertise formats supported by both the compositor and the
+driver.
+
+If there is no overlap, don't advertise `zwp_linux_dmabuf_v1` at
+all.
+
+Closes https://gitlab.gnome.org/GNOME/mutter/-/issues/2238
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/2386>
+(cherry picked from commit c8095b430689365c5cdd4646c54de4b07a0da7ee)
+---
+ src/wayland/meta-wayland-dma-buf.c | 89 +++++++++++++++++++++++-------
+ 1 file changed, 69 insertions(+), 20 deletions(-)
+
+diff --git a/src/wayland/meta-wayland-dma-buf.c b/src/wayland/meta-wayland-dma-buf.c
+index 3a1d92ecf6..145fd0cdab 100644
+--- a/src/wayland/meta-wayland-dma-buf.c
++++ b/src/wayland/meta-wayland-dma-buf.c
+@@ -1317,28 +1317,71 @@ init_format_table (MetaWaylandDmaBufManager *dma_buf_manager)
+     meta_anonymous_file_new (size, (uint8_t *) format_table);
+ }
+ 
+-static void
+-init_formats (MetaWaylandDmaBufManager *dma_buf_manager,
+-              EGLDisplay                egl_display)
++static EGLint supported_formats[] = {
++  DRM_FORMAT_ARGB8888,
++  DRM_FORMAT_ABGR8888,
++  DRM_FORMAT_XRGB8888,
++  DRM_FORMAT_XBGR8888,
++  DRM_FORMAT_ARGB2101010,
++  DRM_FORMAT_ABGR2101010,
++  DRM_FORMAT_XRGB2101010,
++  DRM_FORMAT_XBGR2101010,
++  DRM_FORMAT_RGB565,
++  DRM_FORMAT_ABGR16161616F,
++  DRM_FORMAT_XBGR16161616F,
++  DRM_FORMAT_XRGB16161616F,
++  DRM_FORMAT_ARGB16161616F
++};
++
++static gboolean
++init_formats (MetaWaylandDmaBufManager  *dma_buf_manager,
++              EGLDisplay                 egl_display,
++              GError                   **error)
+ {
++  MetaBackend *backend = meta_get_backend ();
++  MetaEgl *egl = meta_backend_get_egl (backend);
++  EGLint num_formats;
++  g_autofree EGLint *driver_formats = NULL;
++  int i, j;
++
+   dma_buf_manager->formats = g_array_new (FALSE, FALSE,
+                                           sizeof (MetaWaylandDmaBufFormat));
+ 
+-  add_format (dma_buf_manager, egl_display, DRM_FORMAT_ARGB8888);
+-  add_format (dma_buf_manager, egl_display, DRM_FORMAT_ABGR8888);
+-  add_format (dma_buf_manager, egl_display, DRM_FORMAT_XRGB8888);
+-  add_format (dma_buf_manager, egl_display, DRM_FORMAT_XBGR8888);
+-  add_format (dma_buf_manager, egl_display, DRM_FORMAT_ARGB2101010);
+-  add_format (dma_buf_manager, egl_display, DRM_FORMAT_ABGR2101010);
+-  add_format (dma_buf_manager, egl_display, DRM_FORMAT_XRGB2101010);
+-  add_format (dma_buf_manager, egl_display, DRM_FORMAT_XBGR2101010);
+-  add_format (dma_buf_manager, egl_display, DRM_FORMAT_RGB565);
+-  add_format (dma_buf_manager, egl_display, DRM_FORMAT_ABGR16161616F);
+-  add_format (dma_buf_manager, egl_display, DRM_FORMAT_XBGR16161616F);
+-  add_format (dma_buf_manager, egl_display, DRM_FORMAT_XRGB16161616F);
+-  add_format (dma_buf_manager, egl_display, DRM_FORMAT_ARGB16161616F);
++  if (!meta_egl_query_dma_buf_formats (egl, egl_display, 0, NULL, &num_formats,
++                                       error))
++    return FALSE;
++
++  if (num_formats == 0)
++    {
++      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
++                   "EGL doesn't support any DRM formats");
++      return FALSE;
++    }
++
++  driver_formats = g_new0 (EGLint, num_formats);
++  if (!meta_egl_query_dma_buf_formats (egl, egl_display, num_formats,
++                                       driver_formats, &num_formats, error))
++    return FALSE;
++
++  for (i = 0; i < G_N_ELEMENTS (supported_formats); i++)
++    {
++      for (j = 0; j < num_formats; j++)
++        {
++          if (supported_formats[i] == driver_formats[j])
++            add_format (dma_buf_manager, egl_display, supported_formats[i]);
++        }
++    }
++
++  if (dma_buf_manager->formats->len == 0)
++    {
++      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
++                   "EGL doesn't support any DRM formats supported by the "
++                   "compositor");
++      return FALSE;
++    }
+ 
+   init_format_table (dma_buf_manager);
++  return TRUE;
+ }
+ 
+ static void
+@@ -1460,6 +1503,16 @@ initialize:
+ 
+   dma_buf_manager = g_object_new (META_TYPE_WAYLAND_DMA_BUF_MANAGER, NULL);
+ 
++  dma_buf_manager->compositor = compositor;
++  dma_buf_manager->main_device_id = device_id;
++
++  if (!init_formats (dma_buf_manager, egl_display, &local_error))
++    {
++      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
++                   "No supported formats detected: %s", local_error->message);
++      return NULL;
++    }
++
+   if (!wl_global_create (compositor->wayland_display,
+                          &zwp_linux_dmabuf_v1_interface,
+                          protocol_version,
+@@ -1471,10 +1524,6 @@ initialize:
+       return NULL;
+     }
+ 
+-  dma_buf_manager->compositor = compositor;
+-  dma_buf_manager->main_device_id = device_id;
+-
+-  init_formats (dma_buf_manager, egl_display);
+   init_default_feedback (dma_buf_manager);
+ 
+   return g_steal_pointer (&dma_buf_manager);
+-- 
+2.51.1
+

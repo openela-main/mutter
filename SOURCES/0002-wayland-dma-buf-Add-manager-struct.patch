@@ -1,0 +1,217 @@
+From bc73828642ed3ba6e7bee5ee8e8c83f8f15b1e14 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Wed, 4 Aug 2021 10:12:33 +0200
+Subject: [PATCH 02/18] wayland/dma-buf: Add manager struct
+
+It'll be used to store state related to DMA buffer Wayland support.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/1959>
+(cherry picked from commit 51308a9d78ba712a9a25438e257c430d517f35ac)
+---
+ src/wayland/meta-wayland-dma-buf.c | 49 ++++++++++++++++++++++--------
+ src/wayland/meta-wayland-dma-buf.h |  5 ++-
+ src/wayland/meta-wayland-private.h |  1 +
+ src/wayland/meta-wayland-types.h   |  2 ++
+ src/wayland/meta-wayland.c         | 28 ++++++++++++++++-
+ 5 files changed, 71 insertions(+), 14 deletions(-)
+
+diff --git a/src/wayland/meta-wayland-dma-buf.c b/src/wayland/meta-wayland-dma-buf.c
+index 230b13bc8a..0803a942db 100644
+--- a/src/wayland/meta-wayland-dma-buf.c
++++ b/src/wayland/meta-wayland-dma-buf.c
+@@ -66,6 +66,11 @@
+ 
+ #define META_WAYLAND_DMA_BUF_MAX_FDS 4
+ 
++struct _MetaWaylandDmaBufManager
++{
++  MetaWaylandCompositor *compositor;
++};
++
+ struct _MetaWaylandDmaBufBuffer
+ {
+   GObject parent;
+@@ -696,17 +701,17 @@ send_modifiers (struct wl_resource *resource,
+ 
+ static void
+ dma_buf_bind (struct wl_client *client,
+-              void             *data,
++              void             *user_data,
+               uint32_t          version,
+               uint32_t          id)
+ {
+-  MetaWaylandCompositor *compositor = data;
++  MetaWaylandDmaBufManager *dma_buf_manager = user_data;
+   struct wl_resource *resource;
+ 
+   resource = wl_resource_create (client, &zwp_linux_dmabuf_v1_interface,
+                                  version, id);
+   wl_resource_set_implementation (resource, &dma_buf_implementation,
+-                                  compositor, NULL);
++                                  dma_buf_manager, NULL);
+   send_modifiers (resource, DRM_FORMAT_ARGB8888);
+   send_modifiers (resource, DRM_FORMAT_ABGR8888);
+   send_modifiers (resource, DRM_FORMAT_XRGB8888);
+@@ -722,38 +727,58 @@ dma_buf_bind (struct wl_client *client,
+ }
+ 
+ /**
+- * meta_wayland_dma_buf_init:
++ * meta_wayland_dma_buf_manager_new:
+  * @compositor: The #MetaWaylandCompositor
+  *
+  * Creates the global Wayland object that exposes the linux-dmabuf protocol.
+  *
+- * Returns: Whether the initialization was successful. If this is %FALSE,
+- * clients won't be able to use the linux-dmabuf protocol to pass buffers.
++ * Returns: (transfer full): The MetaWaylandDmaBufManager instance.
+  */
+-gboolean
+-meta_wayland_dma_buf_init (MetaWaylandCompositor *compositor)
++MetaWaylandDmaBufManager *
++meta_wayland_dma_buf_manager_new (MetaWaylandCompositor  *compositor,
++                                  GError                **error)
+ {
+   MetaBackend *backend = meta_get_backend ();
+   MetaEgl *egl = meta_backend_get_egl (backend);
+   ClutterBackend *clutter_backend = meta_backend_get_clutter_backend (backend);
+   CoglContext *cogl_context = clutter_backend_get_cogl_context (clutter_backend);
+   EGLDisplay egl_display = cogl_egl_context_get_egl_display (cogl_context);
++  g_autoptr (GError) local_error = NULL;
++  g_autofree MetaWaylandDmaBufManager *dma_buf_manager = NULL;
+ 
+   g_assert (backend && egl && clutter_backend && cogl_context && egl_display);
+ 
+   if (!meta_egl_has_extensions (egl, egl_display, NULL,
+                                 "EGL_EXT_image_dma_buf_import_modifiers",
+                                 NULL))
+-    return FALSE;
++    {
++      g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
++                   "Missing 'EGL_EXT_image_dma_buf_import_modifiers'");
++      return NULL;
++    }
++
++  dma_buf_manager = g_new0 (MetaWaylandDmaBufManager, 1);
+ 
+   if (!wl_global_create (compositor->wayland_display,
+                          &zwp_linux_dmabuf_v1_interface,
+                          META_ZWP_LINUX_DMABUF_V1_VERSION,
+-                         compositor,
++                         dma_buf_manager,
+                          dma_buf_bind))
+-    return FALSE;
++    {
++      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
++                   "Failed to create zwp_linux_dmabuf_v1 global");
++      return NULL;
++    }
+ 
+-  return TRUE;
++  dma_buf_manager->compositor = compositor;
++
++  return g_steal_pointer (&dma_buf_manager);
++}
++
++void
++meta_wayland_dma_buf_manager_free (MetaWaylandDmaBufManager *dma_buf_manager)
++{
++  g_free (dma_buf_manager);
+ }
+ 
+ static void
+diff --git a/src/wayland/meta-wayland-dma-buf.h b/src/wayland/meta-wayland-dma-buf.h
+index cdc65aeb5b..72fd0b16a0 100644
+--- a/src/wayland/meta-wayland-dma-buf.h
++++ b/src/wayland/meta-wayland-dma-buf.h
+@@ -39,7 +39,10 @@ G_DECLARE_FINAL_TYPE (MetaWaylandDmaBufBuffer, meta_wayland_dma_buf_buffer,
+ 
+ typedef struct _MetaWaylandDmaBufBuffer MetaWaylandDmaBufBuffer;
+ 
+-gboolean meta_wayland_dma_buf_init (MetaWaylandCompositor *compositor);
++MetaWaylandDmaBufManager * meta_wayland_dma_buf_manager_new (MetaWaylandCompositor  *compositor,
++                                                             GError                **error);
++
++void meta_wayland_dma_buf_manager_free (MetaWaylandDmaBufManager *dma_buf_manager);
+ 
+ gboolean
+ meta_wayland_dma_buf_buffer_attach (MetaWaylandBuffer  *buffer,
+diff --git a/src/wayland/meta-wayland-private.h b/src/wayland/meta-wayland-private.h
+index 3306c192c9..3a2724256f 100644
+--- a/src/wayland/meta-wayland-private.h
++++ b/src/wayland/meta-wayland-private.h
+@@ -97,6 +97,7 @@ struct _MetaWaylandCompositor
+   GHashTable *scheduled_surface_associations;
+ 
+   MetaWaylandPresentationTime presentation_time;
++  MetaWaylandDmaBufManager *dma_buf_manager;
+ };
+ 
+ #define META_TYPE_WAYLAND_COMPOSITOR (meta_wayland_compositor_get_type ())
+diff --git a/src/wayland/meta-wayland-types.h b/src/wayland/meta-wayland-types.h
+index 00712ad1f1..8ad9084827 100644
+--- a/src/wayland/meta-wayland-types.h
++++ b/src/wayland/meta-wayland-types.h
+@@ -61,4 +61,6 @@ typedef struct _MetaWaylandWindowConfiguration MetaWaylandWindowConfiguration;
+ 
+ typedef struct _MetaWaylandPointerClient MetaWaylandPointerClient;
+ 
++typedef struct _MetaWaylandDmaBufManager MetaWaylandDmaBufManager;
++
+ #endif
+diff --git a/src/wayland/meta-wayland.c b/src/wayland/meta-wayland.c
+index 8f16aa429d..a566a35449 100644
+--- a/src/wayland/meta-wayland.c
++++ b/src/wayland/meta-wayland.c
+@@ -454,6 +454,29 @@ meta_wayland_get_xwayland_auth_file (MetaWaylandCompositor *compositor)
+   return compositor->xwayland_manager.auth_file;
+ }
+ 
++static void
++init_dma_buf_support (MetaWaylandCompositor *compositor)
++{
++  g_autoptr (GError) error = NULL;
++
++  compositor->dma_buf_manager = meta_wayland_dma_buf_manager_new (compositor,
++                                                                  &error);
++  if (!compositor->dma_buf_manager)
++    {
++      if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED))
++        {
++          meta_topic (META_DEBUG_WAYLAND,
++                      "Wayland DMA buffer protocol support not enabled: %s",
++                      error->message);
++        }
++      else
++        {
++          g_warning ("Wayland DMA buffer protocol support not enabled: %s",
++                     error->message);
++        }
++    }
++}
++
+ MetaWaylandCompositor *
+ meta_wayland_compositor_new (MetaBackend *backend)
+ {
+@@ -507,7 +530,7 @@ meta_wayland_compositor_setup (MetaWaylandCompositor *compositor)
+   meta_wayland_relative_pointer_init (compositor);
+   meta_wayland_pointer_constraints_init (compositor);
+   meta_wayland_xdg_foreign_init (compositor);
+-  meta_wayland_dma_buf_init (compositor);
++  init_dma_buf_support (compositor);
+   meta_wayland_keyboard_shortcuts_inhibit_init (compositor);
+   meta_wayland_surface_inhibit_shortcuts_dialog_init ();
+   meta_wayland_text_input_init (compositor);
+@@ -595,6 +618,9 @@ meta_wayland_finalize (void)
+   if (compositor->wayland_display)
+     wl_display_destroy_clients (compositor->wayland_display);
+ 
++  g_clear_pointer (&compositor->dma_buf_manager,
++                   meta_wayland_dma_buf_manager_free);
++
+   g_clear_pointer (&compositor->seat, meta_wayland_seat_free);
+ 
+   g_clear_pointer (&compositor->display_name, g_free);
+-- 
+2.51.1
+

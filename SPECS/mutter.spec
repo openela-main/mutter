@@ -10,7 +10,7 @@
 
 Name:          mutter
 Version:       40.9
-Release:       29%{?dist}
+Release:       32%{?dist}
 Summary:       Window and compositing manager based on Clutter
 
 License:       GPLv2+
@@ -170,6 +170,32 @@ Patch73: 0001-compositor-x11-sync-again-at-the-end-of-before_paint.patch
 # RHEL-113246
 Patch74: 0001-compositor-sync-ring-Allow-the-gpu_fence-to-be-moved.patch
 
+# RHEL-129832 - linux_dmabuf v4 support.
+Patch75: 0001-egl-Add-eglQueryDisplayAttribEXT-helper.patch
+Patch76: 0002-wayland-dma-buf-Add-manager-struct.patch
+Patch77: 0003-wayland-dma-buf-Prepare-format-modifier-map-up-front.patch
+Patch78: 0004-wayland-dma-buf-Add-basic-support-for-DMA-buffer-fee.patch
+Patch79: 0005-wayland-dma-buf-Always-advertise-non-modifier-fallba.patch
+Patch80: 0006-wayland-surface-Remove-unnecessary-NULL-check.patch
+Patch81: 0007-wayland-dma-buf-Make-manager-object-a-GObject.patch
+Patch82: 0008-wayland-dma-buf-Add-tranche-priorities.patch
+Patch83: 0009-compositor-native-Track-what-Wayland-surface-is-a-sc.patch
+Patch84: 0010-wayland-dma-buf-Move-should_send_modifiers-to-the-to.patch
+Patch85: 0011-wayland-dma-buf-Add-support-for-scanout-surface-feed.patch
+Patch86: 0012-wayland-dma-buf-Add-missing-wl_array_release.patch
+Patch87: 0013-wayland-dma-buf-Fix-typos-in-struct-name.patch
+Patch88: 0014-wayland-dma-buf-Free-feedback-in-surface_feedback_su.patch
+Patch89: 0015-wayland-dma-buf-Only-advertise-supported-formats.patch
+Patch90: 0016-wayland-dma-buf-Remove-redundant-error-check.patch
+Patch91: 0017-egl-Don-t-set-an-error-when-there-is-none.patch
+Patch92: 0018-wayland-dma-buf-Don-t-warn-if-there-was-no-render-no.patch
+
+# RHEL-70872
+Patch533: 0001-x11-iconcache-Turn-icons-from-WM_HINTS-pixmaps-to-ca.patch
+
+# RHEL-68825
+Patch534: 0001-workspace-Sanity-check-input-to-activate.patch
+
 BuildRequires: chrpath
 BuildRequires: pango-devel
 BuildRequires: startup-notification-devel
@@ -221,7 +247,7 @@ BuildRequires: pkgconfig(libdrm)
 BuildRequires: pkgconfig(gbm)
 BuildRequires: pkgconfig(wayland-server)
 BuildRequires: pkgconfig(wayland-eglstream)
-BuildRequires: pkgconfig(wayland-protocols)
+BuildRequires: pkgconfig(wayland-protocols) >= 1.24
 
 BuildRequires: json-glib-devel >= %{json_glib_version}
 BuildRequires: libgudev1-devel
@@ -317,6 +343,19 @@ desktop-file-validate %{buildroot}/%{_datadir}/applications/%{name}.desktop
 %{_datadir}/mutter-%{mutter_api_version}/tests
 
 %changelog
+* Thu Nov 27 2025 Jonas Ådahl <jadahl@redhat.com> - 40.9-32
+- Sanity check input on workspace activation API
+  Related: RHEL-68825
+
+* Thu Nov 20 2025 Olivier Fourdan <ofourdan@redhat.com> - 40.9-31
+- Backport linux-dmabuf v4 support to restore hardware acceleration
+  in Xwayland 24.1 with Mesa 25.2
+  Resolves: RHEL-129832
+ 
+* Mon Nov 10 2025 Jonas Ådahl <jadahl@redhat.com> - 40.9-30
+- Fix handling of more WM_HINTS window icon types
+  Resolves: RHEL-70872
+
 * Wed Sep 24 2025 Jonas Ådahl <jadahl@redhat.com> - 40.9-29
 - Fix input latency regression
   Resolves: RHEL-117098

@@ -1,0 +1,145 @@
+From ba03e83acc2157fa96bb06784ca43d0da7e942ab Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Fri, 6 Aug 2021 15:23:15 +0200
+Subject: [PATCH 07/18] wayland/dma-buf: Make manager object a GObject
+
+Will make certain operations easier, i.e. setting up a GQuark.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/1959>
+(cherry picked from commit 9c942a43d6c49a728ab472d08640cef929cc94b0)
+---
+ src/wayland/meta-wayland-dma-buf.c | 48 ++++++++++++++++++++++--------
+ src/wayland/meta-wayland-dma-buf.h |  6 ++--
+ src/wayland/meta-wayland.c         |  3 +-
+ 3 files changed, 40 insertions(+), 17 deletions(-)
+
+diff --git a/src/wayland/meta-wayland-dma-buf.c b/src/wayland/meta-wayland-dma-buf.c
+index ca9be5d601..6b798ec2dd 100644
+--- a/src/wayland/meta-wayland-dma-buf.c
++++ b/src/wayland/meta-wayland-dma-buf.c
+@@ -98,6 +98,8 @@ typedef struct _MetaWaylandDmaBufFeedback
+ 
+ struct _MetaWaylandDmaBufManager
+ {
++  GObject parent;
++
+   MetaWaylandCompositor *compositor;
+   dev_t main_device_id;
+ 
+@@ -122,6 +124,9 @@ struct _MetaWaylandDmaBufBuffer
+ 
+ G_DEFINE_TYPE (MetaWaylandDmaBufBuffer, meta_wayland_dma_buf_buffer, G_TYPE_OBJECT);
+ 
++G_DEFINE_TYPE (MetaWaylandDmaBufManager, meta_wayland_dma_buf_manager,
++               G_TYPE_OBJECT)
++
+ static MetaWaylandDmaBufTranche *
+ meta_wayland_dma_buf_tranche_new (dev_t                          device_id,
+                                   GArray                        *formats,
+@@ -1066,7 +1071,7 @@ meta_wayland_dma_buf_manager_new (MetaWaylandCompositor  *compositor,
+   EGLDeviceEXT egl_device;
+   EGLAttrib attrib;
+   g_autoptr (GError) local_error = NULL;
+-  g_autofree MetaWaylandDmaBufManager *dma_buf_manager = NULL;
++  g_autoptr (MetaWaylandDmaBufManager) dma_buf_manager = NULL;
+   const char *device_path = NULL;
+   struct stat device_stat;
+ 
+@@ -1141,7 +1146,7 @@ meta_wayland_dma_buf_manager_new (MetaWaylandCompositor  *compositor,
+ 
+ initialize:
+ 
+-  dma_buf_manager = g_new0 (MetaWaylandDmaBufManager, 1);
++  dma_buf_manager = g_object_new (META_TYPE_WAYLAND_DMA_BUF_MANAGER, NULL);
+ 
+   if (!wl_global_create (compositor->wayland_display,
+                          &zwp_linux_dmabuf_v1_interface,
+@@ -1163,17 +1168,6 @@ initialize:
+   return g_steal_pointer (&dma_buf_manager);
+ }
+ 
+-void
+-meta_wayland_dma_buf_manager_free (MetaWaylandDmaBufManager *dma_buf_manager)
+-{
+-  g_clear_pointer (&dma_buf_manager->format_table_file,
+-                   meta_anonymous_file_free);
+-  g_clear_pointer (&dma_buf_manager->formats, g_array_unref);
+-  g_clear_pointer (&dma_buf_manager->default_feedback,
+-                   meta_wayland_dma_buf_feedback_free);
+-  g_free (dma_buf_manager);
+-}
+-
+ static void
+ meta_wayland_dma_buf_buffer_finalize (GObject *object)
+ {
+@@ -1207,3 +1201,31 @@ meta_wayland_dma_buf_buffer_class_init (MetaWaylandDmaBufBufferClass *klass)
+ 
+   object_class->finalize = meta_wayland_dma_buf_buffer_finalize;
+ }
++
++static void
++meta_wayland_dma_buf_manager_finalize (GObject *object)
++{
++  MetaWaylandDmaBufManager *dma_buf_manager =
++    META_WAYLAND_DMA_BUF_MANAGER (object);
++
++  g_clear_pointer (&dma_buf_manager->format_table_file,
++                   meta_anonymous_file_free);
++  g_clear_pointer (&dma_buf_manager->formats, g_array_unref);
++  g_clear_pointer (&dma_buf_manager->default_feedback,
++                   meta_wayland_dma_buf_feedback_free);
++
++  G_OBJECT_CLASS (meta_wayland_dma_buf_manager_parent_class)->finalize (object);
++}
++
++static void
++meta_wayland_dma_buf_manager_class_init (MetaWaylandDmaBufManagerClass *klass)
++{
++  GObjectClass *object_class = G_OBJECT_CLASS (klass);
++
++  object_class->finalize = meta_wayland_dma_buf_manager_finalize;
++}
++
++static void
++meta_wayland_dma_buf_manager_init (MetaWaylandDmaBufManager *dma_buf)
++{
++}
+diff --git a/src/wayland/meta-wayland-dma-buf.h b/src/wayland/meta-wayland-dma-buf.h
+index 72fd0b16a0..dc1231560b 100644
+--- a/src/wayland/meta-wayland-dma-buf.h
++++ b/src/wayland/meta-wayland-dma-buf.h
+@@ -37,13 +37,15 @@
+ G_DECLARE_FINAL_TYPE (MetaWaylandDmaBufBuffer, meta_wayland_dma_buf_buffer,
+                       META, WAYLAND_DMA_BUF_BUFFER, GObject);
+ 
++#define META_TYPE_WAYLAND_DMA_BUF_MANAGER (meta_wayland_dma_buf_manager_get_type ())
++G_DECLARE_FINAL_TYPE (MetaWaylandDmaBufManager, meta_wayland_dma_buf_manager,
++                      META, WAYLAND_DMA_BUF_MANAGER, GObject)
++
+ typedef struct _MetaWaylandDmaBufBuffer MetaWaylandDmaBufBuffer;
+ 
+ MetaWaylandDmaBufManager * meta_wayland_dma_buf_manager_new (MetaWaylandCompositor  *compositor,
+                                                              GError                **error);
+ 
+-void meta_wayland_dma_buf_manager_free (MetaWaylandDmaBufManager *dma_buf_manager);
+-
+ gboolean
+ meta_wayland_dma_buf_buffer_attach (MetaWaylandBuffer  *buffer,
+                                     CoglTexture       **texture,
+diff --git a/src/wayland/meta-wayland.c b/src/wayland/meta-wayland.c
+index a566a35449..28af6ae196 100644
+--- a/src/wayland/meta-wayland.c
++++ b/src/wayland/meta-wayland.c
+@@ -618,8 +618,7 @@ meta_wayland_finalize (void)
+   if (compositor->wayland_display)
+     wl_display_destroy_clients (compositor->wayland_display);
+ 
+-  g_clear_pointer (&compositor->dma_buf_manager,
+-                   meta_wayland_dma_buf_manager_free);
++  g_clear_object (&compositor->dma_buf_manager);
+ 
+   g_clear_pointer (&compositor->seat, meta_wayland_seat_free);
+ 
+-- 
+2.51.1
+

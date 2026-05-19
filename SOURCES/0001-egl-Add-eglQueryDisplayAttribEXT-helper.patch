@@ -1,0 +1,80 @@
+From 0e6889f3ad3e417b29c5ea29fe6dfe485e5f6218 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Wed, 4 Aug 2021 09:59:50 +0200
+Subject: [PATCH 01/18] egl: Add eglQueryDisplayAttribEXT() helper
+
+To be used to fetch the EGLDevice used for an EGL display.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/1959>
+(cherry picked from commit 7ce481bf6996b2d99314311bf68afc6bd703c480)
+---
+ src/backends/meta-egl.c | 23 +++++++++++++++++++++++
+ src/backends/meta-egl.h |  6 ++++++
+ 2 files changed, 29 insertions(+)
+
+diff --git a/src/backends/meta-egl.c b/src/backends/meta-egl.c
+index fdeff4f779..c2777271ff 100644
+--- a/src/backends/meta-egl.c
++++ b/src/backends/meta-egl.c
+@@ -71,6 +71,8 @@ struct _MetaEgl
+ 
+   PFNEGLQUERYDMABUFFORMATSEXTPROC eglQueryDmaBufFormatsEXT;
+   PFNEGLQUERYDMABUFMODIFIERSEXTPROC eglQueryDmaBufModifiersEXT;
++
++  PFNEGLQUERYDISPLAYATTRIBEXTPROC eglQueryDisplayAttribEXT;
+ };
+ 
+ G_DEFINE_TYPE (MetaEgl, meta_egl, G_TYPE_OBJECT)
+@@ -1064,6 +1066,25 @@ meta_egl_query_dma_buf_modifiers (MetaEgl      *egl,
+     return TRUE;
+ }
+ 
++gboolean
++meta_egl_query_display_attrib (MetaEgl     *egl,
++                               EGLDisplay   display,
++                               EGLint       attribute,
++                               EGLAttrib   *value,
++                               GError     **error)
++{
++  if (!is_egl_proc_valid (egl->eglQueryDisplayAttribEXT, error))
++    return FALSE;
++
++  if (!egl->eglQueryDisplayAttribEXT (display, attribute, value))
++    {
++      set_egl_error (error);
++      return FALSE;
++    }
++
++  return TRUE;
++}
++
+ #define GET_EGL_PROC_ADDR(proc) \
+   egl->proc = (void *) eglGetProcAddress (#proc);
+ 
+@@ -1102,6 +1123,8 @@ meta_egl_constructed (GObject *object)
+ 
+   GET_EGL_PROC_ADDR (eglQueryDmaBufFormatsEXT);
+   GET_EGL_PROC_ADDR (eglQueryDmaBufModifiersEXT);
++
++  GET_EGL_PROC_ADDR (eglQueryDisplayAttribEXT);
+ }
+ 
+ #undef GET_EGL_PROC_ADDR
+diff --git a/src/backends/meta-egl.h b/src/backends/meta-egl.h
+index 4591e7d853..5c0aacd520 100644
+--- a/src/backends/meta-egl.h
++++ b/src/backends/meta-egl.h
+@@ -260,4 +260,10 @@ gboolean meta_egl_query_dma_buf_modifiers (MetaEgl      *egl,
+                                            EGLint       *num_formats,
+                                            GError      **error);
+ 
++gboolean meta_egl_query_display_attrib (MetaEgl     *egl,
++                                        EGLDisplay   display,
++                                        EGLint       attribute,
++                                        EGLAttrib   *value,
++                                        GError     **error);
++
+ #endif /* META_EGL_H */
+-- 
+2.51.1
+
