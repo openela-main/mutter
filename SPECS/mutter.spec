@@ -8,7 +8,7 @@
 
 Name:          mutter
 Version:       3.32.2
-Release:       74%{?dist}
+Release:       75%{?dist}
 Summary:       Window and compositing manager based on Clutter
 
 License:       GPLv2+
@@ -223,6 +223,9 @@ Patch533: 0001-x11-iconcache-Turn-icons-from-WM_HINTS-pixmaps-to-ca.patch
 # RHEL-87743
 Patch534: 0001-x11-display-add-support-for-_GTK_WORKAREAS_Dn.patch
 
+# RHEL-177609
+Patch535: 0001-x11-Do-not-unminimize-windows-with-initial-IconicSta.patch
+
 BuildRequires: chrpath
 BuildRequires: pango-devel
 BuildRequires: startup-notification-devel
@@ -364,6 +367,10 @@ desktop-file-validate %{buildroot}/%{_datadir}/applications/%{name}.desktop
 %{_datadir}/mutter-%{mutter_api_version}/tests
 
 %changelog
+* Thu Jun 04 2026 Jonas Ådahl <jadahl@redhat.com> - 3.32.2-75
+- Don't unminimize mapped windows
+  Resolves: RHEL-177609
+
 * Fri Jun 27 2025 Jonas Ådahl <jadahl@redhat.com> - 3.32.2-74
 - Backport implementation for _GTK_WORKAREAS_D# X11 property
   Related: RHEL-87743
