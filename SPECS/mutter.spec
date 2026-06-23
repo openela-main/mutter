@@ -10,7 +10,7 @@
 
 Name:          mutter
 Version:       40.9
-Release:       32%{?dist}
+Release:       33%{?dist}
 Summary:       Window and compositing manager based on Clutter
 
 License:       GPLv2+
@@ -196,6 +196,9 @@ Patch533: 0001-x11-iconcache-Turn-icons-from-WM_HINTS-pixmaps-to-ca.patch
 # RHEL-68825
 Patch534: 0001-workspace-Sanity-check-input-to-activate.patch
 
+# Don't unminimize mapped windows (RHEL-170806)
+Patch535: 0001-x11-Do-not-unminimize-windows-with-initial-IconicSta.patch
+
 BuildRequires: chrpath
 BuildRequires: pango-devel
 BuildRequires: startup-notification-devel
@@ -343,6 +346,10 @@ desktop-file-validate %{buildroot}/%{_datadir}/applications/%{name}.desktop
 %{_datadir}/mutter-%{mutter_api_version}/tests
 
 %changelog
+* Tue Jun 02 2026 Jonas Ådahl <jadahl@redhat.com> - 40.9-33
+- Don't unminimize mapped windows
+  Resolves: RHEL-180797
+
 * Thu Nov 27 2025 Jonas Ådahl <jadahl@redhat.com> - 40.9-32
 - Sanity check input on workspace activation API
   Related: RHEL-68825
