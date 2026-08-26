@@ -1,0 +1,79 @@
+From 287468e3d4ae517be351e7c0b7a8430ec7530540 Mon Sep 17 00:00:00 2001
+From: Peter Hutterer <peter.hutterer@who-t.net>
+Date: Wed, 24 Jan 2024 14:24:02 +1000
+Subject: [PATCH 1/2] backends/native: Swap BTN_STYLUS and BTN_STYLUS2
+
+BTN_STYLUS is the lower one and traditionally (read: in X) maps to
+middle button (2), BTN_STYLUS2 is the upper one and traditionally maps
+to right button (3).
+
+This is also what GTK does and our desktop actions too map MIDDLE to
+BTN_STYLUS and RIGHT to BTN_STYLUS2.
+
+See also gtk!6168
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/3541>
+---
+ src/backends/native/meta-seat-impl.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/backends/native/meta-seat-impl.c b/src/backends/native/meta-seat-impl.c
+index 0be4e7a307..9e387566dc 100644
+--- a/src/backends/native/meta-seat-impl.c
++++ b/src/backends/native/meta-seat-impl.c
+@@ -662,12 +662,12 @@ meta_seat_impl_notify_button_in_impl (MetaSeatImpl       *seat_impl,
+ 
+     case BTN_RIGHT:
+     case BTN_STYLUS:
+-      button_nr = CLUTTER_BUTTON_SECONDARY;
++      button_nr = CLUTTER_BUTTON_MIDDLE;
+       break;
+ 
+     case BTN_MIDDLE:
+     case BTN_STYLUS2:
+-      button_nr = CLUTTER_BUTTON_MIDDLE;
++      button_nr = CLUTTER_BUTTON_SECONDARY;
+       break;
+ 
+     case 0x149: /* BTN_STYLUS3 */
+-- 
+2.53.0
+
+
+From f8b843710b007b3fb0831b5f838563010389bc2a Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Sat, 27 Jan 2024 14:11:42 +0100
+Subject: [PATCH 2/2] backends/native: Fix clutter button number assignment to
+ pointer evcodes
+
+Commit 947c636275 meant to swap BTN_STYLUS* buttons, not BTN_MIDDLE/RIGHT
+as used by pointing devices. This was also missed during review.
+
+Fixes: 947c636275 ("backends/native: Swap BTN_STYLUS and BTN_STYLUS2")
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/3550>
+---
+ src/backends/native/meta-seat-impl.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/backends/native/meta-seat-impl.c b/src/backends/native/meta-seat-impl.c
+index 9e387566dc..884e326927 100644
+--- a/src/backends/native/meta-seat-impl.c
++++ b/src/backends/native/meta-seat-impl.c
+@@ -660,12 +660,12 @@ meta_seat_impl_notify_button_in_impl (MetaSeatImpl       *seat_impl,
+       button_nr = CLUTTER_BUTTON_PRIMARY;
+       break;
+ 
+-    case BTN_RIGHT:
++    case BTN_MIDDLE:
+     case BTN_STYLUS:
+       button_nr = CLUTTER_BUTTON_MIDDLE;
+       break;
+ 
+-    case BTN_MIDDLE:
++    case BTN_RIGHT:
+     case BTN_STYLUS2:
+       button_nr = CLUTTER_BUTTON_SECONDARY;
+       break;
+-- 
+2.53.0
+

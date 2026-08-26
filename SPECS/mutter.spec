@@ -10,7 +10,7 @@
 
 Name:          mutter
 Version:       40.9
-Release:       33%{?dist}
+Release:       34%{?dist}
 Summary:       Window and compositing manager based on Clutter
 
 License:       GPLv2+
@@ -199,6 +199,9 @@ Patch534: 0001-workspace-Sanity-check-input-to-activate.patch
 # Don't unminimize mapped windows (RHEL-170806)
 Patch535: 0001-x11-Do-not-unminimize-windows-with-initial-IconicSta.patch
 
+# RHEL-190440
+Patch536: change-stylus-button-order.diff
+
 BuildRequires: chrpath
 BuildRequires: pango-devel
 BuildRequires: startup-notification-devel
@@ -346,6 +349,10 @@ desktop-file-validate %{buildroot}/%{_datadir}/applications/%{name}.desktop
 %{_datadir}/mutter-%{mutter_api_version}/tests
 
 %changelog
+* Thu Jul 09 2026 Carlos Garnacho <cgarnach@redhat.com> - 40.9-34
+- Switch stylus button order to match Xorg session
+  Related: RHEL-190440
+
 * Tue Jun 02 2026 Jonas Ådahl <jadahl@redhat.com> - 40.9-33
 - Don't unminimize mapped windows
   Resolves: RHEL-180797
