@@ -1,0 +1,176 @@
+From 80ff12ecbb492a6f87b0f22e47977b26b018f4d9 Mon Sep 17 00:00:00 2001
+From: Olivier Fourdan <ofourdan@redhat.com>
+Date: Fri, 14 Nov 2025 15:16:30 +0100
+Subject: [PATCH 5/7] window: Add external constraints support
+
+This allows to keep a list of external constraints with the window.
+
+The caller can add/remove constraint objects to each window.
+
+This is preparation work for the following commit that will call into
+this to apply external window constraints along the rest of the
+constraints.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4692>
+(cherry picked from commit 0eaf17634ecda569b519ab73cf79f21be1f631f2)
+---
+ src/core/window-private.h |  5 +++
+ src/core/window.c         | 87 +++++++++++++++++++++++++++++++++++++++
+ src/meta/window.h         |  8 ++++
+ 3 files changed, 100 insertions(+)
+
+diff --git a/src/core/window-private.h b/src/core/window-private.h
+index 01f6679ac3..e35bc66a82 100644
+--- a/src/core/window-private.h
++++ b/src/core/window-private.h
+@@ -937,3 +937,8 @@ void meta_window_set_tag (MetaWindow *window,
+ 
+ META_EXPORT_TEST
+ GPtrArray * meta_window_get_transient_children (MetaWindow *window);
++
++gboolean meta_window_apply_external_constraints (MetaWindow                  *window,
++                                                 MetaGravity                  resize_gravity,
++                                                 MtkRectangle                *constrained_rect,
++                                                 MetaExternalConstraintFlags  constraint_flags);
+diff --git a/src/core/window.c b/src/core/window.c
+index b7b62fbda5..5ea7c1bc2a 100644
+--- a/src/core/window.c
++++ b/src/core/window.c
+@@ -80,6 +80,7 @@
+ #include "core/workspace-private.h"
+ #include "meta/meta-cursor-tracker.h"
+ #include "meta/meta-enum-types.h"
++#include "meta/meta-external-constraint.h"
+ #include "meta/prefs.h"
+ #include "meta/meta-window-config.h"
+ 
+@@ -193,6 +194,8 @@ typedef struct _MetaWindowPrivate
+   } auto_maximize;
+ 
+   unsigned int mapped_inhibit_count;
++
++  GHashTable *external_constraints;
+ } MetaWindowPrivate;
+ 
+ G_DEFINE_ABSTRACT_TYPE_WITH_CODE (MetaWindow, meta_window, G_TYPE_OBJECT,
+@@ -415,6 +418,8 @@ meta_window_finalize (GObject *object)
+   g_free (window->placement.rule);
+   g_free (window->tag);
+ 
++  g_clear_pointer (&priv->external_constraints, g_hash_table_destroy);
++
+   G_OBJECT_CLASS (meta_window_parent_class)->finalize (object);
+ }
+ 
+@@ -837,6 +842,8 @@ meta_window_init (MetaWindow *window)
+   window->stamp = next_window_stamp++;
+   meta_prefs_add_listener (prefs_changed_callback, window);
+   window->is_alive = TRUE;
++  priv->external_constraints =
++    g_hash_table_new_full (NULL, NULL, g_object_unref, NULL);
+ }
+ 
+ static gboolean
+@@ -8753,3 +8760,83 @@ meta_window_is_mapped_inhibited (MetaWindow *window)
+ 
+   return priv->mapped_inhibit_count > 0;
+ }
++
++/**
++ * meta_window_add_external_constraint:
++ * @window: a #MetaWindow
++ * @constraint: a #MetaExternalConstraint
++ *
++ * Adds an external constraint to the window.
++ *
++ * The constraint object is referenced by the window, so the caller should
++ * release its own reference when no longer needed.
++ */
++void
++meta_window_add_external_constraint (MetaWindow             *window,
++                                     MetaExternalConstraint *constraint)
++{
++  MetaWindowPrivate *priv;
++
++  g_return_if_fail (META_IS_WINDOW (window));
++  g_return_if_fail (META_IS_EXTERNAL_CONSTRAINT (constraint));
++
++  priv = meta_window_get_instance_private (window);
++  if (g_hash_table_contains (priv->external_constraints, constraint))
++    {
++      g_warning ("Not adding external window constraint, already present");
++      return;
++    }
++
++  g_hash_table_add (priv->external_constraints, g_object_ref (constraint));
++}
++
++/**
++ * meta_window_remove_external_constraint:
++ * @window: a #MetaWindow
++ * @constraint: a #MetaExternalConstraint
++ *
++ * Removes a previously added external constraint from the window.
++ */
++void
++meta_window_remove_external_constraint (MetaWindow             *window,
++                                        MetaExternalConstraint *constraint)
++{
++  MetaWindowPrivate *priv;
++
++  g_return_if_fail (META_IS_WINDOW (window));
++  g_return_if_fail (META_IS_EXTERNAL_CONSTRAINT (constraint));
++
++  priv = meta_window_get_instance_private (window);
++  g_hash_table_remove (priv->external_constraints, constraint);
++}
++
++gboolean
++meta_window_apply_external_constraints (MetaWindow                  *window,
++                                        MetaGravity                  resize_gravity,
++                                        MtkRectangle                *constrained_rect,
++                                        MetaExternalConstraintFlags  constraint_flags)
++{
++  MetaWindowPrivate *priv = meta_window_get_instance_private (window);
++  GHashTableIter iter;
++  gpointer constraint_ptr;
++  gboolean constraint_satisfied = TRUE;
++
++  g_return_val_if_fail (META_IS_WINDOW (window), TRUE);
++
++  g_hash_table_iter_init (&iter, priv->external_constraints);
++  while (g_hash_table_iter_next (&iter, &constraint_ptr, NULL))
++    {
++      MetaExternalConstraint *constraint = META_EXTERNAL_CONSTRAINT (constraint_ptr);
++      MetaExternalConstraintInfo constraint_info = {
++        .new_rect = constrained_rect,
++        .flags = constraint_flags,
++        .resize_gravity = resize_gravity,
++      };
++
++      constraint_satisfied |= meta_external_constraint_constrain (constraint,
++                                                                  window,
++                                                                  &constraint_info);
++    }
++
++  return constraint_satisfied;
++}
+diff --git a/src/meta/window.h b/src/meta/window.h
+index 4f6390f0a1..a677122716 100644
+--- a/src/meta/window.h
++++ b/src/meta/window.h
+@@ -469,3 +469,11 @@ void meta_window_uninhibit_mapped (MetaWindow *window);
+ 
+ META_EXPORT
+ gboolean meta_window_is_mapped_inhibited (MetaWindow *window);
++
++META_EXPORT
++void meta_window_add_external_constraint    (MetaWindow             *window,
++                                             MetaExternalConstraint *constraint);
++
++META_EXPORT
++void meta_window_remove_external_constraint (MetaWindow             *window,
++                                             MetaExternalConstraint *constraint);
+-- 
+2.53.0
+

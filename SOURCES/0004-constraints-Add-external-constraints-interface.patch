@@ -1,0 +1,212 @@
+From e0e3307984eaa4ac716ee6431b9d469d890e42be Mon Sep 17 00:00:00 2001
+From: Olivier Fourdan <ofourdan@redhat.com>
+Date: Fri, 14 Nov 2025 14:04:00 +0100
+Subject: [PATCH 4/7] constraints: Add external constraints interface
+
+This adds a new type interface for constraints.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4692>
+(cherry picked from commit 17b6a69868a38240a9e179239310dc55ae9202d5)
+---
+ src/core/meta-external-constraint.c | 58 +++++++++++++++++++
+ src/meson.build                     |  1 +
+ src/meta/meson.build                |  1 +
+ src/meta/meta-external-constraint.h | 87 +++++++++++++++++++++++++++++
+ src/meta/types.h                    |  1 +
+ 5 files changed, 148 insertions(+)
+ create mode 100644 src/core/meta-external-constraint.c
+ create mode 100644 src/meta/meta-external-constraint.h
+
+diff --git a/src/core/meta-external-constraint.c b/src/core/meta-external-constraint.c
+new file mode 100644
+index 0000000000..bc84f8bf97
+--- /dev/null
++++ b/src/core/meta-external-constraint.c
+@@ -0,0 +1,58 @@
++/*
++ * Copyright (C) 2025 Red Hat, Inc.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of the
++ * License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "config.h"
++
++#include "meta/meta-external-constraint.h"
++
++G_DEFINE_INTERFACE (MetaExternalConstraint, meta_external_constraint, G_TYPE_OBJECT)
++
++static void
++meta_external_constraint_default_init (MetaExternalConstraintInterface *iface)
++{
++}
++
++/**
++ * meta_external_constraint_constrain:
++ * @constraint: a #MetaExternalConstraint
++ * @window: the #MetaWindow being constrained
++ * @info: a #MetaExternalConstraintInfo with constraint parameters
++ *
++ * Applies external constraints to a window's position and size.
++ *
++ * Returns: %TRUE if the constraint has fully constrained the window,
++            %FALSE otherwise.
++ */
++gboolean
++meta_external_constraint_constrain (MetaExternalConstraint     *constraint,
++                                    MetaWindow                 *window,
++                                    MetaExternalConstraintInfo *info)
++{
++  MetaExternalConstraintInterface *iface;
++
++  g_return_val_if_fail (META_IS_EXTERNAL_CONSTRAINT (constraint), TRUE);
++  g_return_val_if_fail (META_IS_WINDOW (window), TRUE);
++  g_return_val_if_fail (info != NULL, TRUE);
++  g_return_val_if_fail (info->new_rect != NULL, TRUE);
++
++  iface = META_EXTERNAL_CONSTRAINT_GET_IFACE (constraint);
++
++  if (iface->constrain)
++    return iface->constrain (constraint, window, info);
++
++  return TRUE;
++}
+diff --git a/src/meson.build b/src/meson.build
+index 508c3416da..744f941e6e 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -360,6 +360,7 @@ mutter_sources = [
+   'core/meta-context.c',
+   'core/meta-debug-control.c',
+   'core/meta-debug-control-private.h',
++  'core/meta-external-constraint.c',
+   'core/meta-fraction.c',
+   'core/meta-fraction.h',
+   'core/meta-gesture-tracker.c',
+diff --git a/src/meta/meson.build b/src/meta/meson.build
+index bc42b56174..f34ace7439 100644
+--- a/src/meta/meson.build
++++ b/src/meta/meson.build
+@@ -21,6 +21,7 @@ mutter_public_headers = [
+   'meta-debug-control.h',
+   'meta-dnd.h',
+   'meta-enums.h',
++  'meta-external-constraint.h',
+   'meta-idle-monitor.h',
+   'meta-inhibit-shortcuts-dialog.h',
+   'meta-launch-context.h',
+diff --git a/src/meta/meta-external-constraint.h b/src/meta/meta-external-constraint.h
+new file mode 100644
+index 0000000000..a2d5cd6176
+--- /dev/null
++++ b/src/meta/meta-external-constraint.h
+@@ -0,0 +1,87 @@
++/*
++ * Copyright (C) 2025 Red Hat, Inc.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of the
++ * License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <http://www.gnu.org/licenses/>.
++ */
++
++#pragma once
++
++#include <glib-object.h>
++
++#include "meta/types.h"
++#include "meta/window.h"
++
++G_BEGIN_DECLS
++
++#define META_TYPE_EXTERNAL_CONSTRAINT (meta_external_constraint_get_type ())
++
++META_EXPORT
++G_DECLARE_INTERFACE (MetaExternalConstraint,
++                     meta_external_constraint,
++                     META,
++                     EXTERNAL_CONSTRAINT,
++                     GObject)
++
++/**
++ * MetaExternalConstraintInfo:
++ * @new_rect: (inout): the proposed new window rectangle
++ * @flags: the constraint flags for this operation
++ * @resize_gravity: the gravity for resizing
++ *
++ * Structure containing parameters for external window constraints.
++ */
++typedef struct _MetaExternalConstraintInfo MetaExternalConstraintInfo;
++struct _MetaExternalConstraintInfo
++{
++  MtkRectangle *new_rect;
++  MetaExternalConstraintFlags flags;
++  MetaGravity resize_gravity;
++};
++
++/**
++ * MetaExternalConstraintInterface:
++ * @constrain: virtual function for applying external constraints
++ *
++ * Interface for objects that can apply external window constraints.
++ */
++struct _MetaExternalConstraintInterface
++{
++  GTypeInterface parent_iface;
++
++  /**
++   * MetaExternalConstraintInterface::constrain:
++   * @constraint: a #MetaExternalConstraint
++   * @window: the #MetaWindow being constrained
++   * @info: a #MetaExternalConstraintInfo with constraint parameters
++   *
++   * Virtual function called with other window constraints processing.
++   * This allows external components to implement custom window positioning
++   * and sizing constraints.
++   *
++   * The implementation can modify @info->new_rect to enforce its own constraints.
++   *
++   * Returns: %TRUE if the constraint has fully constrained the window,
++              %FALSE otherwise.
++   */
++  gboolean (*constrain) (MetaExternalConstraint     *constraint,
++                         MetaWindow                 *window,
++                         MetaExternalConstraintInfo *info);
++};
++
++META_EXPORT
++gboolean meta_external_constraint_constrain (MetaExternalConstraint     *constraint,
++                                             MetaWindow                 *window,
++                                             MetaExternalConstraintInfo *info);
++
++G_END_DECLS
+diff --git a/src/meta/types.h b/src/meta/types.h
+index cf7432ec48..944043d854 100644
+--- a/src/meta/types.h
++++ b/src/meta/types.h
+@@ -37,3 +37,4 @@ typedef struct _MetaWorkspaceManager MetaWorkspaceManager;
+ typedef struct _MetaSelection MetaSelection;
+ typedef struct _MetaDebugControl MetaDebugControl;
+ typedef struct _MetaWindowConfig MetaWindowConfig;
++typedef struct _MetaExternalConstraint MetaExternalConstraint;
+-- 
+2.53.0
+

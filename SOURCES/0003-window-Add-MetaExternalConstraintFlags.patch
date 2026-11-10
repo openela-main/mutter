@@ -1,0 +1,40 @@
+From c2af2bec1618fbac784c61722b073a0cb4637067 Mon Sep 17 00:00:00 2001
+From: Olivier Fourdan <ofourdan@redhat.com>
+Date: Wed, 5 Nov 2025 17:05:25 +0100
+Subject: [PATCH 3/7] window: Add MetaExternalConstraintFlags
+
+The plan is to allow plugins to implement their own constraint, while
+not exposing all of the internal MetaMoveResizeFlags.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/4692>
+(cherry picked from commit 3c9155a395c3c07f8aeb928a676e83bd82b7d30e)
+---
+ src/meta/meta-enums.h | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/src/meta/meta-enums.h b/src/meta/meta-enums.h
+index e0a2fc50ea..79294d7c15 100644
+--- a/src/meta/meta-enums.h
++++ b/src/meta/meta-enums.h
+@@ -418,3 +418,18 @@ typedef enum
+   META_A11Y_STICKY_KEYS_BEEP = 1 << 12,
+   META_A11Y_FEATURE_STATE_CHANGE_BEEP = 1 << 13,
+ } MetaKeyboardA11yFlags;
++
++/**
++ * MetaMoveResizeFlags:
++ * @META_EXTERNAL_CONSTRAINT_FLAGS_NONE: No operation
++ * @META_EXTERNAL_CONSTRAINT_FLAGS_MOVE: Move operation
++ * @META_EXTERNAL_CONSTRAINT_FLAGS_RESIZE: Resize operation
++ *
++ * Flags for external constraint operations.
++ */
++typedef enum _MetaExternalConstraintFlags
++{
++  META_EXTERNAL_CONSTRAINT_FLAGS_NONE = 0,
++  META_EXTERNAL_CONSTRAINT_FLAGS_MOVE = 1 << 0,
++  META_EXTERNAL_CONSTRAINT_FLAGS_RESIZE = 1 << 1,
++} MetaExternalConstraintFlags;
+-- 
+2.53.0
+
