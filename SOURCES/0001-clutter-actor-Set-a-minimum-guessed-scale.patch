@@ -1,0 +1,33 @@
+From 552c8cfc0d96f5711dff98327e07ded506a7ecfc Mon Sep 17 00:00:00 2001
+From: Joan Torres <joan.torres@suse.com>
+Date: Mon, 18 Dec 2023 18:33:16 +0100
+Subject: [PATCH] clutter/actor: Set a minimum guessed scale
+
+When running headlessly it fails guessing the scale to -1.0f making
+the assertion g_assert (guessed_scale >= 0.5) fail.
+
+Setting it to 1.f in that case fixes it.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/3464>
+(cherry picked from commit 3a94822e755e530b71c33bb5bce0e8faa438983c)
+---
+ clutter/clutter/clutter-actor.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/clutter/clutter/clutter-actor.c b/clutter/clutter/clutter-actor.c
+index 64cf291f8b..5a6a009303 100644
+--- a/clutter/clutter/clutter-actor.c
++++ b/clutter/clutter/clutter-actor.c
+@@ -15725,6 +15725,9 @@ clutter_actor_get_real_resource_scale (ClutterActor *self)
+           max_scale = MAX (clutter_stage_view_get_scale (view), max_scale);
+         }
+ 
++      if (max_scale < 0.f)
++        max_scale = 1.f;
++
+       guessed_scale = max_scale;
+     }
+   else
+-- 
+2.54.0
+

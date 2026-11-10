@@ -10,7 +10,7 @@
 
 Name:          mutter
 Version:       40.9
-Release:       34%{?dist}
+Release:       35%{?dist}
 Summary:       Window and compositing manager based on Clutter
 
 License:       GPLv2+
@@ -196,11 +196,14 @@ Patch533: 0001-x11-iconcache-Turn-icons-from-WM_HINTS-pixmaps-to-ca.patch
 # RHEL-68825
 Patch534: 0001-workspace-Sanity-check-input-to-activate.patch
 
-# Don't unminimize mapped windows (RHEL-170806)
-Patch535: 0001-x11-Do-not-unminimize-windows-with-initial-IconicSta.patch
+# Avoid assert when headless (RHEL-110674)
+Patch535: 0001-clutter-actor-Set-a-minimum-guessed-scale.patch
 
-# RHEL-190440
-Patch536: change-stylus-button-order.diff
+# Don't unminimize mapped windows (RHEL-170806)
+Patch536: 0001-x11-Do-not-unminimize-windows-with-initial-IconicSta.patch
+
+# RHEL-146566
+Patch537: change-stylus-button-order.diff
 
 BuildRequires: chrpath
 BuildRequires: pango-devel
@@ -349,13 +352,17 @@ desktop-file-validate %{buildroot}/%{_datadir}/applications/%{name}.desktop
 %{_datadir}/mutter-%{mutter_api_version}/tests
 
 %changelog
-* Thu Jul 09 2026 Carlos Garnacho <cgarnach@redhat.com> - 40.9-34
+* Thu Jun 12 2026 Carlos Garnacho <cgarnach@redhat.com> - 40.9-35
 - Switch stylus button order to match Xorg session
-  Related: RHEL-190440
+  Related: RHEL-146566
 
-* Tue Jun 02 2026 Jonas Ådahl <jadahl@redhat.com> - 40.9-33
+* Tue May 19 2026 Jonas Ådahl <jadahl@redhat.com> - 40.9-34
 - Don't unminimize mapped windows
-  Resolves: RHEL-180797
+  Resolves: RHEL-170806
+
+* Mon May 18 2026 Jonas Ådahl <jadahl@redhat.com> - 40.9-33
+- Avoid assert when headless
+  Resolves: RHEL-110674
 
 * Thu Nov 27 2025 Jonas Ådahl <jadahl@redhat.com> - 40.9-32
 - Sanity check input on workspace activation API
