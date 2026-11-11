@@ -1,0 +1,552 @@
+From 43c66b4b5683a3cfb902a1bd901cf4d80c7cc1c7 Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Wed, 9 Sep 2026 19:48:10 +0200
+Subject: [PATCH 1/3] wayland/color-management: Add an initial image
+ description state
+
+The image descriptions (e.g. the ICC one) become ready asynchronously
+and exist in this state until they become either ready or failed. This
+makes that initial state explicit.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/5313>
+(cherry picked from commit eead94c544a426ee2bde7c70fec946b42369c054)
+(cherry picked from commit 414da34cfe7864670255fcb9143aee29cbbc5d22)
+---
+ src/wayland/meta-wayland-color-management.c | 102 ++++++++++----------
+ 1 file changed, 49 insertions(+), 53 deletions(-)
+
+diff --git a/src/wayland/meta-wayland-color-management.c b/src/wayland/meta-wayland-color-management.c
+index 6479db756a..51d6140268 100644
+--- a/src/wayland/meta-wayland-color-management.c
++++ b/src/wayland/meta-wayland-color-management.c
+@@ -95,7 +95,7 @@ typedef struct _MetaWaylandColorManagementSurface
+ 
+ typedef enum _MetaWaylandImageDescriptionState
+ {
+-  META_WAYLAND_IMAGE_DESCRIPTION_STATE_PENDING,
++  META_WAYLAND_IMAGE_DESCRIPTION_STATE_INIT,
+   META_WAYLAND_IMAGE_DESCRIPTION_STATE_READY,
+   META_WAYLAND_IMAGE_DESCRIPTION_STATE_FAILED,
+ } MetaWaylandImageDescriptionState;
+@@ -341,44 +341,41 @@ meta_wayland_image_description_new (MetaWaylandColorManager *color_manager,
+   MetaWaylandImageDescription *image_desc;
+ 
+   image_desc = g_new0 (MetaWaylandImageDescription, 1);
++  image_desc->state = META_WAYLAND_IMAGE_DESCRIPTION_STATE_INIT;
+   image_desc->color_manager = color_manager;
+   image_desc->resource = resource;
+ 
+   return image_desc;
+ }
+ 
+-static MetaWaylandImageDescription *
+-meta_wayland_image_description_new_failed (MetaWaylandColorManager            *color_manager,
+-                                           struct wl_resource                 *resource,
++static void
++meta_wayland_image_description_set_failed (MetaWaylandImageDescription        *image_desc,
+                                            enum wp_image_description_v1_cause  cause,
+                                            const char                         *message)
+ {
+-  MetaWaylandImageDescription *image_desc;
++  g_return_if_fail (image_desc->state == META_WAYLAND_IMAGE_DESCRIPTION_STATE_INIT);
+ 
+-  image_desc = meta_wayland_image_description_new (color_manager, resource);
+   image_desc->state = META_WAYLAND_IMAGE_DESCRIPTION_STATE_FAILED;
+   image_desc->has_info = FALSE;
+-  wp_image_description_v1_send_failed (resource, cause, message);
+ 
+-  return image_desc;
++  wp_image_description_v1_send_failed (image_desc->resource, cause, message);
+ }
+ 
+-static MetaWaylandImageDescription *
+-meta_wayland_image_description_new_color_state (MetaWaylandColorManager          *color_manager,
+-                                                struct wl_resource               *resource,
+-                                                ClutterColorState                *color_state,
+-                                                MetaWaylandImageDescriptionFlags  flags)
++static void
++meta_wayland_image_description_set_ready (MetaWaylandImageDescription      *image_desc,
++                                          ClutterColorState                *color_state,
++                                          MetaWaylandImageDescriptionFlags  flags)
+ {
+-  MetaWaylandImageDescription *image_desc;
++  uint32_t id;
++
++  g_return_if_fail (image_desc->state == META_WAYLAND_IMAGE_DESCRIPTION_STATE_INIT);
+ 
+-  image_desc = meta_wayland_image_description_new (color_manager, resource);
+   image_desc->state = META_WAYLAND_IMAGE_DESCRIPTION_STATE_READY;
+   image_desc->has_info = !!(flags & META_WAYLAND_IMAGE_DESCRIPTION_FLAGS_ALLOW_INFO);
+   image_desc->color_state = g_object_ref (color_state);
+-  wp_image_description_v1_send_ready (resource,
+-                                      clutter_color_state_get_id (color_state));
+ 
+-  return image_desc;
++  id = clutter_color_state_get_id (color_state);
++  wp_image_description_v1_send_ready (image_desc->resource, id);
+ }
+ 
+ static void
+@@ -928,26 +925,25 @@ color_management_output_get_image_description (struct wl_client   *client,
+                         wl_resource_get_version (resource),
+                         id);
+ 
++  image_desc = meta_wayland_image_description_new (color_manager,
++                                                   image_desc_resource);
++
+   if (cm_output)
+     {
+       MetaMonitor *monitor = meta_wayland_output_get_monitor (cm_output->output);
+       ClutterColorState *color_state =
+         get_output_color_state (color_manager, monitor);
+ 
+-      image_desc =
+-        meta_wayland_image_description_new_color_state (color_manager,
+-                                                        image_desc_resource,
+-                                                        color_state,
+-                                                        META_WAYLAND_IMAGE_DESCRIPTION_FLAGS_DEFAULT |
+-                                                        META_WAYLAND_IMAGE_DESCRIPTION_FLAGS_ALLOW_INFO);
++      meta_wayland_image_description_set_ready (image_desc,
++                                                color_state,
++                                                META_WAYLAND_IMAGE_DESCRIPTION_FLAGS_DEFAULT |
++                                                META_WAYLAND_IMAGE_DESCRIPTION_FLAGS_ALLOW_INFO);
+     }
+   else
+     {
+-      image_desc =
+-        meta_wayland_image_description_new_failed (color_manager,
+-                                                   image_desc_resource,
+-                                                   WP_IMAGE_DESCRIPTION_V1_CAUSE_NO_OUTPUT,
+-                                                   "Underlying output object has been destroyed");
++      meta_wayland_image_description_set_failed (image_desc,
++                                                 WP_IMAGE_DESCRIPTION_V1_CAUSE_NO_OUTPUT,
++                                                 "Underlying output object has been destroyed");
+     }
+ 
+   wl_resource_set_implementation (image_desc_resource,
+@@ -1020,21 +1016,20 @@ on_icc_create_bytes_read (GObject      *source_object,
+                                                  &error);
+     }
+ 
++  image_desc = meta_wayland_image_description_new (color_manager,
++                                                   image_desc_resource);
++
+   if (color_state)
+     {
+-      image_desc =
+-        meta_wayland_image_description_new_color_state (color_manager,
+-                                                        image_desc_resource,
+-                                                        color_state,
+-                                                        META_WAYLAND_IMAGE_DESCRIPTION_FLAGS_DEFAULT);
++      meta_wayland_image_description_set_ready (image_desc,
++                                                color_state,
++                                                META_WAYLAND_IMAGE_DESCRIPTION_FLAGS_DEFAULT);
+     }
+   else
+     {
+-      image_desc =
+-        meta_wayland_image_description_new_failed (color_manager,
+-                                                   image_desc_resource,
+-                                                   WP_IMAGE_DESCRIPTION_V1_CAUSE_OPERATING_SYSTEM,
+-                                                   error->message);
++      meta_wayland_image_description_set_failed (image_desc,
++                                                 WP_IMAGE_DESCRIPTION_V1_CAUSE_OPERATING_SYSTEM,
++                                                 error->message);
+     }
+ 
+   old_image_desc = wl_resource_get_user_data (image_desc_resource);
+@@ -1068,9 +1063,8 @@ creator_icc_create (struct wl_client   *client,
+                         wl_resource_get_version (resource),
+                         id);
+ 
+-  image_desc =
+-    meta_wayland_image_description_new (color_manager,
+-                                        image_desc_resource);
++  image_desc = meta_wayland_image_description_new (color_manager,
++                                                   image_desc_resource);
+ 
+   wl_resource_set_implementation (image_desc_resource,
+                                   &meta_wayland_image_description_interface,
+@@ -1218,11 +1212,12 @@ creator_params_create (struct wl_client   *client,
+                                                     creator_params->eotf,
+                                                     creator_params->lum);
+ 
+-  image_desc =
+-    meta_wayland_image_description_new_color_state (color_manager,
+-                                                    image_desc_resource,
+-                                                    color_state,
+-                                                    META_WAYLAND_IMAGE_DESCRIPTION_FLAGS_DEFAULT);
++  image_desc = meta_wayland_image_description_new (color_manager,
++                                                   image_desc_resource);
++
++  meta_wayland_image_description_set_ready (image_desc,
++                                            color_state,
++                                            META_WAYLAND_IMAGE_DESCRIPTION_FLAGS_DEFAULT);
+ 
+   wl_resource_set_implementation (image_desc_resource,
+                                   &meta_wayland_image_description_interface,
+@@ -1598,12 +1593,13 @@ color_management_surface_feedback_get_preferred (struct wl_client   *client,
+                         wl_resource_get_version (resource),
+                         id);
+ 
+-  image_desc =
+-    meta_wayland_image_description_new_color_state (color_manager,
+-                                                    image_desc_resource,
+-                                                    cm_surface->preferred_color_state,
+-                                                    META_WAYLAND_IMAGE_DESCRIPTION_FLAGS_DEFAULT |
+-                                                    META_WAYLAND_IMAGE_DESCRIPTION_FLAGS_ALLOW_INFO);
++  image_desc = meta_wayland_image_description_new (color_manager,
++                                                   image_desc_resource);
++
++  meta_wayland_image_description_set_ready (image_desc,
++                                            cm_surface->preferred_color_state,
++                                            META_WAYLAND_IMAGE_DESCRIPTION_FLAGS_DEFAULT |
++                                            META_WAYLAND_IMAGE_DESCRIPTION_FLAGS_ALLOW_INFO);
+ 
+   wl_resource_set_implementation (image_desc_resource,
+                                   &meta_wayland_image_description_interface,
+-- 
+2.54.0
+
+
+From a05bb6ad6b2a28fbbdce42466995ae0eebee6c65 Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Wed, 9 Sep 2026 19:50:34 +0200
+Subject: [PATCH 2/3] wayland/color-management: Use a single image desc for ICC
+ creation
+
+Instead of creating two MetaWaylandImageDescription objects, create one,
+keep it in the uninitialized state, and then set_ready or set_failed
+when we're done with async reading of the ICC file.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/5313>
+(cherry picked from commit 8459ad1aeac554caa71053d0316af7c69f2f057c)
+(cherry picked from commit efe3822e42a16802808d617905ef060744245e55)
+---
+ src/wayland/meta-wayland-color-management.c | 12 ++----------
+ 1 file changed, 2 insertions(+), 10 deletions(-)
+
+diff --git a/src/wayland/meta-wayland-color-management.c b/src/wayland/meta-wayland-color-management.c
+index 51d6140268..6d1b4fd768 100644
+--- a/src/wayland/meta-wayland-color-management.c
++++ b/src/wayland/meta-wayland-color-management.c
+@@ -1000,12 +1000,11 @@ on_icc_create_bytes_read (GObject      *source_object,
+   MetaWaylandCreatorIcc *creator_icc = user_data;
+   MetaWaylandColorManager *color_manager = creator_icc->color_manager;
+   ClutterContext *clutter_context = get_clutter_context (color_manager);
+-  struct wl_resource *image_desc_resource = creator_icc->image_desc_resource;
++  MetaWaylandImageDescription *image_desc =
++    wl_resource_get_user_data (creator_icc->image_desc_resource);
+   g_autoptr (ClutterColorState) color_state = NULL;
+   g_autoptr (GError) error = NULL;
+   g_autofree uint8_t *icc_bytes = NULL;
+-  MetaWaylandImageDescription *old_image_desc;
+-  MetaWaylandImageDescription *image_desc;
+   uint32_t icc_length;
+ 
+   if (meta_read_bytes_finish (result, &icc_bytes, &icc_length, &error))
+@@ -1016,9 +1015,6 @@ on_icc_create_bytes_read (GObject      *source_object,
+                                                  &error);
+     }
+ 
+-  image_desc = meta_wayland_image_description_new (color_manager,
+-                                                   image_desc_resource);
+-
+   if (color_state)
+     {
+       meta_wayland_image_description_set_ready (image_desc,
+@@ -1032,10 +1028,6 @@ on_icc_create_bytes_read (GObject      *source_object,
+                                                  error->message);
+     }
+ 
+-  old_image_desc = wl_resource_get_user_data (image_desc_resource);
+-  wl_resource_set_user_data (image_desc_resource, image_desc);
+-  meta_wayland_image_description_free (old_image_desc);
+-
+   meta_wayland_creator_icc_unref (creator_icc);
+ }
+ 
+-- 
+2.54.0
+
+
+From 60abcb0f501f6037de85b2950eafa1c21c8d7d57 Mon Sep 17 00:00:00 2001
+From: Sebastian Wick <sebastian.wick@redhat.com>
+Date: Wed, 9 Sep 2026 19:55:31 +0200
+Subject: [PATCH 3/3] wayland/color-management: Fix lifetime of ICC image
+ description
+
+Instead of keeping the ICC creator alive for longer than its resource,
+we use the MetaWaylandImageDescription that we need to create before the
+async process starts anyway.
+
+This requires the ImageDescription object to be ref-counted because both
+the resource and the async process can each happen before one another.
+
+That change then also makes it easy to actually set the resource to NULL
+when it goes away, which previously would just be dangling pointer.
+
+Part-of: <https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/5313>
+(cherry picked from commit 86141ab75b23f10f8b79a2d5fda1d4c1d20c61e2)
+(cherry picked from commit 2a65d1c4b84289c8c917abf42608e18845848821)
+---
+ src/wayland/meta-wayland-color-management.c | 95 +++++++++++----------
+ 1 file changed, 48 insertions(+), 47 deletions(-)
+
+diff --git a/src/wayland/meta-wayland-color-management.c b/src/wayland/meta-wayland-color-management.c
+index 6d1b4fd768..9507f68cfa 100644
+--- a/src/wayland/meta-wayland-color-management.c
++++ b/src/wayland/meta-wayland-color-management.c
+@@ -108,6 +108,8 @@ typedef enum _MetaWaylandImageDescriptionFlags
+ 
+ typedef struct _MetaWaylandImageDescription
+ {
++  grefcount ref_count;
++
+   MetaWaylandColorManager *color_manager;
+   struct wl_resource *resource;
+   MetaWaylandImageDescriptionState state;
+@@ -138,8 +140,6 @@ typedef struct _MetaWaylandCreatorIcc
+   int fd;
+   uint32_t offset;
+   uint32_t length;
+-
+-  grefcount ref_count;
+ } MetaWaylandCreatorIcc;
+ 
+ static void meta_wayland_color_management_surface_free (MetaWaylandColorManagementSurface *cm_surface);
+@@ -345,9 +345,31 @@ meta_wayland_image_description_new (MetaWaylandColorManager *color_manager,
+   image_desc->color_manager = color_manager;
+   image_desc->resource = resource;
+ 
++  g_ref_count_init (&image_desc->ref_count);
++
++  return image_desc;
++}
++
++static MetaWaylandImageDescription *
++meta_wayland_image_description_ref (MetaWaylandImageDescription *image_desc)
++{
++  g_ref_count_inc (&image_desc->ref_count);
+   return image_desc;
+ }
+ 
++static void
++meta_wayland_image_description_unref (MetaWaylandImageDescription *image_desc)
++{
++  if (g_ref_count_dec (&image_desc->ref_count))
++    {
++      g_clear_object (&image_desc->color_state);
++      free (image_desc);
++    }
++}
++
++G_DEFINE_AUTOPTR_CLEANUP_FUNC (MetaWaylandImageDescription,
++                               meta_wayland_image_description_unref)
++
+ static void
+ meta_wayland_image_description_set_failed (MetaWaylandImageDescription        *image_desc,
+                                            enum wp_image_description_v1_cause  cause,
+@@ -358,6 +380,9 @@ meta_wayland_image_description_set_failed (MetaWaylandImageDescription        *i
+   image_desc->state = META_WAYLAND_IMAGE_DESCRIPTION_STATE_FAILED;
+   image_desc->has_info = FALSE;
+ 
++  if (!image_desc->resource)
++    return;
++
+   wp_image_description_v1_send_failed (image_desc->resource, cause, message);
+ }
+ 
+@@ -374,24 +399,20 @@ meta_wayland_image_description_set_ready (MetaWaylandImageDescription      *imag
+   image_desc->has_info = !!(flags & META_WAYLAND_IMAGE_DESCRIPTION_FLAGS_ALLOW_INFO);
+   image_desc->color_state = g_object_ref (color_state);
+ 
++  if (!image_desc->resource)
++    return;
++
+   id = clutter_color_state_get_id (color_state);
+   wp_image_description_v1_send_ready (image_desc->resource, id);
+ }
+ 
+-static void
+-meta_wayland_image_description_free (MetaWaylandImageDescription *image_desc)
+-{
+-  g_clear_object (&image_desc->color_state);
+-
+-  free (image_desc);
+-}
+-
+ static void
+ image_description_destructor (struct wl_resource *resource)
+ {
+   MetaWaylandImageDescription *image_desc = wl_resource_get_user_data (resource);
+ 
+-  meta_wayland_image_description_free (image_desc);
++  image_desc->resource = NULL;
++  meta_wayland_image_description_unref (image_desc);
+ }
+ 
+ static void
+@@ -917,7 +938,7 @@ color_management_output_get_image_description (struct wl_client   *client,
+   MetaWaylandColorManager *color_manager =
+     g_object_get_data (G_OBJECT (compositor), "-meta-wayland-color-manager");
+   struct wl_resource *image_desc_resource;
+-  MetaWaylandImageDescription *image_desc;
++  g_autoptr (MetaWaylandImageDescription) image_desc = NULL;
+ 
+   image_desc_resource =
+     wl_resource_create (client,
+@@ -948,7 +969,7 @@ color_management_output_get_image_description (struct wl_client   *client,
+ 
+   wl_resource_set_implementation (image_desc_resource,
+                                   &meta_wayland_image_description_interface,
+-                                  image_desc,
++                                  g_steal_pointer (&image_desc),
+                                   image_description_destructor);
+ }
+ 
+@@ -970,26 +991,14 @@ meta_wayland_creator_icc_new (MetaWaylandColorManager *color_manager,
+   creator_icc->resource = resource;
+   creator_icc->fd = -1;
+ 
+-  g_ref_count_init (&creator_icc->ref_count);
+-
+-  return creator_icc;
+-}
+-
+-static MetaWaylandCreatorIcc *
+-meta_wayland_creator_icc_ref (MetaWaylandCreatorIcc *creator_icc)
+-{
+-  g_ref_count_inc (&creator_icc->ref_count);
+   return creator_icc;
+ }
+ 
+ static void
+-meta_wayland_creator_icc_unref (MetaWaylandCreatorIcc *creator_icc)
++meta_wayland_creator_icc_free (MetaWaylandCreatorIcc *creator_icc)
+ {
+-  if (g_ref_count_dec (&creator_icc->ref_count))
+-    {
+-      g_clear_fd (&creator_icc->fd, NULL);
+-      g_free (creator_icc);
+-    }
++  g_clear_fd (&creator_icc->fd, NULL);
++  g_free (creator_icc);
+ }
+ 
+ static void
+@@ -997,11 +1006,9 @@ on_icc_create_bytes_read (GObject      *source_object,
+                           GAsyncResult *result,
+                           gpointer      user_data)
+ {
+-  MetaWaylandCreatorIcc *creator_icc = user_data;
+-  MetaWaylandColorManager *color_manager = creator_icc->color_manager;
+-  ClutterContext *clutter_context = get_clutter_context (color_manager);
+-  MetaWaylandImageDescription *image_desc =
+-    wl_resource_get_user_data (creator_icc->image_desc_resource);
++  g_autoptr (MetaWaylandImageDescription) image_desc = user_data;
++  ClutterContext *clutter_context =
++    get_clutter_context (image_desc->color_manager);
+   g_autoptr (ClutterColorState) color_state = NULL;
+   g_autoptr (GError) error = NULL;
+   g_autofree uint8_t *icc_bytes = NULL;
+@@ -1027,8 +1034,6 @@ on_icc_create_bytes_read (GObject      *source_object,
+                                                  WP_IMAGE_DESCRIPTION_V1_CAUSE_OPERATING_SYSTEM,
+                                                  error->message);
+     }
+-
+-  meta_wayland_creator_icc_unref (creator_icc);
+ }
+ 
+ static void
+@@ -1039,7 +1044,7 @@ creator_icc_create (struct wl_client   *client,
+   MetaWaylandCreatorIcc *creator_icc = wl_resource_get_user_data (resource);
+   MetaWaylandColorManager *color_manager = creator_icc->color_manager;
+   struct wl_resource *image_desc_resource;
+-  MetaWaylandImageDescription *image_desc;
++  g_autoptr (MetaWaylandImageDescription) image_desc = NULL;
+ 
+   if (creator_icc->fd == -1)
+     {
+@@ -1060,16 +1065,14 @@ creator_icc_create (struct wl_client   *client,
+ 
+   wl_resource_set_implementation (image_desc_resource,
+                                   &meta_wayland_image_description_interface,
+-                                  image_desc,
++                                  meta_wayland_image_description_ref (image_desc),
+                                   image_description_destructor);
+ 
+-  creator_icc->image_desc_resource = image_desc_resource;
+-
+   meta_read_bytes (creator_icc->fd,
+                    creator_icc->offset,
+                    creator_icc->length,
+                    on_icc_create_bytes_read,
+-                   meta_wayland_creator_icc_ref (creator_icc));
++                   meta_wayland_image_description_ref (image_desc));
+ 
+   wl_resource_destroy (resource);
+ }
+@@ -1182,7 +1185,7 @@ creator_params_create (struct wl_client   *client,
+   ClutterContext *clutter_context = get_clutter_context (color_manager);
+   struct wl_resource *image_desc_resource;
+   g_autoptr (ClutterColorState) color_state = NULL;
+-  MetaWaylandImageDescription *image_desc;
++  g_autoptr (MetaWaylandImageDescription) image_desc = NULL;
+ 
+   if (!creator_params->is_colorimetry_set || !creator_params->is_eotf_set)
+     {
+@@ -1206,14 +1209,13 @@ creator_params_create (struct wl_client   *client,
+ 
+   image_desc = meta_wayland_image_description_new (color_manager,
+                                                    image_desc_resource);
+-
+   meta_wayland_image_description_set_ready (image_desc,
+                                             color_state,
+                                             META_WAYLAND_IMAGE_DESCRIPTION_FLAGS_DEFAULT);
+ 
+   wl_resource_set_implementation (image_desc_resource,
+                                   &meta_wayland_image_description_interface,
+-                                  image_desc,
++                                  g_steal_pointer (&image_desc),
+                                   image_description_destructor);
+ 
+   wl_resource_destroy (resource);
+@@ -1569,7 +1571,7 @@ color_management_surface_feedback_get_preferred (struct wl_client   *client,
+   MetaWaylandColorManager *color_manager = cm_surface->color_manager;
+   MetaWaylandSurface *surface = cm_surface->surface;
+   struct wl_resource *image_desc_resource;
+-  MetaWaylandImageDescription *image_desc;
++  g_autoptr (MetaWaylandImageDescription) image_desc = NULL;
+ 
+   if (!surface)
+     {
+@@ -1587,7 +1589,6 @@ color_management_surface_feedback_get_preferred (struct wl_client   *client,
+ 
+   image_desc = meta_wayland_image_description_new (color_manager,
+                                                    image_desc_resource);
+-
+   meta_wayland_image_description_set_ready (image_desc,
+                                             cm_surface->preferred_color_state,
+                                             META_WAYLAND_IMAGE_DESCRIPTION_FLAGS_DEFAULT |
+@@ -1595,7 +1596,7 @@ color_management_surface_feedback_get_preferred (struct wl_client   *client,
+ 
+   wl_resource_set_implementation (image_desc_resource,
+                                   &meta_wayland_image_description_interface,
+-                                  image_desc,
++                                  g_steal_pointer (&image_desc),
+                                   image_description_destructor);
+ }
+ 
+@@ -1665,7 +1666,7 @@ creator_icc_destructor (struct wl_resource *resource)
+ {
+   MetaWaylandCreatorIcc *creator_icc = wl_resource_get_user_data (resource);
+ 
+-  meta_wayland_creator_icc_unref (creator_icc);
++  meta_wayland_creator_icc_free (creator_icc);
+ }
+ 
+ static void
+-- 
+2.54.0
+
